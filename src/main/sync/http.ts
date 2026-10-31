@@ -38,6 +38,8 @@ export interface HttpOptions {
   base: () => string
   tokens: TokenStore
   appVersion: string
+  /** Tipo de cliente no cabeçalho `X-ClearChat-Client` (padrão `desktop`; o mobile reusa este módulo). */
+  client?: 'desktop' | 'mobile'
   /** Refresh recusado (refresh_reused / sessão inválida) ou dispositivo revogado. */
   onSignedOut?: (code: string) => void
 }
@@ -123,7 +125,7 @@ export class SyncHttp {
 
   private headers(auth: boolean, extra: Record<string, string> = {}): Record<string, string> {
     const h: Record<string, string> = {
-      'X-ClearChat-Client': `desktop/${this.opts.appVersion}`,
+      'X-ClearChat-Client': `${this.opts.client ?? 'desktop'}/${this.opts.appVersion}`,
       'X-ClearChat-Protocol': String(SYNC_PROTOCOL),
       ...extra
     }
