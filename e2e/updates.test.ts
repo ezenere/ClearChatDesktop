@@ -42,19 +42,19 @@ test('compareVersions: numérico por parte (não lexicográfico)', () => {
   assert.equal(compareVersions('1.0.0-rc.1', '1.0.0'), 0)
 })
 
-test('isReleaseUrl: só https://github.com/ezenere/ClearChatDesktop/… ou o nome antigo (caixa livre)', () => {
-  assert.ok(isReleaseUrl('https://github.com/ezenere/ClearChatDesktop/releases/tag/v0.7.0'))
-  assert.ok(isReleaseUrl('https://github.com/ezenere/ClearChat/releases/tag/v0.7.0'))
+test('isReleaseUrl: só https://github.com/ezenere/ClearChatDesktop/… (caixa do dono/repo livre)', () => {
+  assert.ok(isReleaseUrl('https://github.com/ezenere/clearchatdesktop/releases/tag/v0.7.0'))
+  assert.ok(!isReleaseUrl('https://github.com/ezenere/ClearChat/releases/tag/v0.7.0'))
   assert.ok(!isReleaseUrl('https://github.com/ezenere/ClearChatWebsite/releases'))
-  assert.ok(isReleaseUrl('https://github.com/ezenere/clearchat/releases'))
+  assert.ok(isReleaseUrl('https://github.com/EZENERE/CLEARCHATDESKTOP/releases'))
   assert.ok(isReleaseUrl(RELEASES_PAGE))
-  assert.ok(!isReleaseUrl('http://github.com/ezenere/ClearChat/releases'))
-  assert.ok(!isReleaseUrl('https://github.com/outro/ClearChat/releases'))
-  assert.ok(!isReleaseUrl('https://github.com/ezenere/ClearChatX/releases'))
-  assert.ok(!isReleaseUrl('https://github.com.evil.io/ezenere/ClearChat'))
-  assert.ok(!isReleaseUrl('https://evil.io/github.com/ezenere/ClearChat'))
-  assert.ok(!isReleaseUrl('https://user@github.com/ezenere/ClearChat'))
-  assert.ok(!isReleaseUrl('https://github.com:8443/ezenere/ClearChat'))
+  assert.ok(!isReleaseUrl('http://github.com/ezenere/ClearChatDesktop/releases'))
+  assert.ok(!isReleaseUrl('https://github.com/outro/ClearChatDesktop/releases'))
+  assert.ok(!isReleaseUrl('https://github.com/ezenere/ClearChatDesktopX/releases'))
+  assert.ok(!isReleaseUrl('https://github.com.evil.io/ezenere/ClearChatDesktop'))
+  assert.ok(!isReleaseUrl('https://evil.io/github.com/ezenere/ClearChatDesktop'))
+  assert.ok(!isReleaseUrl('https://user@github.com/ezenere/ClearChatDesktop'))
+  assert.ok(!isReleaseUrl('https://github.com:8443/ezenere/ClearChatDesktop'))
   assert.ok(!isReleaseUrl('javascript:alert(1)'))
   assert.ok(!isReleaseUrl('não é url'))
   assert.ok(!isReleaseUrl(null))
@@ -64,13 +64,13 @@ test('parseLatestRelease: tag sem v, html_url validada, rascunho/pré/sem tag �
   assert.deepEqual(
     parseLatestRelease({
       tag_name: 'v0.7.0',
-      html_url: 'https://github.com/ezenere/ClearChat/releases/tag/v0.7.0',
+      html_url: 'https://github.com/ezenere/ClearChatDesktop/releases/tag/v0.7.0',
       name: ' ClearChat 0.7.0 ',
       published_at: '2026-10-18T12:00:00Z'
     }),
     {
       version: '0.7.0',
-      url: 'https://github.com/ezenere/ClearChat/releases/tag/v0.7.0',
+      url: 'https://github.com/ezenere/ClearChatDesktop/releases/tag/v0.7.0',
       name: 'ClearChat 0.7.0',
       publishedAt: '2026-10-18T12:00:00Z'
     }
@@ -137,7 +137,7 @@ test('checker: versão nova → available; request sem chave e só com Accept/Us
       calls.push({ url, init })
       return jsonResponse({
         tag_name: 'v0.7.0',
-        html_url: 'https://github.com/ezenere/ClearChat/releases/tag/v0.7.0'
+        html_url: 'https://github.com/ezenere/ClearChatDesktop/releases/tag/v0.7.0'
       })
     }
   })
@@ -149,7 +149,10 @@ test('checker: versão nova → available; request sem chave e só com Accept/Us
   assert.ok(s.checkedAt)
   assert.equal(calls.length, 1)
   assert.equal(calls[0].url, LATEST_RELEASE_API)
-  assert.equal(calls[0].url, 'https://api.github.com/repos/ezenere/ClearChatDesktop/releases/latest')
+  assert.equal(
+    calls[0].url,
+    'https://api.github.com/repos/ezenere/ClearChatDesktop/releases/latest'
+  )
   assert.deepEqual(Object.keys(calls[0].init.headers as Record<string, string>).sort(), [
     'Accept',
     'User-Agent'

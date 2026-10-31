@@ -5,9 +5,6 @@
 /** Repositório do app no GitHub — fonte única das URLs de release (API e página). */
 export const APP_REPO = { owner: 'ezenere', name: 'ClearChatDesktop' } as const
 
-/** Nome antigo do repositório (o GitHub redireciona; links antigos continuam válidos). */
-const LEGACY_REPO_NAMES = ['ClearChat']
-
 /** Última release publicada (o endpoint já exclui rascunhos e pré-releases). */
 export const LATEST_RELEASE_API = `https://api.github.com/repos/${APP_REPO.owner}/${APP_REPO.name}/releases/latest`
 
@@ -64,7 +61,7 @@ export function compareVersions(a: string, b: string): number {
   return 0
 }
 
-/** Só https://github.com/ezenere/ClearChatDesktop/… ou o nome antigo (o GitHub não diferencia caixa no dono/repo). */
+/** Só https://github.com/ezenere/ClearChatDesktop/… (o GitHub não diferencia caixa no dono/repo). */
 export function isReleaseUrl(url: unknown): url is string {
   if (typeof url !== 'string') return false
   let u: URL
@@ -77,7 +74,7 @@ export function isReleaseUrl(url: unknown): url is string {
   const [, owner, repo] = u.pathname.split('/')
   return (
     owner?.toLowerCase() === APP_REPO.owner.toLowerCase() &&
-    [APP_REPO.name, ...LEGACY_REPO_NAMES].some((n) => repo?.toLowerCase() === n.toLowerCase())
+    repo?.toLowerCase() === APP_REPO.name.toLowerCase()
   )
 }
 
