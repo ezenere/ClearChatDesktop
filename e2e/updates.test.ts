@@ -42,8 +42,10 @@ test('compareVersions: numérico por parte (não lexicográfico)', () => {
   assert.equal(compareVersions('1.0.0-rc.1', '1.0.0'), 0)
 })
 
-test('isReleaseUrl: só https://github.com/ezenere/ClearChat/… (caixa do dono/repo livre)', () => {
+test('isReleaseUrl: só https://github.com/ezenere/ClearChatDesktop/… ou o nome antigo (caixa livre)', () => {
+  assert.ok(isReleaseUrl('https://github.com/ezenere/ClearChatDesktop/releases/tag/v0.7.0'))
   assert.ok(isReleaseUrl('https://github.com/ezenere/ClearChat/releases/tag/v0.7.0'))
+  assert.ok(!isReleaseUrl('https://github.com/ezenere/ClearChatWebsite/releases'))
   assert.ok(isReleaseUrl('https://github.com/ezenere/clearchat/releases'))
   assert.ok(isReleaseUrl(RELEASES_PAGE))
   assert.ok(!isReleaseUrl('http://github.com/ezenere/ClearChat/releases'))
@@ -147,7 +149,7 @@ test('checker: versão nova → available; request sem chave e só com Accept/Us
   assert.ok(s.checkedAt)
   assert.equal(calls.length, 1)
   assert.equal(calls[0].url, LATEST_RELEASE_API)
-  assert.equal(calls[0].url, 'https://api.github.com/repos/ezenere/ClearChat/releases/latest')
+  assert.equal(calls[0].url, 'https://api.github.com/repos/ezenere/ClearChatDesktop/releases/latest')
   assert.deepEqual(Object.keys(calls[0].init.headers as Record<string, string>).sort(), [
     'Accept',
     'User-Agent'

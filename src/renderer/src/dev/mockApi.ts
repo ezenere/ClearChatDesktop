@@ -2259,7 +2259,7 @@ export function createMockApi(scenario: string): ClearApi {
               state: 'available',
               latest: {
                 version: '0.7.0',
-                url: 'https://github.com/ezenere/ClearChat/releases/tag/v0.7.0'
+                url: 'https://github.com/ezenere/ClearChatDesktop/releases/tag/v0.7.0'
               },
               checkedAt: Date.now()
             }

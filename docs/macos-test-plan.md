@@ -1,7 +1,7 @@
 # Plano de testes no macOS — ClearChat 0.10.2
 
 Roteiro para um agente (Claude Code) rodando **num Mac**, a partir do repositório
-`ezenere/ClearChat` na tag `v0.10.2` (ou `main`). O app foi desenvolvido e testado no Linux; aqui
+`ezenere/ClearChatDesktop` na tag `v0.10.2` (ou `main`). O app foi desenvolvido e testado no Linux; aqui
 ficam só as partes que dependem do sistema operacional e que **nunca rodaram no macOS**.
 
 Leia antes: `CLAUDE.md`, `SPEC.md` (seções Áudio, Modo avançado (GPU local), Menu de contexto,

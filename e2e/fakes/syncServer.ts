@@ -1209,7 +1209,7 @@ export async function startFakeSyncServer(opts: FakeSyncOptions = {}): Promise<F
           gateway: false
         },
         links: {
-          download: 'https://github.com/ezenere/ClearChat/releases',
+          download: 'https://github.com/ezenere/ClearChatDesktop/releases',
           ...(o.signupOpen ? { signup: `${url}/signup` } : {})
         }
       })
