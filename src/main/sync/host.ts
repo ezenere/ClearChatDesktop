@@ -20,6 +20,7 @@ import type {
 import type { MemoryExtractionResult } from '@shared/memory'
 import { isBranchEditable, toBranchSel } from '@shared/branches'
 import type { ApprovalItemDecision } from '@shared/approvalPolicy'
+import { parseInterChatSendMeta, type InterChatSendMeta } from '@shared/interChat'
 import type { ChatHostInfo, ChatHostMode, HostStatus, TakeoverOptions } from '@shared/sync'
 import {
   REMOTE_FS_LIMITS,
@@ -59,11 +60,13 @@ import {
 export interface RunnerAdapter {
   /** Chats com sessões rodando/esperando ou aprovação/questionário/retry pendente. */
   busyChats(): Set<string>
+  /** `meta` = origem entre chats (§8.6, ≥ 1.6.0): grava como mensagem entre chats. */
   send(
     sessionId: string,
     text: string,
     attachments: AttachmentInfo[],
-    skills: string[]
+    skills: string[],
+    meta?: InterChatSendMeta | null
   ): Promise<{ queued: boolean }>
   forceSend(queuedId: string): void
   removeQueued(queuedId: string): void
@@ -1461,7 +1464,13 @@ export class HostController {
           if (!(await this.engine.ensureAttachment(a.file))) throw new Error('attachment_missing')
         }
         const skills = Array.isArray(p.skills) ? (p.skills as string[]) : []
-        const r = await runner.send(sid, String(p.text ?? ''), atts, skills)
+        const r = await runner.send(
+          sid,
+          String(p.text ?? ''),
+          atts,
+          skills,
+          parseInterChatSendMeta(p.meta)
+        )
         if (kind === 'force' && r.queued) {
           const q = runner.getQueue(sid)
           const last = q[q.length - 1]

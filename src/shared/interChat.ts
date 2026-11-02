@@ -89,3 +89,45 @@ export function wouldCreateWaitCycle(
   }
   return false
 }
+
+/**
+ * Origem de uma mensagem entre chats no comando remoto `send` (protocolo ≥ 1.6.0, §8.6): o
+ * remetente num dispositivo, o chat de destino executado em outro. O host grava a mensagem com
+ * este meta (como na entrega local) e conta os saltos da cadeia; o texto continua com o cabeçalho.
+ */
+export interface InterChatSendMeta {
+  kind: 'inter-chat'
+  fromChatId: string
+  fromSessionId?: string
+  fromChatTitle: string
+  interChatHops: number
+}
+
+const META_ID_MAX = 100
+const META_TITLE_MAX = 200
+
+/**
+ * `payload.meta` de um `send` remoto → meta válido, ou null (ausente, outro `kind` ou malformado:
+ * a mensagem segue como texto digitado — nunca recusa por causa do meta). Os saltos podem passar do
+ * limite: quem chama confere com `LIMITS.interChatMaxHops` e recusa.
+ */
+export function parseInterChatSendMeta(v: unknown): InterChatSendMeta | null {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null
+  const m = v as Record<string, unknown>
+  if (m.kind !== 'inter-chat') return null
+  const id = (x: unknown): string | null =>
+    typeof x === 'string' && x.trim() && x.length <= META_ID_MAX ? x.trim() : null
+  const fromChatId = id(m.fromChatId)
+  const hops = m.interChatHops
+  if (!fromChatId || typeof hops !== 'number' || !Number.isInteger(hops) || hops < 1) return null
+  const title = typeof m.fromChatTitle === 'string' ? m.fromChatTitle : ''
+  const out: InterChatSendMeta = {
+    kind: 'inter-chat',
+    fromChatId,
+    fromChatTitle: title.replace(/\s+/g, ' ').trim().slice(0, META_TITLE_MAX),
+    interChatHops: hops
+  }
+  const sid = id(m.fromSessionId)
+  if (sid) out.fromSessionId = sid
+  return out
+}

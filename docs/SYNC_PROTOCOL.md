@@ -1,13 +1,14 @@
 # ClearChat Sync — Protocolo v1 (contrato)
 
-> **Versão do protocolo: 1.5.0** · status: contrato inicial (ainda sem implementação) · data: 2026-10-23
+> **Versão do protocolo: 1.6.0** · status: contrato inicial (ainda sem implementação) · data: 2026-11-02
 >
-> ⚠️ **AVISO — CONTRATO COMPARTILHADO ENTRE DOIS REPOSITÓRIOS**
-> Este arquivo existe, **idêntico**, em `ClearChat` (app Electron, cliente) e em `ClearChatWebsite`
-> (servidor FastAPI + site React), junto com `docs/test-vectors/`. Qualquer mudança no protocolo, na
-> criptografia, nos esquemas dos registros, nos endpoints ou nas mensagens de WebSocket precisa ser feita
-> **nos DOIS repositórios** (documentos idênticos, vetores regenerados nos dois, versão do protocolo
-> incrementada). Mudar um lado só **quebra o sync**. Um futuro app mobile implementa este mesmo contrato.
+> ⚠️ **AVISO — CONTRATO COMPARTILHADO ENTRE OS REPOSITÓRIOS**
+> Fonte única: `docs/SYNC_PROTOCOL.md` e `docs/test-vectors/` do repositório pai `ezenere/ClearChat`.
+> `ClearChatDesktop` (app Electron) e `ClearChatWebsite` (servidor FastAPI + site React) guardam cópias
+> **idênticas** (`node scripts/protocol.mjs sync|check` no pai); `ClearChatMobile` (Expo) as vendora.
+> Qualquer mudança no protocolo, na criptografia, nos esquemas dos registros, nos endpoints ou nas
+> mensagens de WebSocket precisa ser implementada **em todos os clientes e no servidor** (vetores
+> regenerados, versão do protocolo incrementada, changelog). Mudar um lado só **quebra o sync**.
 
 **Servidor = qualquer instância.** O servidor oficial é `https://clear.ezenere.com`, mas qualquer pessoa
 pode hospedar o seu (§20). Neste documento, **`<base>`** é a URL pública da instância escolhida
@@ -1192,7 +1193,7 @@ servidor atualizado antes dos clientes.
 
 | `kind` | Plaintext (`sv: 1` + …) | Equivalente no app |
 |---|---|---|
-| `send` | `{ sessionId, text, attachments: AttachmentInfo[], skills: string[], createdAt }` | `agent.send` (rodando → fila; ocioso → turno) |
+| `send` | `{ sessionId, text, attachments: AttachmentInfo[], skills: string[], createdAt, meta?: InterChatSendMeta }` | `agent.send` (rodando → fila; ocioso → turno); com `meta` (desde 1.6.0) = `send_to_chat` de um agente em outro dispositivo |
 | `force` | `{ sessionId, text, attachments, skills, createdAt }` | enviar já com ⚡ (`send` + `forceSend`) |
 | `queue.force` | `{ sessionId, queuedId }` | `agent.forceSend` |
 | `queue.remove` | `{ sessionId, queuedId }` | `agent.removeQueued` |
@@ -1214,6 +1215,29 @@ servidor atualizado antes dos clientes.
 | `fs.read` | `{ chatId, path, offset, length }` | visualizador de arquivos do host, um pedaço por comando (desde 1.3.0; só leitura, sem janela) |
 
 Regras:
+- **Origem entre chats (desde 1.6.0)**: o `send_to_chat` de um agente cujo chat de destino é
+  executado em **outro** dispositivo vira um `send` remoto com
+  `meta: { kind: 'inter-chat', fromChatId, fromSessionId?, fromChatTitle, interChatHops }` (os mesmos
+  campos de `MessageMeta` da entrega local). `text` continua com o cabeçalho
+  `[Mensagem do chat "<título>" (id <id>)…]` na primeira linha, então um host < 1.6.0 (que ignora
+  `meta`) recebe a mensagem como digitada mas o modelo ainda sabe a origem.
+  - Remetente: só envia `meta` quando o host do destino está `online`; host `grace`/`offline`, chat
+    divergente ou sem conexão com o destino rodando em outro lugar → a tool recusa (NUNCA entrega
+    localmente: criaria conteúdo só deste dispositivo e levaria à divergência, §9). Sem fila no
+    servidor (como todo comando). `skills: []` e `attachments: []`.
+  - Host ≥ 1.6.0: `meta` com `kind: 'inter-chat'`, `fromChatId` string não vazia (≤ 100 caracteres) e
+    `interChatHops` inteiro ≥ 1 ⇒ grava a mensagem do usuário com esse meta (título normalizado e cortado
+    em 200 caracteres; `fromSessionId` só se for string válida) — a bolha "De: <chat>" e a contagem de
+    saltos funcionam como na entrega local. `interChatHops` acima de `LIMITS.interChatMaxHops` (3) ⇒
+    `rejected` com `error` em texto. `meta` ausente, de outro `kind` ou malformado ⇒ ignorado (a
+    mensagem segue como digitada, nunca recusada por isso). `skills` é ignorado quando há `meta`.
+  - Espera da resposta (`wait_for_reply`): não faz parte do comando. Um remetente PODE ler a resposta
+    dos registros sincronizados depois que a janela do host fechar (o app mobile faz isso); o desktop
+    responde que aguardar um chat de outro dispositivo não é suportado e a resposta fica lá.
+  - Segurança: nada de capacidade nova — qualquer dispositivo da conta já pode mandar um `send` com esse
+    texto; o `meta` só muda a exibição e a contagem de saltos (que só pode **limitar** a cadeia). O
+    celular continua recusando comandos remotos nos chats que ele executa (decisão de produto do app
+    mobile): o motivo volta ao agente remetente como erro da tool.
 - `skills`: nomes; o **host** resolve e lê o `SKILL.md` (as skills que valem são as do host — o host
   publica a lista no snapshot do stream, §11, para a lâmpada do controle remoto).
 - `attachments`: o controle remoto sobe os blobs **antes** de enviar; o host baixa pelo sha256 (§14)
@@ -2081,6 +2105,7 @@ gastem o limite do dono do e-mail ou o bloqueiem.
 | 1.4.0 | 2026-10-21 | Adições compatíveis — preferências que eram locais passam a sincronizar como registros `setting`: `smartApproveDefaults` (padrões globais do Smart-Approve: descrição do ambiente, "aceitar edições dentro da raiz", coleta de contexto e os prompts do resumidor `capturePrompts`), `autoTitle` (título automático) e `toolOutputSpillChars` (limite para salvar saídas de tool em arquivo) (§4.3.2); envio único dos ids novos depois do primeiro pull num dispositivo que já sincronizava (§4.3.2); remapeamento no merge dos `providerId` dentro deles e de `ChatConfig.smartApprove.capture` (§12); `updateDismissedVersion` e a largura do painel de arquivo listados como locais (§4.4); tipos de referência do app 0.8.x, com os campos opcionais novos da config do chat/persona citados (§4.3). Servidor: nenhuma mudança de comportamento (ids de `setting` não são filtrados) — só a versão informada em `/api/info`/`welcome`. |
 | 1.4.1 | 2026-10-21 | Adições compatíveis (só campos opcionais em objetos que já sincronizam): "Tokens de pensamento" das chamadas laterais com raciocínio obrigatório — `SmartApproveConfig.thinkingTokens` (juiz; na config do chat/persona), `ContextCaptureConfig.thinkingTokens` (resumidor; em `smartApprove.capture` e `smartApproveDefaults.capture`) e `AutoTitleSettings.thinkingTokens` (título), cada um `number \| null`, ausente/`null` = o padrão do app; e o liga/desliga do "Cache do prompt" — `SmartApproveConfig.cache` (juiz) e `ContextCaptureConfig.cache` (resumidor; em `smartApprove.capture` e `smartApproveDefaults.capture`), `boolean`, ausente = ligado (o app só grava `false`) (§4.3, §4.3.2). Nenhum id de `setting` novo (sem envio único). Servidor: nenhuma mudança de comportamento — só a versão informada em `/api/info`/`welcome`. |
 | 1.5.0 | 2026-10-23 | Adições compatíveis — áudio (ditado e chamada de voz): ids de `setting` novos `audioInput`, `sttSettings`, `ttsSettings` e `voiceCallDefaults` com as **partes do dispositivo** fora do registro e preservadas ao aplicar (`audioInput.deviceId`, `local.installed`, bloco `gpu` e modo/backend `'gpu'` — escritores nunca enviam `'gpu'`, um dispositivo em GPU continua em GPU), sem segredos (chaves só nos provedores), `providerId` resolvido pelo id e "sem provedor" quando não existe localmente (§4.3.2); envio único dos ids novos e da `voice` local de chats/personas depois do primeiro pull (§4.3.2); `ChatConfig.voice`/`PresetConfig.voice` (`VoiceCallConfig`, inclusive `promptMode`/`endCall`) passam a sincronizar — antes eram locais (§4.3.3, §4.3.6); `MessageMeta.voice` (fala/ditado), `MessageMeta.voiceCall` e os marcadores de início/fim da chamada (só de exibição; no registro com `kind: 'memory-extraction'` + `voiceCall` para que apps ≤ 0.9.0 — que mandariam um `kind` desconhecido ao modelo — os descartem; leitores ≥ 1.5.0 voltam a `voice-call`) e a tool `end_call` no histórico (§4.3.8); `provider.kind: 'elevenlabs'` (só voz, fora de tudo que é chat), capacidades por tipo, inferência pela URL e reparo do `openai` gravado por apps antigos (§4.3.1); remapeamento no merge do `providerId` de stt/tts, do modelo padrão da chamada e de `voice.model` (§12); tools da chamada em `usesLocalTools` (§8.9); itens locais do áudio (microfone, modelos baixados, runtime da GPU, vozes do usuário, clipes, medições, logs do modo sombra) (§4.4); tipos de referência do app com o áudio, depois do 0.9.0 (§4.3); campo opcional `voiceCallDefaults.delayPhrases` (frases de demora da chamada — aditivo dentro do mesmo setting, sem mudança de versão; leitores que não o conhecem o ignoram e os que o conhecem completam a ausência com os padrões) (§4.3.2); campo opcional `api.params` em `sttSettings`/`ttsSettings` (parâmetros dos modelos remotos por família de API — ElevenLabs: formato de saída, `voice_settings`, normalização, `auto_mode`; OpenRouter/OpenAI-compatível: `speed`, `instructions`, `temperature`, `prompt` — preferências que sincronizam, ao contrário dos parâmetros da GPU; aditivo dentro do mesmo setting, sem mudança de versão) (§4.3.2). Clientes < 1.5.0 (app ≤ 0.9.0): ignoram os ids novos; não mostram os marcadores (e nunca os mandam ao modelo); guardam `voice`/meta de voz como desconhecidos (editar uma persona num app antigo apaga a `voice` dela); mostram o provedor ElevenLabs como OpenAI-compatível. Servidor: nenhuma mudança de comportamento (ids de `setting` não são filtrados, meta e config vão cifrados) — só a versão informada em `/api/info`/`welcome`; o site passa a mostrar falas, marcadores de chamada e o provedor de voz. |
+| 1.6.0 | 2026-11-02 | Adição compatível — origem entre chats no comando remoto: `send` ganha `meta?: InterChatSendMeta` (`kind: 'inter-chat'`, `fromChatId`, `fromSessionId?`, `fromChatTitle`, `interChatHops`) para o `send_to_chat` de um agente cujo chat de destino roda em outro dispositivo; o host ≥ 1.6.0 grava a mensagem com esse meta, conta os saltos e recusa acima de `interChatMaxHops`; meta inválido é ignorado; o remetente nunca entrega localmente um chat executado em outro dispositivo (host offline/divergente/sem conexão → a tool recusa) (§8.6). Hosts < 1.6.0 ignoram o meta (a mensagem chega como digitada, com o cabeçalho de origem no texto). Servidor: nenhuma mudança de comportamento (o payload é cifrado) — só a versão informada em `/api/info`/`welcome`. Texto: o aviso do topo aponta para o repositório pai como fonte única. |
 
 ---
 

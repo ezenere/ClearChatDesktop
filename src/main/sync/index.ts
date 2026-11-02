@@ -163,10 +163,12 @@ function runnerAdapter(): RunnerAdapter {
       for (const r of runner.pendingRetries()) out.add(r.chatId)
       return out
     },
-    send: (sid, text, atts, sk) =>
-      sk.length
-        ? runner.sendWithSkills(sid, text, atts, sk)
-        : Promise.resolve(runner.send(sid, text, atts)),
+    send: (sid, text, atts, sk, meta) =>
+      meta
+        ? Promise.resolve(runner.deliverInterChat(sid, text, meta))
+        : sk.length
+          ? runner.sendWithSkills(sid, text, atts, sk)
+          : Promise.resolve(runner.send(sid, text, atts)),
     forceSend: (id) => runner.forceSend(id),
     removeQueued: (id) => runner.removeQueued(id),
     getQueue: (sid) => runner.getQueue(sid),
@@ -310,7 +312,7 @@ export async function gateChat<T>(
  * conteúdo só deste dispositivo). O celular recusa comandos remotos nos chats que ele executa — o
  * motivo volta para o agente.
  */
-runner.setInterChatRouter(async (chatId, sessionId, text) => {
+runner.setInterChatRouter(async (chatId, sessionId, text, meta) => {
   const e = engine
   if (!e || !e.active) return { kind: 'local' }
   const mode = e.host.mode(chatId)
@@ -322,7 +324,8 @@ runner.setInterChatRouter(async (chatId, sessionId, text) => {
         text,
         attachments: [],
         skills: [],
-        createdAt: Date.now()
+        createdAt: Date.now(),
+        meta
       })
       return { kind: 'remote', queued: !!r.queued, hostName: name }
     } catch (err) {

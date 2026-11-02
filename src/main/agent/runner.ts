@@ -59,6 +59,7 @@ import {
   interChatHeader,
   interChatText,
   nextInterChatHops,
+  type InterChatSendMeta,
   splitInterChatText,
   wouldCreateWaitCycle,
   type WaitEdge
@@ -2198,12 +2199,42 @@ export type InterChatRoute =
 type InterChatRouter = (
   targetChatId: string,
   sessionId: string,
-  text: string
+  text: string,
+  meta: InterChatSendMeta
 ) => Promise<InterChatRoute>
 let interChatRouter: InterChatRouter | null = null
 
 export function setInterChatRouter(fn: InterChatRouter | null): void {
   interChatRouter = fn
+}
+
+/**
+ * `send` remoto com origem entre chats (protocolo ≥ 1.6.0, §8.6) executado neste host: grava a
+ * mensagem com o meta inter-chat (como a entrega local do send_to_chat), então a cadeia de saltos
+ * continua contada aqui. Passou do limite → lança (o host responde `rejected`).
+ */
+export function deliverInterChat(
+  sessionId: string,
+  text: string,
+  meta: InterChatSendMeta
+): { queued: boolean } {
+  const session = sessionsRepo.get(sessionId)
+  if (!session) throw new Error('Sessão não encontrada.')
+  if (meta.interChatHops > LIMITS.interChatMaxHops)
+    throw new Error(
+      `limite de ${LIMITS.interChatMaxHops} saltos entre chats atingido — a mensagem não foi entregue.`
+    )
+  if (!text.trim()) throw new Error('Mensagem vazia.')
+  const d = deliverToSession(session, text, {
+    kind: 'inter-chat',
+    fromChatId: meta.fromChatId,
+    ...(meta.fromSessionId ? { fromSessionId: meta.fromSessionId } : {}),
+    fromChatTitle: meta.fromChatTitle,
+    interChatHops: meta.interChatHops
+  })
+  const fresh = chatsRepo.get(session.chatId)
+  if (fresh) emit({ type: 'chat-updated', chat: fresh })
+  return { queued: !!d.queuedId }
 }
 
 async function runSendToChat(
@@ -2271,7 +2302,13 @@ async function runSendToChat(
   let route: InterChatRoute = { kind: 'local' }
   if (interChatRouter) {
     try {
-      route = await interChatRouter(target.id, targetSession.id, text)
+      route = await interChatRouter(target.id, targetSession.id, text, {
+        kind: 'inter-chat',
+        fromChatId: chat.id,
+        fromSessionId: session.id,
+        fromChatTitle: chat.title,
+        interChatHops: hops
+      })
     } catch (e) {
       return fail(
         `Erro: não foi possível entregar ao chat ${tname}: ${(e as Error).message} A mensagem NÃO foi enviada.`,

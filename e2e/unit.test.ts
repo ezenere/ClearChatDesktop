@@ -1669,6 +1669,7 @@ import {
   interChatHeader,
   interChatText,
   nextInterChatHops,
+  parseInterChatSendMeta,
   splitInterChatText,
   wouldCreateWaitCycle
 } from '../src/shared/interChat.ts'
@@ -1899,6 +1900,64 @@ test('mensagens entre chats: cabeçalho, saltos e ciclo de espera', () => {
   )
   assert.equal(wouldCreateWaitCycle([{ from: 'A', to: 'B' }], 'C', 'B'), false)
   assert.equal(wouldCreateWaitCycle([], 'A', 'A'), true)
+})
+
+test('send remoto com origem entre chats (§8.6, 1.6.0): meta válido, ignorado ou malformado', () => {
+  const ok = parseInterChatSendMeta({
+    kind: 'inter-chat',
+    fromChatId: ' c1 ',
+    fromSessionId: 's1',
+    fromChatTitle: '  Pesquisa \n X ',
+    interChatHops: 2,
+    extra: 'ignorado'
+  })
+  assert.deepEqual(ok, {
+    kind: 'inter-chat',
+    fromChatId: 'c1',
+    fromSessionId: 's1',
+    fromChatTitle: 'Pesquisa X',
+    interChatHops: 2
+  })
+  // os saltos passam como vieram: o host confere o limite e recusa
+  assert.equal(
+    parseInterChatSendMeta({ kind: 'inter-chat', fromChatId: 'c', interChatHops: 9 })
+      ?.interChatHops,
+    9
+  )
+  assert.equal(
+    parseInterChatSendMeta({
+      kind: 'inter-chat',
+      fromChatId: 'c',
+      fromChatTitle: 'x'.repeat(500),
+      interChatHops: 1
+    })?.fromChatTitle.length,
+    200
+  )
+  for (const bad of [
+    undefined,
+    null,
+    'inter-chat',
+    [],
+    { kind: 'subagent-callback', fromChatId: 'c', interChatHops: 1 },
+    { kind: 'inter-chat', interChatHops: 1 },
+    { kind: 'inter-chat', fromChatId: '', interChatHops: 1 },
+    { kind: 'inter-chat', fromChatId: 'x'.repeat(101), interChatHops: 1 },
+    { kind: 'inter-chat', fromChatId: 'c', interChatHops: 0 },
+    { kind: 'inter-chat', fromChatId: 'c', interChatHops: 1.5 },
+    { kind: 'inter-chat', fromChatId: 'c', interChatHops: '1' }
+  ])
+    assert.equal(parseInterChatSendMeta(bad), null, JSON.stringify(bad))
+  // id de sessão inválido some, o resto vale
+  assert.equal(
+    'fromSessionId' in
+      parseInterChatSendMeta({
+        kind: 'inter-chat',
+        fromChatId: 'c',
+        fromSessionId: 7,
+        interChatHops: 1
+      })!,
+    false
+  )
 })
 
 test('get_chat_info / list_chats: formato, filtro, (este chat) e teto', () => {

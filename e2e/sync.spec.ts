@@ -520,6 +520,18 @@ async function main(): Promise<void> {
         15_000,
         'B recebe o turno de A'
       )
+      // protocolo 1.6.0: o host grava a mensagem com a origem (meta inter-chat), não como digitada
+      const inter = (await api<any[]>(A, 'sessions.messages', chat.mainSessionId)).find(
+        (m) => m.meta.kind === 'inter-chat' && textOf(m.message.content).includes('oi do remetente')
+      )
+      assert(
+        inter &&
+          inter.meta.fromChatId === sender.id &&
+          inter.meta.fromSessionId === sender.mainSessionId &&
+          inter.meta.fromChatTitle === 'Remetente' &&
+          inter.meta.interChatHops === 1,
+        `meta no host: ${JSON.stringify(inter?.meta)}`
+      )
       const h = await hostInfo(B, chat.id)
       assert(h?.mode === 'remote' && !h.diverged, `B segue controle remoto: ${JSON.stringify(h)}`)
       const after = await texts(B, chat.mainSessionId)
