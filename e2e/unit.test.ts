@@ -2472,3 +2472,49 @@ test('painel: aberto/fechado lembrado em localStorage (clearchat.collapse.<id>),
     resetCollapseCache()
   }
 })
+
+test('formulário de provedor (@shared/providerDraft): troca de tipo, URL, headers e validação', async () => {
+  const { draftWithKind, draftWithBaseUrl, parseHeaders, draftToInput } =
+    await import('../src/shared/providerDraft.ts')
+  const blank = { name: '', kind: 'openai' as const, baseUrl: '', apiKey: '', headersText: '' }
+  const or = draftWithKind(blank, 'openrouter')
+  assert.equal(or.name, 'OpenRouter')
+  assert.equal(or.kindTouched, true)
+  assert.match(or.baseUrl, /openrouter\.ai/)
+  // nome/URL padrão de outro tipo trocam junto; personalizados ficam
+  const an = draftWithKind(or, 'anthropic')
+  assert.equal(an.name, 'Anthropic')
+  assert.match(an.baseUrl, /anthropic\.com/)
+  const custom = draftWithKind(
+    { ...or, name: 'Meu', baseUrl: 'http://127.0.0.1:1/v1' },
+    'anthropic'
+  )
+  assert.equal(custom.name, 'Meu')
+  assert.equal(custom.baseUrl, 'http://127.0.0.1:1/v1')
+  // URL sugere o tipo só sem escolha manual
+  assert.equal(draftWithBaseUrl(blank, 'https://api.anthropic.com/v1').kind, 'anthropic')
+  assert.equal(draftWithBaseUrl(or, 'https://api.anthropic.com/v1').kind, 'openrouter')
+  assert.deepEqual(parseHeaders(''), {})
+  assert.deepEqual(parseHeaders('{"X-A":"1"}'), { 'X-A': '1' })
+  assert.equal(parseHeaders('[1]'), 'Deve ser um objeto JSON')
+  assert.equal(parseHeaders('{"n":1}'), 'O valor de "n" deve ser string')
+  assert.equal(typeof parseHeaders('{'), 'string')
+  const ok = {
+    name: ' X ',
+    kind: 'openai' as const,
+    baseUrl: 'http://h/v1///',
+    apiKey: ' k ',
+    headersText: ''
+  }
+  assert.deepEqual(draftToInput(ok), {
+    name: 'X',
+    kind: 'openai',
+    baseUrl: 'http://h/v1',
+    apiKey: 'k',
+    headers: {}
+  })
+  assert.equal(draftToInput({ ...ok, name: ' ' }), 'Informe um nome')
+  assert.match(draftToInput({ ...ok, baseUrl: 'h/v1' }) as string, /http:\/\//)
+  assert.equal(draftToInput({ ...ok, apiKey: 'a b' }), 'A API key não pode conter espaços.')
+  assert.match(draftToInput({ ...ok, headersText: '{' }) as string, /^Headers inválidos/)
+})
