@@ -2008,6 +2008,12 @@ test('ramos: outdatedHosts — desktops que hospedam com app < 0.7.0 (lista de a
   await settled(B)
   await A.eng.devices()
   assert.deepEqual(A.eng.status().outdatedHosts, [{ name: 'PC antigo', appVersion: '0.6.1' }])
+  // renomeado em OUTRO aparelho: A adota o nome do servidor para si mesmo na próxima leitura
+  const aId = A.eng.status().device!.id
+  await B.eng.renameDevice(aId, 'PC renomeado pelo B')
+  assert.equal(A.eng.status().device!.name, 'PC 0.7', 'ainda não releu')
+  await A.eng.devices()
+  assert.equal(A.eng.status().device!.name, 'PC renomeado pelo B')
   await B.eng.logout()
   await A.eng.devices()
   assert.deepEqual(A.eng.status().outdatedHosts, [])

@@ -942,6 +942,13 @@ export class SyncEngine {
       current: !!d.current || d.id === this.deviceId
     }))
     this.devicesAt = Date.now()
+    // renomeado em outro aparelho (PATCH /devices/{id}): o servidor é a fonte do nome — sem isso
+    // este app continuava mostrando o nome antigo para si mesmo
+    const me = out.find((d) => d.current)
+    if (me && me.name && me.name !== this.deviceName) {
+      this.setKv('device_name', me.name.slice(0, 64))
+      this.emitStatus()
+    }
     const outdated = outdatedHosts(out)
     if (!sameJson(outdated, this.outdated)) {
       this.outdated = outdated
