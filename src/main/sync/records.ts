@@ -1142,32 +1142,5 @@ export function existsLocal(conn: Database.Database, type: string, id: string): 
   return !!t && !!conn.prepare(`SELECT 1 FROM ${t} WHERE id = ?`).get(id)
 }
 
-/** O chat usa ferramentas locais (§8.9)? */
-export const LOCAL_TOOLS = [
-  'list_dir',
-  'read_file',
-  'search_files',
-  'find_files',
-  'write_file',
-  'edit_file',
-  'shell',
-  'process_start',
-  'process_logs',
-  'process_list',
-  'process_stop'
-]
-export function usesLocalTools(config: {
-  enabledTools?: unknown
-  skills?: unknown
-  voice?: unknown
-}): boolean {
-  const list = (v: unknown): string[] =>
-    Array.isArray(v) ? v.filter((t): t is string => typeof t === 'string') : []
-  // a chamada de voz pode liberar tools próprias (`voice.tools.enabledTools`) — contam também
-  const voice = (config.voice ?? {}) as { tools?: { enabledTools?: unknown } | null }
-  const tools = [...list(config.enabledTools), ...list(voice.tools?.enabledTools)]
-  const skills = (config.skills ?? {}) as { enabled?: unknown }
-  return (
-    tools.some((t) => LOCAL_TOOLS.includes(t === 'bash' ? 'shell' : t)) || skills.enabled === true
-  )
-}
+// regra do §8.9 em @shared/sync (o mobile vendora); reexportada para os chamadores do main
+export { LOCAL_TOOLS, usesLocalTools } from '@shared/sync'

@@ -174,3 +174,33 @@ export interface TakeoverOptions {
   mode: 'next_turn' | 'force'
   confirmPinned?: boolean
 }
+
+/** O chat usa ferramentas locais (§8.9)? */
+export const LOCAL_TOOLS: readonly string[] = [
+  'list_dir',
+  'read_file',
+  'search_files',
+  'find_files',
+  'write_file',
+  'edit_file',
+  'shell',
+  'process_start',
+  'process_logs',
+  'process_list',
+  'process_stop'
+]
+export function usesLocalTools(config: {
+  enabledTools?: unknown
+  skills?: unknown
+  voice?: unknown
+}): boolean {
+  const list = (v: unknown): string[] =>
+    Array.isArray(v) ? v.filter((t): t is string => typeof t === 'string') : []
+  // a chamada de voz pode liberar tools próprias (`voice.tools.enabledTools`) — contam também
+  const voice = (config.voice ?? {}) as { tools?: { enabledTools?: unknown } | null }
+  const tools = [...list(config.enabledTools), ...list(voice.tools?.enabledTools)]
+  const skills = (config.skills ?? {}) as { enabled?: unknown }
+  return (
+    tools.some((t) => LOCAL_TOOLS.includes(t === 'bash' ? 'shell' : t)) || skills.enabled === true
+  )
+}
