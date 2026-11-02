@@ -53,6 +53,25 @@ if (isolatedUserData) {
   app.setPath('userData', resolve(isolatedUserData))
 }
 
+// Uma instância por userData: um segundo processo abriria outro cliente de sync com a mesma sessão do
+// dispositivo (os WebSockets se derrubam) e outro dono do banco. A segunda tentativa só traz a janela
+// existente para a frente. O lock vale por userData, então testes com CLEARCHAT_USER_DATA isolados
+// continuam podendo rodar lado a lado.
+if (!app.requestSingleInstanceLock()) app.exit(0)
+
+let mainWindow: BrowserWindow | null = null
+
+app.on('second-instance', () => {
+  const win = mainWindow && !mainWindow.isDestroyed() ? mainWindow : null
+  if (!win) {
+    if (app.isReady()) mainWindow = createWindow()
+    return
+  }
+  if (win.isMinimized()) win.restore()
+  win.show()
+  win.focus()
+})
+
 // clearchat-attachment://<sha256>.<ext> → arquivo do store de anexos (miniaturas no renderer).
 // clearchat-file://<token>/<nome> → arquivo da allowlist do visualizador (present_file / aba
 // Arquivos). Sem supportFetchAPI/corsEnabled: o renderer só usa em <img>/<iframe>; texto vem por IPC.
@@ -205,7 +224,7 @@ app.whenReady().then(() => {
 
   initRunner()
   registerIpc()
-  createWindow()
+  mainWindow = createWindow()
   void initSync().catch((e) => console.error('[clearchat] sync', e))
   // Aviso de versão nova: consulta a última release no GitHub (poucos segundos após o start + a
   // cada 6 h). Só avisa — nada é baixado nem instalado. Testes isolados não consultam a rede.
@@ -218,7 +237,7 @@ app.whenReady().then(() => {
   )
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    if (BrowserWindow.getAllWindows().length === 0) mainWindow = createWindow()
   })
 })
 

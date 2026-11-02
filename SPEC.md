@@ -44,6 +44,8 @@ IDs: `crypto.randomUUID()` (exceto memórias: `m` + 7 caracteres base36 — ver 
 
 **Migração do nome antigo** (`src/main/migrate.ts`, `migrateLegacyData(userData)`): o app se chamava "CleartChat" (typo). No `ready`, antes de abrir o banco e só no userData padrão (não com `CLEARCHAT_USER_DATA`): se `<userData>/clearchat.db` não existe e `<irmão>/CleartChat/cleartchat.db` existe, copia com `VACUUM INTO` numa conexão somente leitura (cópia consistente, já com o WAL) para um temporário e renomeia; fallback: cópia crua de `.db` + `-wal`/`-shm` validada ao abrir. O diretório antigo fica intacto. Testado em `e2e/unit.test.ts`.
 
+
+**Uma instância por userData** (`src/main/index.ts`): `app.requestSingleInstanceLock()` logo depois de resolver o userData (inclusive `CLEARCHAT_USER_DATA`); sem o lock, o processo sai com `app.exit(0)` antes de abrir o banco ou o sync — dois processos seriam dois clientes de sync com a mesma sessão do dispositivo (os WebSockets se derrubam) e dois donos do banco. No primeiro processo, `second-instance` restaura (se minimizada), mostra e foca a janela principal (ou recria se não houver). O lock vale por userData: instâncias de teste isoladas rodam lado a lado.
 ## Tipos compartilhados (`src/shared/types.ts`)
 
 ```ts
