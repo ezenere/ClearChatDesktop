@@ -98,6 +98,27 @@ async function startLlm(): Promise<void> {
         res.end(chunk({}, 'tool_calls') + 'data: [DONE]\n\n')
         return
       }
+      const toChat = /^mande para o chat (\S+): (.+)$/.exec(lastUser)
+      if (toChat) {
+        res.write(
+          chunk({
+            role: 'assistant',
+            tool_calls: [
+              {
+                index: 0,
+                id: `call_${hits.length}`,
+                type: 'function',
+                function: {
+                  name: 'send_to_chat',
+                  arguments: JSON.stringify({ chat_id: toChat[1], message: toChat[2] })
+                }
+              }
+            ]
+          })
+        )
+        res.end(chunk({}, 'tool_calls') + 'data: [DONE]\n\n')
+        return
+      }
       if (/^rode o comando/.test(lastUser)) {
         res.write(
           chunk({
@@ -447,6 +468,70 @@ async function main(): Promise<void> {
     }
   )
 
+  let sender: any = null
+  const sendTool = async (i: Inst, sid: string): Promise<any> => {
+    const t = await waitFor(
+      async () =>
+        (await api<any[]>(i, 'sessions.messages', sid))
+          .filter((m) => m.message.role === 'tool')
+          .at(-1),
+      15_000,
+      'resultado do send_to_chat'
+    )
+    await waitFor(
+      async () => (await texts(i, sid)).some((x) => x.startsWith('FIM:')),
+      15_000,
+      'turno do remetente terminou'
+    )
+    return t
+  }
+
+  await step(
+    'send_to_chat de B para um chat executado em A vira comando remoto (nada local em B)',
+    async () => {
+      sender = await api(B, 'chats.create', {
+        title: 'Remetente',
+        config: { providerId, model: 'fake/agent', cwd: BASE, enabledTools: ['send_to_chat'] }
+      })
+      const before = (await texts(B, chat.mainSessionId)).length
+      await api(
+        B,
+        'agent.send',
+        sender.mainSessionId,
+        `mande para o chat ${chat.id}: oi do remetente`
+      )
+      const t = await sendTool(B, sender.mainSessionId)
+      const content = textOf(t.message.content)
+      assert(
+        t.meta.toolStatus === 'ok' && /outro dispositivo \(PC de casa\)/.test(content),
+        `resultado: ${t.meta.toolStatus} ${content}`
+      )
+      // executado no host A (a resposta do modelo vem de A) e sincronizado de volta para B
+      await waitFor(
+        async () =>
+          (await texts(A, chat.mainSessionId)).some((x) => x.startsWith('ok: [Mensagem do chat')),
+        20_000,
+        'A executou a mensagem entre chats'
+      )
+      await settled(A)
+      await waitFor(
+        async () =>
+          (await texts(B, chat.mainSessionId)).some((x) => x.startsWith('ok: [Mensagem do chat')),
+        15_000,
+        'B recebe o turno de A'
+      )
+      const h = await hostInfo(B, chat.id)
+      assert(h?.mode === 'remote' && !h.diverged, `B segue controle remoto: ${JSON.stringify(h)}`)
+      const after = await texts(B, chat.mainSessionId)
+      assert(
+        after.length === before + 2,
+        `uma mensagem + uma resposta (${before} → ${after.length})`
+      )
+      await settled(B)
+      return content.slice(0, 90)
+    }
+  )
+
   await step('aprovação pedida no host aparece e é respondida no controle remoto', async () => {
     toolChat = await api(A, 'chats.create', {
       title: 'Chat com terminal',
@@ -580,6 +665,25 @@ async function main(): Promise<void> {
         err = (e as Error).message
       }
       assert(/offline/.test(err), `envio recusado com host offline: ${err}`)
+      if (sender) {
+        // send_to_chat para um chat cujo host caiu: recusa (entregar em B criaria divergência)
+        const n = (await texts(B, chat.mainSessionId)).length
+        await api(B, 'agent.send', sender.mainSessionId, `mande para o chat ${chat.id}: vai falhar`)
+        await waitFor(
+          async () =>
+            (await texts(B, sender.mainSessionId)).some((x) => /^FIM: Erro: não foi/.test(x)),
+          15_000,
+          'send_to_chat recusado'
+        )
+        const t = (await api<any[]>(B, 'sessions.messages', sender.mainSessionId))
+          .filter((m) => m.message.role === 'tool')
+          .at(-1)
+        assert(
+          t.meta.toolStatus === 'error' && /offline/.test(textOf(t.message.content)),
+          `recusa: ${textOf(t.message.content)}`
+        )
+        assert((await texts(B, chat.mainSessionId)).length === n, 'nada entregue localmente')
+      }
       await B.page.getByTestId('host-offline-takeover').click()
       await B.page.getByTestId('takeover-dialog').waitFor()
       const txt = await B.page.getByTestId('takeover-dialog').innerText()

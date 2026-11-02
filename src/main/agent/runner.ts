@@ -2183,6 +2183,29 @@ async function waitForTurn(
   }
 }
 
+// ---------------- roteamento do send_to_chat (sync) ----------------
+
+/** Onde a mensagem entre chats foi parar: aqui (entrega local) ou no host remoto do destino. */
+export type InterChatRoute =
+  { kind: 'local' } | { kind: 'remote'; queued: boolean; hostName: string }
+
+/**
+ * Instalado pelo sync: decide se o chat de destino roda aqui (entrega local) ou em outro
+ * dispositivo (comando `send` ao host). Lança com o motivo quando não dá para entregar (host
+ * offline, chat divergente, sem conexão com o chat rodando em outro lugar) — entregar localmente
+ * nesses casos criaria conteúdo só deste dispositivo e levaria à divergência.
+ */
+type InterChatRouter = (
+  targetChatId: string,
+  sessionId: string,
+  text: string
+) => Promise<InterChatRoute>
+let interChatRouter: InterChatRouter | null = null
+
+export function setInterChatRouter(fn: InterChatRouter | null): void {
+  interChatRouter = fn
+}
+
 async function runSendToChat(
   session: Session,
   chat: Chat,
@@ -2244,6 +2267,28 @@ async function runSendToChat(
     fromChatTitle: chat.title,
     interChatHops: hops
   }
+  const text = interChatText(header, message)
+  let route: InterChatRoute = { kind: 'local' }
+  if (interChatRouter) {
+    try {
+      route = await interChatRouter(target.id, targetSession.id, text)
+    } catch (e) {
+      return fail(
+        `Erro: não foi possível entregar ao chat ${tname}: ${(e as Error).message} A mensagem NÃO foi enviada.`,
+        target.id
+      )
+    }
+  }
+  if (route.kind === 'remote') {
+    const fresh = chatsRepo.get(target.id)
+    if (fresh) emit({ type: 'chat-updated', chat: fresh })
+    const where = `O chat ${tname} roda em outro dispositivo (${route.hostName})`
+    return {
+      content: `${where}: mensagem ${route.queued ? 'enfileirada lá (ele está ocupado)' : 'entregue, iniciou um turno lá'}. ${wait ? 'Aguardar a resposta de um chat executado em outro dispositivo não é suportado; a' : 'A'} resposta ficará naquele chat (veja depois com get_chat_info/read_history) — não reenvie.`,
+      status: 'ok',
+      targetChatId: target.id
+    }
+  }
   // registra a espera ANTES de entregar: o destino pode tentar aguardar este chat de imediato
   const edge = wait ? { id: ++waitSeq, from: chat.id, to: target.id } : null
   if (edge) waitEdges.push(edge)
@@ -2252,7 +2297,7 @@ async function runSendToChat(
     status: ToolOutcome['status'] = 'ok'
   ): Omit<ToolOutcome, 'durationMs'> => ({ content, status, targetChatId: target.id })
   try {
-    const d = deliverToSession(targetSession, interChatText(header, message), meta)
+    const d = deliverToSession(targetSession, text, meta)
     const fresh = chatsRepo.get(target.id)
     if (fresh) emit({ type: 'chat-updated', chat: fresh }) // sidebar: ordem / "atualizado"
     if (!wait)

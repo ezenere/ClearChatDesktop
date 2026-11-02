@@ -371,7 +371,7 @@ export class HostController {
   }
 
   /** O chat é executado em OUTRO dispositivo (o banco local não tem o status ao vivo). */
-  private hostedElsewhere(chatId: string): boolean {
+  hostedElsewhere(chatId: string): boolean {
     const h = this.states.get(chatId)?.host
     return !!h && h.device_id !== this.me
   }

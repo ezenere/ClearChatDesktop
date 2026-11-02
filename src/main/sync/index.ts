@@ -303,6 +303,42 @@ export async function gateChat<T>(
   return local()
 }
 
+/**
+ * send_to_chat do agente (runner) → o chat de destino roda aqui ou em outro dispositivo? Mesmo
+ * portão das mensagens do usuário: host remoto online recebe um comando `send`; host offline,
+ * chat divergente ou sem conexão com o chat rodando em outro lugar → recusa (entregar aqui criaria
+ * conteúdo só deste dispositivo). O celular recusa comandos remotos nos chats que ele executa — o
+ * motivo volta para o agente.
+ */
+runner.setInterChatRouter(async (chatId, sessionId, text) => {
+  const e = engine
+  if (!e || !e.active) return { kind: 'local' }
+  const mode = e.host.mode(chatId)
+  const name = e.host.hostName(chatId)
+  if (mode === 'remote') {
+    try {
+      const r = await e.host.sendCommand(chatId, 'send', {
+        sessionId,
+        text,
+        attachments: [],
+        skills: [],
+        createdAt: Date.now()
+      })
+      return { kind: 'remote', queued: !!r.queued, hostName: name }
+    } catch (err) {
+      if (!(err instanceof NoHostError)) throw err
+      return { kind: 'local' }
+    }
+  }
+  if (mode === 'host-offline')
+    throw new Error(`o dispositivo que executa esse chat (${name}) está offline.`)
+  if (mode === 'diverged')
+    throw new Error('esse chat está divergente (o usuário precisa escolher a versão).')
+  if (mode === 'offline' && e.host.hostedElsewhere(chatId))
+    throw new Error(`sem conexão com o servidor, e esse chat roda em outro dispositivo (${name}).`)
+  return { kind: 'local' }
+})
+
 export function chatOfSession(sessionId: string): string | null {
   return sessionsRepo.get(sessionId)?.chatId ?? null
 }
