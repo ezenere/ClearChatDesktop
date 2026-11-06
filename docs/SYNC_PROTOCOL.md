@@ -1,6 +1,6 @@
 # ClearChat Sync — Protocolo v1 (contrato)
 
-> **Versão do protocolo: 1.7.0** · status: contrato inicial (ainda sem implementação) · data: 2026-11-06
+> **Versão do protocolo: 1.8.0** · status: contrato inicial (ainda sem implementação) · data: 2026-11-06
 >
 > ⚠️ **AVISO — CONTRATO COMPARTILHADO ENTRE OS REPOSITÓRIOS**
 > Fonte única: `docs/SYNC_PROTOCOL.md` e `docs/test-vectors/` do repositório pai `ezenere/ClearChat`.
@@ -43,6 +43,7 @@ app (`createdAt` etc. dentro dos registros cifrados) em ms Unix, como no app hoj
 20. [Instância, configurações da instância e self-host](#20-instância-configurações-da-instância-e-self-host)
 21. [Fase futura (opcional): servidor como gateway de execução](#21-fase-futura-opcional-servidor-como-gateway-de-execução)
 22. [Notificações push](#22-notificações-push-desde-170)
+23. [Chats só ao vivo](#23-chats-só-ao-vivo-desde-180)
 
 ---
 
@@ -97,14 +98,16 @@ app (`createdAt` etc. dentro dos registros cifrados) em ms Unix, como no app hoj
 | estado de host por chat (dispositivo host, epoch, rodando/ocioso, fixado, troca pendente, divergente) | coordenação de execução |
 | tipo de cada comando remoto (`send`, `stop`, `fs.read`…), quem enviou e o tamanho do envelope | roteamento ao host e logs de uso |
 | parâmetros do KDF, salts, DEK embrulhada, `verifier` (SHA-256 de uma subchave) | desbloqueio; prova de posse |
-| notificações push (desde 1.7.0): token de push de cada celular, tipo do aviso, tag aleatória, destinos, horário e tamanho; no aviso "host caiu", o chat e o nome do dispositivo | entrega pelo FCM (§22) — o conteúdo vai cifrado |
+| notificações push (desde 1.7.0): token de push de cada celular, tipo do aviso, tag aleatória, destinos, horário e tamanho; no aviso "host caiu", o chat e o nome do dispositivo; desde 1.8.0, também o id do dispositivo que enviou cada aviso e o do host no "host caiu" | entrega pelo FCM (§22) — o conteúdo vai cifrado |
+| chats só ao vivo (desde 1.8.0), **só em memória** enquanto o host está conectado: ids dos chats ao vivo de cada host, `epoch` ao vivo, revisão e horário de cada anúncio, rodando/ocioso, tamanho dos anúncios, `kind`/tamanho dos comandos `history.*` e `attach.*` (dá para estimar o tamanho do histórico lido e dos anexos enviados/baixados) e dos eventos do stream; numa conversão online → ao vivo, o tombstone do `chat` (como qualquer exclusão) e que o mesmo id passou a ser anunciado | roteamento ao host e lista nos outros dispositivos (§23) — título, mensagens e todo o resto vão cifrados; nada disso é gravado |
 
 Tudo o mais — conteúdo de mensagens, títulos, configs, chaves de API, nomes de skills, nomes de arquivos,
 memórias — é cifrado. Ids de registros são UUIDs aleatórios gerados pelo app (não revelam nada), exceto
 os ids fixos de `setting` (nomes públicos das configurações) e os ids de `skill`/blob, que são HMACs
 (o servidor não consegue correlacioná-los com nomes/arquivos conhecidos). O agrupamento por `scope`
 (quais mensagens pertencem ao mesmo chat) é um vazamento aceito: é necessário para o host e para
-cascatas.
+cascatas. Chats só ao vivo (§23) não têm registro nenhum: o servidor só os conhece pelo que passa em
+memória (linha acima).
 
 ---
 
@@ -235,12 +238,23 @@ zeros à esquerda.
 | comando remoto | `K_stream` | `clearchat\|v1\|command\|<user_id>\|<chat_id>\|<cmd_id>` |
 | resultado de comando | `K_stream` | `clearchat\|v1\|command-result\|<user_id>\|<chat_id>\|<cmd_id>` |
 | notificação push | `K_push` | `clearchat\|v1\|push\|<user_id>\|<kind>\|<tag>` |
+| anúncio de chat só ao vivo (desde 1.8.0) | `K_stream` | `clearchat\|v1\|live-announce\|<user_id>\|<host_device_id>\|<chat_id>\|<epoch>\|<arev>` |
 | blob (cada chunk) | chave do arquivo | `UTF-8("clearchat\|v1\|blob\|<user_id>\|<blob_id>\|") ‖ header (21 bytes)` |
 
 A AAD do registro amarra usuário + tipo + id + escopo + revisão: o servidor não consegue trocar
 envelopes entre registros/usuários, mover uma mensagem de chat, nem servir uma revisão antiga como se
 fosse a atual (o cliente rejeita `rev` menor que a que já tem). Exemplo (vetor `records.json`):
 `clearchat|v1|record|6f1c2b9e-3a4d-4e5f-8a7b-9c0d1e2f3a4b|provider|0b9f6a1e-2c3d-4e5f-9a8b-7c6d5e4f3a2b||1`.
+
+**Chats só ao vivo (desde 1.8.0, §23) usam `K_stream`**, sem subchave nova: anúncio, histórico e
+atualizações têm a mesma natureza dos eventos ao vivo e dos comandos (efêmeros, só retransmitidos, nunca
+gravados, trocados só entre dispositivos da conta) e a separação de domínio vem do contexto da AAD
+(`live-announce` ≠ `stream` ≠ `command` ≠ `command-result`: o primeiro campo depois de `v1` nunca é
+prefixo de outro). O histórico (`history.*`) e as atualizações (`rec`) reusam as AADs de comando,
+resultado e evento ao vivo; só o anúncio tem contexto novo, que amarra o **host** (o servidor não
+consegue apresentar o chat de um host como sendo de outro), o `epoch` ao vivo e a revisão `arev` (não
+consegue trocar um anúncio velho pelo atual dentro do mesmo `epoch`). `K_push` é separada porque o aviso
+sai para um terceiro (FCM), fica guardado lá até o TTL e é decifrado numa tarefa em segundo plano.
 
 ### 3.11 Blobs (formato `CCB1`, em chunks)
 
@@ -300,6 +314,7 @@ Não existe em v1. Espaço deixado: `k` no envelope, `key_version` na AAD da wra
 | `blobs.json` | blobs CCB1 (3 chunks, chunks exatos, vazio), `blob_id` |
 | `realtime.json` | envelopes de evento ao vivo, comando remoto e resultado |
 | `push.json` | `K_push` e envelopes de notificação push com AAD (§22) |
+| `live.json` | chats só ao vivo (§23): anúncio com AAD `live-announce` e casos que DEVEM falhar (outro host, `arev` trocada, aberto como stream); exemplos de `history.list` (comando e resultado), de `rec` (stream) e de `attach.put` (pedaço e resultado com o `AttachmentInfo`) |
 | `ids.json` | ids derivados de skill e de blob |
 | `branches.json` | árvore de versões das mensagens (§4.3.8): mãe efetiva, caminho ativo e irmãos — **escrito à mão** (dados de teste compartilhados, não é cripto nem saída do `generate.ts`) |
 
@@ -682,10 +697,15 @@ Ver §13 (formato do bundle).
 | vozes do usuário para clonagem (áudios de referência) | `userData/gpu-voices` | arquivos de áudio locais (a voz escolhida é só um id, local junto com o bloco `gpu`) |
 | cache de clipes de interjeição/preâmbulo por voz | `userData/voice-clips` | derivado; regerado em cada dispositivo |
 | logs do modo sombra da chamada (`voice-eval/*.jsonl`) e o estado da chamada em andamento | `userData` / memória do main | diagnóstico e execução locais |
-| token de push, preferências de notificação (tipos, "mostrar trecho") e tags dos avisos mostrados (desde 1.7.0, §22) | celular | por aparelho |
+| token de push, preferências de notificação (tipos, "mostrar trecho") e tags dos avisos mostrados (desde 1.7.0, §22; desde 1.8.0 com o host de cada aviso, §22.7) | celular | por aparelho |
+| modo de cada chat — `storage`: `online` \| `live` \| `live_pending` — e o último `epoch` ao vivo usado por chat (desde 1.8.0, §23.2) | coluna local de `chats` (fora de `config_json`) | a escolha "Salvar online"/"Só ao vivo" é do dispositivo que guarda o chat |
+| `newChatStorage` — a última escolha "Salvar online"/"Só ao vivo" feita neste dispositivo (desde 1.8.0, §23.1) | `settings` | cada dispositivo lembra a sua |
+| **conteúdo inteiro dos chats só ao vivo** (o `chat`, sessões, mensagens e anexos) enquanto `storage` ≠ `online` (desde 1.8.0, §23) | tabelas normais, só no host | nunca vira registro nem blob; outros dispositivos o veem ao vivo, pelo host |
+| espelho de chats só ao vivo de outro host (lista, histórico lido, estado do stream) (desde 1.8.0, §23.5) | memória do visualizador | NUNCA gravado (banco, arquivo, cache, índice de busca, logs) |
 
 Tudo que não está nesta tabela e corresponde às tabelas `providers`, `presets`, `chats`, `sessions`,
-`messages`, `memory_collections`, `memories` e às chaves de `settings` da §4.3.2 é sincronizado.
+`messages`, `memory_collections`, `memories` e às chaves de `settings` da §4.3.2 é sincronizado — os
+chats só ao vivo (e as sessões/mensagens deles) são a exceção da linha acima.
 
 ---
 
@@ -802,13 +822,17 @@ Clientes chamam antes de login (validação do servidor escolhido) e a cada cone
     "captcha": { "provider": "turnstile", "siteKey": "0x4AAAA…" },
     "landing": true,
     "gateway": false,
-    "push": { "providers": ["fcm"] }
+    "push": { "providers": ["fcm"] },
+    "liveChats": true
   },
   "links": { "download": "https://github.com/ezenere/ClearChat/releases", "signup": "https://clear.ezenere.com/signup" } }
 ```
 - `captcha: null` = a instância não usa captcha (sem chaves configuradas ou desligado no painel): os
   clientes não abrem a janela de captcha e omitem `turnstile_token`; os limites de taxa continuam.
 - `push` (desde 1.7.0): `null` quando a instância não tem push configurado (§22.1).
+- `liveChats` (desde 1.8.0): `true` = o servidor entende chats só ao vivo (§23: `live.*`, `history.*`,
+  `chat.update`). Ausente (servidor < 1.8.0) ou `false` = sem suporte: os clientes escondem a escolha e
+  todo chat novo é online, como antes (§23.2).
 - `links.signup` ausente quando `signupOpen` é falso. `gateway` é reservado (§21; sempre `false` em v1).
 - Cliente com protocolo fora de `[protocol.min, protocol.max]` → "Este servidor usa uma versão
   incompatível do protocolo (servidor X–Y, app Z) — atualize o app/servidor" e não sincroniza.
@@ -1009,6 +1033,9 @@ DEVE puxar e tratar como divergência.
   no app). Push de conteúdo para chat apagado → `scope_deleted`: o cliente pergunta "Este chat foi apagado
   em outro dispositivo e você tem mensagens não sincronizadas: **Manter como novo chat** / **Descartar**"
   (manter = cópia local com ids novos, enviada como chat novo).
+- **Chat que vira só ao vivo (desde 1.8.0)**: a conversão online → ao vivo é exatamente esta exclusão,
+  feita pelo host, que mantém a cópia local e ignora o tombstone (§23.8). Para o servidor e para os outros
+  dispositivos é uma exclusão comum.
 - **Coleção de memória**: o servidor apaga fisicamente as `memory` com `scope = collection_id`; clientes
   fazem a cascata local (a FK do app já faz). `supersedes_id` que apontava para elas: zerado pelo trigger
   do app (não é enviado nada).
@@ -1034,7 +1061,8 @@ Por usuário, no servidor (nulo = ilimitado, que é o padrão hoje): `quota_reco
 `413 quota_exceeded` com `details: { kind, used, limit }`. O cliente mostra o aviso e para de enviar
 (continua puxando).
 
-`kind`: `record_bytes` · `records` · `blob_bytes` · `devices` · `chat_states`. `chat_states` é o teto de
+`kind`: `record_bytes` · `records` · `blob_bytes` · `devices` · `chat_states` · `live_chats` (desde 1.8.0:
+chats só ao vivo anunciados por host/usuário, §23.4 — teto em memória, não é cota guardada). `chat_states` é o teto de
 estados de chat (§8.2) por usuário, definido pelo servidor (não é editável por usuário): só é checado quando
 `host.begin`, `host.takeover` ou `host.pin` criaria a linha de um chat que ainda não tem estado — chats que
 já têm estado seguem normalmente. O servidor PODE apagar estados ociosos de chats sem registro (sem host,
@@ -1061,6 +1089,10 @@ janela, troca nem divergência). Clientes que não conhecem um `kind` DEVEM trat
 - Só o host grava **conteúdo** do chat online, e só dentro de uma **janela de escrita** (`host.begin` …
   `host.end`). Execução offline (sem servidor) é permitida em qualquer dispositivo e reconciliada depois
   por replay (§8.4) ou vira divergência (§9).
+- **Chats só ao vivo (desde 1.8.0, §23)** ficam fora desta seção quase toda: não têm registros nem
+  `chat_states`, não têm janela de escrita nem troca de host. O host é fixo (o dispositivo que guarda o
+  chat) e o servidor o conhece só por um **vínculo em memória** criado pelo anúncio do host (§23.3); os
+  comandos remotos (§8.6) e o stream (§11) funcionam com ele.
 
 ### 8.2 Estado do chat no servidor (`chat_states`)
 
@@ -1093,6 +1125,9 @@ ChatStateEvent = { kind: 'host_dropped' | 'host_back' | 'host_changed' | 'handov
                    device_id?: string, cmd_id?: string, reason?: string }
 ```
 O cliente DEVE mostrar `host_dropped` como **"O dispositivo remoto (<nome>) caiu"**.
+
+Chats só ao vivo (§23) **nunca** têm linha em `chat_states` (nem `ChatState` no `welcome`, em `chat.state`
+ou em `GET /chat-states`): o estado do host deles vem do vínculo em memória (`LiveChat.host`, §23.4).
 
 ### 8.3 Máquina de estados do host (por chat)
 
@@ -1222,6 +1257,12 @@ servidor atualizado antes dos clientes.
 | `branch.select` | `{ messageId }` | `agent.selectBranch` (desde 1.2.0: torna `messageId` a versão ativa — grava `branchSel`, §4.3.7) |
 | `fs.list` | `{ chatId, path }` | aba Arquivos (`fs.listDir`) do chat no host (desde 1.3.0; só leitura, sem janela — ver "Arquivos do host") |
 | `fs.read` | `{ chatId, path, offset, length }` | visualizador de arquivos do host, um pedaço por comando (desde 1.3.0; só leitura, sem janela) |
+| `history.list` | `{ chatId, type: 'chat'\|'session'\|'message', sessionId?, after: string \| null, limit? }` | histórico de um chat só ao vivo, paginado (desde 1.8.0; só leitura, sem janela — §23.5) |
+| `history.changes` | `{ chatId, since: number }` | o que mudou num chat só ao vivo depois de `lseq = since` (desde 1.8.0, §23.5) |
+| `history.item` | `{ chatId, items?: [{ type, id }], piece?: { type, id, offset } }` | itens por id, ou um pedaço de um item grande (desde 1.8.0, §23.5) |
+| `chat.update` | `{ chatId, title?: string, config?: Partial<ChatConfig> /* sem cwd */ }` | renomear / editar a config de um chat só ao vivo (desde 1.8.0, §23.7; nos chats online isso é o registro `chat`, §4.3.6) |
+| `attach.put` | `{ chatId, uploadId, name, mime?, size, sha256, offset, data }` ou `{ chatId, uploadId, cancel: true }` | anexo de um chat só ao vivo enviado **ao host** em pedaços, sem blob no servidor; o último pedaço devolve o `AttachmentInfo` salvo no host (desde 1.8.0, §23.7) |
+| `attach.get` | `{ chatId, file, offset, length }` | bytes de um anexo do host mostrado no histórico de um chat só ao vivo, um pedaço por comando, como `fs.read` (desde 1.8.0, §23.7) |
 
 Regras:
 - **Origem entre chats (desde 1.6.0)**: o `send_to_chat` de um agente cujo chat de destino é
@@ -1313,6 +1354,12 @@ Regras:
   `COMMAND_MAX_BYTES` do comando.
 - Com o chat divergente → `chat_diverged`.
 - O controle remoto mostra a mensagem como "enviando…" até `accepted`.
+- **Chats só ao vivo (desde 1.8.0)**: todos os kinds acima valem, roteados pelo vínculo em memória em vez
+  de `chat_states` (host `online` → entrega; `grace` → `host_offline`; sem vínculo nem estado → `no_host`;
+  nunca `chat_diverged`). `history.*`, `chat.update` e `attach.*` só valem para chats com vínculo ao vivo
+  (senão `invalid_request`). Neles, `send.attachments`/`force.attachments` referenciam anexos que **já
+  estão no host** (recebidos por `attach.put` ou já citados no chat) — nada de blob (§23.7). Detalhes em
+  §23.5–§23.7.
 
 ### 8.7 Host offline: só "Executar neste dispositivo"
 
@@ -1324,10 +1371,15 @@ expiração nem entrega na reconexão.
 - Chat sem host: o primeiro `send` vira execução local (o dispositivo vira host) — sem pergunta. Site
   (`can_host=false`) sem host online: composer desabilitado com "O host está offline — abra este chat num
   dispositivo que possa executá-lo".
+- Chat só ao vivo (§23): não há "Executar neste dispositivo" (a única cópia está no host). Host em `grace`
+  → composer desabilitado com "Reconectando a <host>…"; tolerância expirada → o chat some dos outros
+  dispositivos (§23.4).
 
 ### 8.8 Trocar de host ("Executar neste dispositivo")
 
-`host.takeover { chat_id, mode: 'next_turn' | 'force', confirm_pinned: boolean }` pelo dispositivo N:
+`host.takeover { chat_id, mode: 'next_turn' | 'force', confirm_pinned: boolean }` pelo dispositivo N
+(não existe para chats só ao vivo: `host.takeover`/`host.pin`/`host.begin` num chat com vínculo ao vivo →
+`409 live_conflict`, §23.3):
 
 - N sem `can_host` → `cannot_host`; divergente → `chat_diverged`; `pinned && !confirm_pinned` → `host_pinned`;
   chat ainda sem estado com o usuário no teto de estados → `quota_exceeded` (`kind: 'chat_states'`, §7.10).
@@ -1383,6 +1435,8 @@ Duas histórias do mesmo chat produzidas sem uma ver a outra:
 - execução offline num dispositivo enquanto outro (host ou quem assumiu) rodou online;
 - host que caiu com mensagens não enviadas, alguém assumiu e rodou, e o antigo volta;
 - dois dispositivos offline no mesmo chat.
+
+Não acontece em chats só ao vivo (§23): só existe a cópia do host e nada é reenviado por replay.
 
 Detecção **só no servidor**: push de conteúdo com `chat_bases[X] < head(X)` (§8.4) quando há conteúdo de X
 com `seq > chat_bases[X]` escrito por **outro** dispositivo (se tudo depois da base é do próprio
@@ -1475,16 +1529,23 @@ transmite `event: diverged`.
 Cliente → `hello`:
 ```json
 { "t": "hello", "id": "1", "protocol": 1, "access_token": "cca_…", "cursor": 1200, "state_cursor": 88,
-  "active_windows": [{ "chat_id": "…", "epoch": 7 }], "subscriptions": ["<chat_id aberto>"] }
+  "active_windows": [{ "chat_id": "…", "epoch": 7 }], "subscriptions": ["<chat_id aberto>"],
+  "caps": ["live_chats"] }
 ```
 Servidor → `welcome` (como `ack` do hello):
 ```json
 { "t": "welcome", "re": "1", "protocol": 1, "user_id": "…", "device_id": "…", "head": 1300,
   "server_time": "2026-10-19T12:00:00.000Z", "chat_states": [ChatState], "state_cursor": 95,
-  "resumed_windows": ["<chat_id>"], "lost_windows": ["<chat_id>"], "keys_rev": 3 }
+  "resumed_windows": ["<chat_id>"], "lost_windows": ["<chat_id>"], "keys_rev": 3, "caps": ["live_chats"] }
 ```
 Depois do `welcome`, o servidor já transmite eventos ao vivo; o cliente puxa de `cursor` até `head`
 (guardando os `sync.changes` que chegarem nesse meio-tempo e aplicando depois os de `seq > cursor`).
+
+`caps` (desde 1.8.0, opcional): capacidades opcionais que o cliente entende; o `welcome` devolve as que
+o servidor aceitou para esta conexão. Hoje só `"live_chats"` (§23): o servidor só manda `live.*` a
+conexões que a declararam, e o cliente só usa `live.*`/`history.*`/`chat.update` se ela voltou no
+`welcome`. Servidores < 1.8.0 ignoram o campo e não o devolvem; clientes < 1.8.0 não o mandam (nunca
+recebem nada de chats ao vivo). Valores desconhecidos são ignorados.
 
 ### 10.4 Catálogo — cliente → servidor (requisições com `id`)
 
@@ -1507,6 +1568,10 @@ Depois do `welcome`, o servidor já transmite eventos ao vivo; o cliente puxa de
 | `stream.unsubscribe` | `chat_ids: string[]` | `{}` |
 | `stream.event` | `chat_id, epoch, n, env` (host; **sem `id`, sem ack**) | — |
 | `stream.resync` | `chat_id` (controle remoto) | `{}` |
+| `live.announce` | `full: boolean, chats: [{ chat_id, epoch, arev, running, env }]` (host; desde 1.8.0, §23.4) | `{ accepted: [chat_id], rejected: [{ chat_id, code }] }` |
+| `live.withdraw` | `chat_ids: string[] \| null, reason: 'deleted'\|'quit'\|'withdrawn'` (host; §23.4) | `{}` |
+| `live.list` | — (§23.4) | `{ chats: [LiveChat], settling_s }` |
+| `live.refresh` | `host_device_id?` (§23.4) | `{}` (o servidor pede reanúncio aos hosts) |
 
 ### 10.5 Catálogo — servidor → cliente (eventos)
 
@@ -1525,6 +1590,10 @@ Depois do `welcome`, o servidor já transmite eventos ao vivo; o cliente puxa de
 | `remote.failed` | `chat_id, cmd_id, code: 'host_offline'\|'command_timeout'` | quem enviou o comando |
 | `stream.event` | `chat_id, epoch, n, env, device_id` | conexões inscritas no chat |
 | `stream.resync_request` | `chat_id, requester_device_id` | host |
+| `live.update` | `chats: [LiveChat]` (desde 1.8.0, §23.4) | conexões do usuário com `caps` `live_chats`, menos o host |
+| `live.removed` | `host_device_id, chat_ids, reason: 'deleted'\|'host_quit'\|'withdrawn'\|'host_dropped'\|'saved_online'\|'device_revoked'` (§23.4) | idem |
+| `live.host` | `host_device_id, status: 'online'\|'grace'` (§23.4) | idem |
+| `live.refresh_request` | `requester_device_id` (§23.4) | host(s) com chats ao vivo |
 | `keys.changed` | `keys_rev` | todas |
 | `keys.reset` | — | todas (depois fecha `4403`, sem revogar dispositivos — §10.2) |
 | `account.deleted` | — | todas (depois fecha `4403`) |
@@ -1542,7 +1611,8 @@ do servidor.
   — **com ou sem janela aberta** (ex.: o `snapshot` que responde a um `stream.resync` com o chat ocioso,
   como no início de §16.5) — e retransmite só para as conexões **inscritas** no chat (chat aberto na
   tela), exceto a do próprio host. Eventos inválidos ou acima de ~50/s por chat são descartados em
-  silêncio (sem ack). Nada é persistido.
+  silêncio (sem ack). Nada é persistido. Num chat só ao vivo (§23), "host atual" e "`epoch` atual" são os
+  do vínculo em memória (`epoch` ao vivo, escolhido pelo host — §23.3).
 - `n`: contador do host por `(chat, epoch)`, começa em 1, +1 por evento. Plaintext cifrado com
   `K_stream` e AAD `…|stream|<user>|<chat>|<epoch>|<n>`.
 - Plaintext (`sv: 1`) — `kind`:
@@ -1561,6 +1631,9 @@ do servidor.
 | `compaction` | `{ sessionId, state, text? }` | `compaction` |
 | `processes` | `{ processes: ProcessInfo[] }` | `processes-updated` |
 | `error` | `{ sessionId, error }` | `error` |
+| `rec` (desde 1.8.0, **só chats só ao vivo**) | `{ lseq, items: LiveItem[] }` | o que nos chats online iria para a outbox: `chat`/`session`/`message` novos, alterados ou apagados (§23.6) |
+
+Num chat só ao vivo o `snapshot` ganha `live: { lseq }` (o `lseq` atual do host, §23.6).
 
 - **Deltas**: `off` = tamanho que o receptor deve ter antes de aplicar (`content`/`reasoning`). Diferente
   → pede `stream.resync`. `streamId` muda a cada resposta do assistente. O host envia deltas a no
@@ -1569,8 +1642,10 @@ do servidor.
   servidor manda `stream.resync_request` ao host → o host envia um `snapshot` (com `n` seguinte).
 - Mensagens persistidas **não** vão pelo stream: chegam como registros (`sync.changes`) quase ao mesmo
   tempo. Ao receber a mensagem `assistant` persistida, o receptor descarta o draft daquela sessão.
+  Exceção: nos chats só ao vivo (sem registros) elas vêm pelo próprio stream, em eventos `rec` (§23.6).
 - `processes` e `snapshot.processes`: só leitura no remoto (logs completos ficam no host).
-- Fim do turno: o host manda `session` com status final; `chat.state` (`turn_ended`) fecha o indicador.
+- Fim do turno: o host manda `session` com status final; `chat.state` (`turn_ended`) fecha o indicador
+  (num chat só ao vivo: o anúncio com `running: false`, §23.4).
 
 ---
 
@@ -1616,6 +1691,12 @@ do servidor.
    (`base_rev = rev do tombstone`).
 7. Envia: blobs primeiro (`/blobs/check` + `PUT`), depois os registros em lotes (LWW juntos; conteúdo
    um chat por lote, modo replay com `chat_bases = 0` — o dispositivo vira host dos chats que subiu).
+   Chats com `storage` ≠ `online` (só ao vivo, §23.2) — inclusive os criados **antes do login**, que
+   guardam o modo gravado na criação (padrão de instalação nova: só ao vivo, §23.1) — **nunca** entram
+   no merge nem no envio: continuam locais depois do primeiro login (salvar online é sempre opt-in; quem
+   entra só para usar o controle remoto não sobe nada sem querer). O diálogo do merge DEVERIA dizer
+   quantos são ("N chats só ao vivo continuam só neste dispositivo") e oferecer "Salvar online" (§23.8)
+   — para todos ou um a um. O mesmo vale depois de `keys/reset` (§5.5).
 8. Grava `cursor = head` e liga o sync normal. Colisões de slug de memória: §4.3.5.
 
 Logout não apaga os dados locais (só credenciais, DEK e estado de sync); entrar de novo (mesma conta ou
@@ -1664,6 +1745,10 @@ outra) passa por este merge (registros idênticos não geram envio).
 - O GC local de anexos do app (órfãos) continua valendo; o GC do servidor usa `record_blobs` (blob sem
   referência viva por 24 h → apagado).
 - Arquivos de texto anexados ficam inline no `message_json` (não são blobs), como hoje.
+- Anexos de chats só ao vivo (§23) **nunca** são enviados como blobs: ficam no store do host. Outros
+  dispositivos os mandam ao host e os leem dele em pedaços dentro dos comandos cifrados (`attach.put` /
+  `attach.get`, §23.7), só retransmitidos pelo servidor. Na conversão ao vivo → online eles sobem como
+  em qualquer chat novo (§23.8).
 
 ---
 
@@ -2024,6 +2109,17 @@ sequenceDiagram
 | `PUSH_MAX_ENV_BYTES` / `PUSH_TEXT_MAX_CHARS` | 2048 (JSON do envelope) / 200 |
 | `PUSH_PENDING_GRACE_S` / `AWAY_IDLE_S` / `PUSH_MAX_AGE_S` | 60 / 300 / 86400 |
 | `HOST_OFFLINE_PUSH_DELAY_S` / `HOST_OFFLINE_PUSH_COOLDOWN_S` | 120 / 1800 |
+| `LIVE_ANNOUNCE_MAX_ENV_BYTES` / `LIVE_TITLE_MAX_CHARS` / `LIVE_CWD_MAX_CHARS` (§23.4) | 2048 (JSON do envelope de cada chat) / 120 / 300 |
+| `LIVE_MAX_CHATS_PER_HOST` / `LIVE_MAX_CHATS_PER_USER` (§23.4) | 500 / 1000 (vínculos em memória; acima → `quota_exceeded` `kind: 'live_chats'`) |
+| `LIVE_ANNOUNCE_MIN_INTERVAL_S` (host, §23.4) | 2 por chat (coalescido; mudança de `running`/`status` vai na hora) |
+| `HISTORY_PAGE_MAX_ITEMS` / `HISTORY_PAGE_MAX_BYTES` / `HISTORY_CHUNK_BYTES` (host, §23.5) | 200 itens / 512 KiB de JSON dos itens por resultado / 512 KiB crus por pedaço (`history.item` com `piece`) |
+| `LIVE_ITEM_INLINE_MAX_BYTES` / `LIVE_REC_INLINE_MAX_BYTES` / `HISTORY_ITEM_MAX_BYTES` (host, §23.5–§23.6) | 256 KiB (item inteiro num resultado; acima → `large`) / 128 KiB (item inteiro num `rec`; acima → `omitted`) / 32 MiB (teto de um item; acima → `too_large`) |
+| `HISTORY_CHANGES_MAX` (host, §23.5) | 5000 referências (acima → `reset`) |
+| `LIVE_CONVERT_WAIT_S` (visualizador, §23.8) | 5 |
+| `ATTACH_CHUNK_BYTES` (`attach.put`/`attach.get`, §23.7) | 512 KiB crus por pedaço |
+| `ATTACH_MAX_FILE_BYTES` / `ATTACH_MAX_FILES` / `ATTACH_MAX_MESSAGE_BYTES` (§23.7) | 20 MiB / 10 / 50 MiB (os limites de anexo do composer do app) |
+| `ATTACH_MAX_UPLOADS` / `ATTACH_MAX_PENDING_BYTES` (host, por chat, §23.7) | 10 uploads abertos / 50 MiB somados |
+| `ATTACH_UPLOAD_IDLE_S` / `ATTACH_UNUSED_GRACE_H` (host, §23.7) | 60 / 24 |
 
 ### 17.2 Cotas
 
@@ -2047,6 +2143,8 @@ usuário vale para a instância toda (`kind: 'chat_states'`, §7.10).
 | troca de wrap (`PUT /keys/password` + `PUT /keys/recovery`) por conta | 10/h |
 | `POST /push` por dispositivo / por conta | 120/h / 300/h |
 | `PUT /devices/current/push` por dispositivo | 30/h |
+| `live.announce` + `live.withdraw` por conexão (contador em memória, §23.4) | 10 frames/s (acima → `rate_limited`; abuso contínuo → fecha com `4429`) |
+| `live.list` / `live.refresh` por conexão (em memória) | 10/min / 6/min |
 
 Contadores por e-mail usam `HMAC(SERVER_SECRET, email)` e valem também para e-mails inexistentes —
 responder `429` não revela se a conta existe. Por isso, quando nenhum código é enviado (login sem conta ou
@@ -2084,9 +2182,10 @@ gastem o limite do dono do e-mail ou o bloqueiem.
 | `host_offline` | 409 | comando remoto com o host fora (offline/tolerância) |
 | `host_pinned` | 409 | host fixado sem `confirm_pinned` |
 | `handover_pending` | 409 | troca de host em andamento |
+| `live_conflict` | 409 | chat só ao vivo (desde 1.8.0, §23.3): anunciar um id que existe online (registro `chat` não apagado ou `chat_states`) ou que outro dispositivo anuncia; `host.begin`/`host.takeover`/`host.pin`/resolver divergência num chat com vínculo ao vivo; push de `chat`/`session`/`message` desse chat por outro dispositivo que não o host (`details: { chat_id, reason: 'exists_online'\|'other_host'\|'live' }`) |
 | `cursor_expired` | 410 | `since` abaixo do piso de tombstones |
 | `payload_too_large` | 413 | lote/frame grande demais |
-| `quota_exceeded` | 413 | cota (`details.kind/used/limit`; `kind`: `record_bytes`\|`records`\|`blob_bytes`\|`devices`\|`chat_states` — §7.10) |
+| `quota_exceeded` | 413 | cota (`details.kind/used/limit`; `kind`: `record_bytes`\|`records`\|`blob_bytes`\|`devices`\|`chat_states`\|`live_chats` — §7.10) |
 | `protocol_unsupported` | 426 | versão do protocolo fora da faixa |
 | `rate_limited` | 429 | limites (`Retry-After`) |
 | `internal` | 500 | erro inesperado |
@@ -2122,6 +2221,7 @@ gastem o limite do dono do e-mail ou o bloqueiem.
 | 1.5.0 | 2026-10-23 | Adições compatíveis — áudio (ditado e chamada de voz): ids de `setting` novos `audioInput`, `sttSettings`, `ttsSettings` e `voiceCallDefaults` com as **partes do dispositivo** fora do registro e preservadas ao aplicar (`audioInput.deviceId`, `local.installed`, bloco `gpu` e modo/backend `'gpu'` — escritores nunca enviam `'gpu'`, um dispositivo em GPU continua em GPU), sem segredos (chaves só nos provedores), `providerId` resolvido pelo id e "sem provedor" quando não existe localmente (§4.3.2); envio único dos ids novos e da `voice` local de chats/personas depois do primeiro pull (§4.3.2); `ChatConfig.voice`/`PresetConfig.voice` (`VoiceCallConfig`, inclusive `promptMode`/`endCall`) passam a sincronizar — antes eram locais (§4.3.3, §4.3.6); `MessageMeta.voice` (fala/ditado), `MessageMeta.voiceCall` e os marcadores de início/fim da chamada (só de exibição; no registro com `kind: 'memory-extraction'` + `voiceCall` para que apps ≤ 0.9.0 — que mandariam um `kind` desconhecido ao modelo — os descartem; leitores ≥ 1.5.0 voltam a `voice-call`) e a tool `end_call` no histórico (§4.3.8); `provider.kind: 'elevenlabs'` (só voz, fora de tudo que é chat), capacidades por tipo, inferência pela URL e reparo do `openai` gravado por apps antigos (§4.3.1); remapeamento no merge do `providerId` de stt/tts, do modelo padrão da chamada e de `voice.model` (§12); tools da chamada em `usesLocalTools` (§8.9); itens locais do áudio (microfone, modelos baixados, runtime da GPU, vozes do usuário, clipes, medições, logs do modo sombra) (§4.4); tipos de referência do app com o áudio, depois do 0.9.0 (§4.3); campo opcional `voiceCallDefaults.delayPhrases` (frases de demora da chamada — aditivo dentro do mesmo setting, sem mudança de versão; leitores que não o conhecem o ignoram e os que o conhecem completam a ausência com os padrões) (§4.3.2); campo opcional `api.params` em `sttSettings`/`ttsSettings` (parâmetros dos modelos remotos por família de API — ElevenLabs: formato de saída, `voice_settings`, normalização, `auto_mode`; OpenRouter/OpenAI-compatível: `speed`, `instructions`, `temperature`, `prompt` — preferências que sincronizam, ao contrário dos parâmetros da GPU; aditivo dentro do mesmo setting, sem mudança de versão) (§4.3.2). Clientes < 1.5.0 (app ≤ 0.9.0): ignoram os ids novos; não mostram os marcadores (e nunca os mandam ao modelo); guardam `voice`/meta de voz como desconhecidos (editar uma persona num app antigo apaga a `voice` dela); mostram o provedor ElevenLabs como OpenAI-compatível. Servidor: nenhuma mudança de comportamento (ids de `setting` não são filtrados, meta e config vão cifrados) — só a versão informada em `/api/info`/`welcome`; o site passa a mostrar falas, marcadores de chamada e o provedor de voz. |
 | 1.6.0 | 2026-11-02 | Adição compatível — origem entre chats no comando remoto: `send` ganha `meta?: InterChatSendMeta` (`kind: 'inter-chat'`, `fromChatId`, `fromSessionId?`, `fromChatTitle`, `interChatHops`) para o `send_to_chat` de um agente cujo chat de destino roda em outro dispositivo; o host ≥ 1.6.0 grava a mensagem com esse meta, conta os saltos e recusa acima de `interChatMaxHops`; meta inválido é ignorado; o remetente nunca entrega localmente um chat executado em outro dispositivo (host offline/divergente/sem conexão → a tool recusa) (§8.6). Hosts < 1.6.0 ignoram o meta (a mensagem chega como digitada, com o cabeçalho de origem no texto). Servidor: nenhuma mudança de comportamento (o payload é cifrado) — só a versão informada em `/api/info`/`welcome`. Texto: o aviso do topo aponta para o repositório pai como fonte única. |
 | 1.7.0 | 2026-11-06 | Adições compatíveis — notificações push (§22): token FCM por dispositivo (`PUT`/`DELETE /devices/current/push`, `push` em `GET /devices`), `POST /push` com conteúdo cifrado por `K_push` (subchave nova, AAD `clearchat\|v1\|push\|…`, vetores em `push.json`), kinds `approval`/`question`/`retry`/`reply`/`error`/`dismiss`, regras de quando o host avisa (turno iniciado por um celular ou host ausente; pendências também depois de 60 s), aviso `host_offline` gerado pelo servidor com histerese (2 min offline seguidos, no máximo 1 a cada 30 min por host, tag fixa por host, `dismiss` na volta), recebimento no celular com texto genérico sem a DEK; `features.push` em `/api/info` (§6.2), linha nova em §2, itens locais (§4.4), constantes e limites (§17.1, §17.3), erro `push_unavailable` (§17.4). Clientes < 1.7.0 não registram token nem enviam: nada muda para eles. Servidor ≥ 1.7.0 precisa da conta de serviço do Firebase para ligar o push. |
+| 1.8.0 | 2026-11-06 | Adições compatíveis — chats só ao vivo (§23): escolha "Salvar online"/"Só ao vivo" ao criar um chat (padrão de instalação nova: só ao vivo; depois, a última escolha do dispositivo, `newChatStorage` local), modo `storage` local do host (`online`/`live`/`live_pending`) e conteúdo inteiro do chat ao vivo fora do sync (§4.4); nada no servidor além de um **vínculo em memória** por chat (host, `epoch` ao vivo escolhido pelo host, `arev`, rodando/ocioso, envelope), com tolerância de queda, reanúncio a cada `welcome`, `settling_s` após reinício do servidor e exclusividade com os chats online (`live_conflict` em anúncio, push de outro dispositivo e `host.begin`/`takeover`/`pin`/resolver divergência) (§23.3); WebSocket: `hello.caps`/`welcome.caps` com `"live_chats"` (§10.3), `live.announce`/`live.withdraw`/`live.list`/`live.refresh` e `live.update`/`live.removed`/`live.host`/`live.refresh_request` (§10.4, §10.5); anúncio cifrado com `K_stream` e AAD nova `clearchat\|v1\|live-announce\|…` amarrando host, chat, epoch e `arev` (§3.10, vetores em `live.json`, §3.15); comandos `history.list`/`history.changes`/`history.item` (histórico paginado sob demanda, itens com o plaintext dos registros e `lseq` por epoch, pedaços para itens grandes) e `chat.update` (renomear/editar config de um chat ao vivo) (§8.6, §23.5, §23.7); anexos sem blob: `attach.put` (arquivo enviado ao host em pedaços de 512 KiB dentro dos comandos cifrados, validado no primeiro pedaço, conferido por tamanho + SHA-256 no último e salvo como anexo local do chat; devolve o `AttachmentInfo` que o `send` usa como referência ao store do host; idempotente por `offset`, cancelamento e expiração por ociosidade) e `attach.get` (anexo do histórico baixado do host em pedaços, como `fs.read`, conferido pelo SHA-256 e mantido só em memória), limites de anexo do app (20 MiB por arquivo, 10 por mensagem, 50 MiB por mensagem) (§8.6, §14, §17.1, §23.7); kind `rec` no stream e `snapshot.live.lseq` (§11, §23.6); conversões ao vivo → online (push comum por replay, vínculo apagado no commit do `chat`) e online → ao vivo (tombstone comum, ignorado pelo host; tombstone aceito como vazamento) (§7.7, §23.8); merge do primeiro login ignora chats ao vivo, inclusive os criados antes do login, que continuam locais (salvar online é opt-in) (§12, §23.1); `features.liveChats` em `/api/info` (§6.2); linha nova em §2; `quota_exceeded` com `kind: 'live_chats'` (§7.10), constantes, limites e erro `live_conflict` (§17); notas em §8.1, §8.2, §8.7, §8.8, §9.1, §14. Push: `from_device_id` posto pelo servidor em toda mensagem FCM, `PushPayload.hostDeviceId?`/`live?`, `device_id` do host no `host_offline` (que conta chats ao vivo rodando) e o celular apaga as pendências daquele host ao receber `host_offline` (§22.3, §22.4, §22.6, §22.7). Clientes < 1.8.0 não veem chats ao vivo (sem registros; o servidor só manda `live.*` a quem declarou `caps`); clientes ≥ 1.8.0 contra servidor < 1.8.0 escondem a escolha e criam tudo online. Servidor ≥ 1.8.0 precisa repassar os kinds novos antes de os apps os usarem. |
 
 ---
 
@@ -2272,7 +2372,9 @@ e vê o tipo do aviso, a tag aleatória, os destinos e o horário (§2).
 - Mensagem ao FCM: **só dados** (o app monta a notificação), `android.collapse_key = tag`,
   `android.priority = high` exceto `dismiss` (`normal`), `android.ttl`: `approval`/`question`/`retry`/
   `dismiss` 3600 s, `reply`/`error` 86400 s. Campos (strings): `v: "1"`, `kind`, `tag`, `env` (JSON do
-  envelope ou `""`), `sent_at` (ISO do servidor).
+  envelope ou `""`), `sent_at` (ISO do servidor) e, desde 1.8.0, `from_device_id` (o dispositivo
+  autenticado que fez o `POST /push`, preenchido **pelo servidor** — é o host do chat; serve para o celular
+  saber de que host é o aviso mesmo sem decifrar, §22.7).
 
 ### 22.4 Conteúdo cifrado
 
@@ -2288,9 +2390,12 @@ PushPayload = {
                            // o que a aprovação pede (ex.: "Executar: npm test") ou a mensagem de erro
   requestId?: string,      // approval/question/retry
   hostName: string,        // nome do dispositivo que roda o chat
+  hostDeviceId?: string,   // desde 1.8.0: device_id do host (escritores ≥ 1.8.0 DEVEM enviar)
+  live?: true,             // desde 1.8.0: chat só ao vivo (§23) — tocar abre o visualizador ao vivo
   ts: number               // ms Unix
 }
 ```
+Chats só ao vivo (§23) avisam exatamente como os outros: o aviso já vai cifrado e não fica no servidor.
 
 ### 22.5 Quando o host avisa (DEVERIA)
 
@@ -2316,14 +2421,18 @@ Quando o host de um chat **rodando** cai, o servidor DEVERIA avisar — com hist
 instável não virar uma sequência de avisos:
 
 - **Espera**: só avisa se o host ficar offline por `HOST_OFFLINE_PUSH_DELAY_S` **seguidos** e, nesse
-  momento, algum chat dele ainda estiver como rodando. Voltar antes disso cancela o aviso.
+  momento, algum chat dele ainda estiver como rodando. Voltar antes disso cancela o aviso. Chats só ao
+  vivo (desde 1.8.0) contam: o servidor guarda **em memória**, da queda até a decisão, se algum vínculo
+  ao vivo do host estava com `running: true` no último anúncio (§23.4) — o vínculo em si já some ao fim
+  da tolerância.
 - **Intervalo mínimo**: no máximo um aviso por dispositivo host a cada `HOST_OFFLINE_PUSH_COOLDOWN_S`
   (conta a partir do último enviado, mesmo que o host tenha voltado e caído de novo).
 - **Mesma tag por host**: a tag é fixa por dispositivo host (gerada pelo servidor, aleatória, guardada),
   então um aviso novo substitui o anterior no aparelho em vez de empilhar.
 - **Volta**: quando o host reconecta, o servidor manda `dismiss` dessa tag (se tinha avisado).
-- Mensagem: `kind: "host_offline"`, `env: ""`, campos extras em claro `chat_id` (um dos chats que rodavam)
-  e `device_name`; vai a todos os dispositivos do usuário com token.
+- Mensagem: `kind: "host_offline"`, `env: ""`, campos extras em claro `chat_id` (um dos chats que rodavam;
+  desde 1.8.0, de preferência um chat online — um chat só ao vivo some junto com o host), `device_name`
+  e, desde 1.8.0, `device_id` (o host que caiu); vai a todos os dispositivos do usuário com token.
 
 ### 22.7 No celular (recebimento)
 
@@ -2337,3 +2446,494 @@ instável não virar uma sequência de avisos:
   tela bloqueada só o genérico (visibilidade privada do Android). Tocar abre o chat (`chatId`).
 - Canais Android: pendências (`approval`/`question`/`retry`, importância alta), respostas, erros, host
   offline. Preferências por tipo e "mostrar trecho" ficam no aparelho (§4.4) e filtram no próprio app.
+- **Host de cada aviso (desde 1.8.0)**: o celular guarda, junto de cada aviso mostrado (nos dados da
+  notificação), o host = `hostDeviceId` do payload decifrado, senão o `from_device_id` de fora (avisos
+  genéricos, sem a DEK).
+- **Host caiu → limpar pendências (desde 1.8.0)**: ao receber `host_offline` com `device_id` = D, o
+  celular DEVE apagar da bandeja os avisos `approval`/`question`/`retry` cujo host é D (o host morto não
+  vai mandar o `dismiss` deles; se ele voltar e a pendência ainda existir, ela continua no app, só não
+  avisa de novo). Servidor < 1.8.0 (sem `device_id`): casar pelo nome — avisos decifrados com
+  `hostName` igual ao `device_name`; os genéricos ficam. `reply`/`error` não são apagados.
+- **Chat só ao vivo** (`live: true`): tocar abre o visualizador ao vivo (§23.5) se o chat estiver na
+  lista ao vivo; senão "Este chat só ao vivo não está disponível agora — <host> não está conectado".
+  Celulares < 1.8.0 mostram o aviso, mas não conhecem o chat (tocar não abre nada).
+
+---
+
+## 23. Chats só ao vivo (desde 1.8.0)
+
+Um chat **só ao vivo** fica guardado **só no dispositivo que o executa** (o host): o servidor não guarda
+nada dele — nenhum registro (`chat`, `session`, `message`), nenhum blob, nenhuma linha em `chat_states`,
+nem o título. Os outros dispositivos da conta o veem **enquanto o app do host estiver aberto e
+conectado**: o host anuncia a lista cifrada pelo WebSocket, o servidor só retransmite (e a guarda em
+memória enquanto o host está conectado), o histórico vem do host sob demanda pelos comandos remotos
+(§8.6) e as atualizações pelo stream (§11). Tudo cifrado com `K_stream` (§3.10).
+
+### 23.1 Escolha do usuário e regras visíveis
+
+- Ao criar um chat (desktop e celular), com o sync ligado e a instância com suporte (§23.2), o usuário
+  escolhe **"Salvar online"** ou **"Só ao vivo"** (no celular: "Salvar online" · **"Só neste aparelho"**,
+  §23.10), com uma linha de explicação ("Só ao vivo: fica só neste dispositivo; os outros o veem enquanto
+  este app estiver aberto").
+- **Padrão** = a última escolha feita **neste dispositivo** (`newChatStorage`, setting local — §4.4; não
+  sincroniza). Sem escolha anterior: **"Só ao vivo"** numa instalação nova (salvar online é opt-in); numa
+  instalação que já sincronizava antes de atualizar para 1.8.0, "Salvar online" (nada muda sem o usuário
+  escolher — o app grava esse valor na primeira execução da versão nova).
+- Chats criados sem a tela de escolha (por um agente, por importação) usam o padrão do dispositivo; o
+  "Manter como novo chat" da §7.7 é sempre online (é o propósito dele). Chats anteriores ao 1.8.0 (sem
+  modo) são online.
+- **Sem login (sync não configurado)**: o seletor não aparece, mas todo chat novo grava o modo do mesmo
+  jeito (o padrão do dispositivo — numa instalação nova, só ao vivo). Esse modo vale no primeiro login: os
+  chats só ao vivo **continuam locais** e o merge os pula, oferecendo "Salvar online" (§12, passo 7).
+  Salvar online é sempre opt-in — dá para entrar na conta só para usar o controle remoto sem subir nada.
+- No host: selo "Só ao vivo" no cabeçalho e na sidebar; "Salvar online" / "Tirar do servidor" no menu do
+  chat (§23.8).
+- Nos outros dispositivos o chat aparece numa seção **"Ao vivo em <host>"** (§23.10) só enquanto o app do
+  host estiver **aberto, conectado e com a DEK desbloqueada** — em qualquer tela, minimizado ou na bandeja;
+  não depende de o chat estar aberto no host. O host fecha o app → some na hora; o host perde a conexão →
+  "reconectando…" e some depois de `HOST_DROP_GRACE_S` (10 s).
+- Quem visualiza guarda o chat **só em memória** (§23.5): nada é gravado no aparelho.
+
+### 23.2 Modo do chat (local) e detecção de suporte
+
+- O modo é a coluna local `storage` da tabela `chats` **do host** (fora de `config_json`, nunca enviada —
+  §4.4):
+  - `online` (padrão; ausente/`NULL` = online): chat comum, sincronizado (§7–§8);
+  - `live`: só ao vivo;
+  - `live_pending`: conversão online → ao vivo em andamento (esperando o ack da exclusão, §23.8) —
+    tratado como `live` para tudo, menos o anúncio, que espera o ack.
+- Com `storage` ≠ `online`, o host **NÃO DEVE** mandar nada desse chat ao servidor: nenhum push de
+  `chat`/`session`/`message` (os hooks da outbox desse chat vão para o emissor ao vivo, §23.6), nenhum
+  upload dos anexos dele, nenhum `host.begin`/`host.end`/`host.pin`/`host.takeover`/`divergence/resolve`.
+- Fora do chat nada muda: personas, provedores, settings e **memórias** continuam sincronizando —
+  coleções e memórias são da conta; as que um chat só ao vivo cria ou edita (tools de memória, extração)
+  viram registros `memory` normais, com `updatedByChatId` = id do chat ao vivo (leitores tratam um chat
+  desconhecido como hoje). A mensagem da extração (o card) é conteúdo do chat e fica local.
+- **Detecção** — o cliente só oferece a escolha e só anuncia se **todas**: sync ligado e desbloqueado;
+  `GET /api/info` com `features.liveChats: true` (§6.2); `"live_chats"` de volta em `welcome.caps`
+  (§10.3).
+- **Cliente novo × servidor antigo** (< 1.8.0, ou `liveChats` falso): escolha escondida, todo chat novo é
+  online (como hoje). Chats que já são `live` (criados antes, ou contra outra instância) **continuam
+  locais**: não são anunciados nem enviados sozinhos; aparecem como "Só neste dispositivo — o servidor
+  não suporta chats ao vivo", com a ação "Salvar online" (que só usa push comum, §23.8).
+- **Clientes antigos** (< 1.8.0) nunca veem chats só ao vivo: não há registros e o servidor só manda
+  `live.*` a conexões que declararam `caps: ["live_chats"]`. Hosts antigos não têm chats ao vivo.
+
+### 23.3 Servidor: vínculo ao vivo (só em memória)
+
+Para cada usuário, o servidor mantém em memória um **vínculo** por chat ao vivo anunciado:
+
+```ts
+LiveBinding = { chat_id, host_device_id, epoch, arev, running: boolean, env: Envelope, announced_at }
+```
+
+- **Nunca persistido** (banco, disco, filas); logs PODEM contar frames e tamanhos, nunca guardar `env`.
+  Reinício do servidor apaga tudo: os hosts reanunciam a cada `welcome` (§23.4). Uma instância com vários
+  processos precisa de um lugar comum em memória para os vínculos (ex.: o processo que segura as
+  conexões).
+- **`epoch` ao vivo**: escolhido pelo host — inteiro ≥ 1 e ≤ 2⁵³ − 1, fixo enquanto o processo do app
+  roda, que **nunca se repete** para aquele chat (nem com os epochs que ele teve online). Recomendado:
+  `max(ms Unix no início do processo, último usado + 1)`, guardando o último por chat (§4.4). O `n` do
+  stream (§11) e o `lseq` do histórico (§23.5) recomeçam a cada `epoch`; um visualizador que vê o `epoch`
+  mudar descarta o espelho e recarrega. O servidor guarda o `epoch` do último anúncio aceito e o usa para
+  validar `stream.event` (§11).
+- **Status do host**: `online` com a conexão aberta. Queda → `grace` (`live.host`) por
+  `HOST_DROP_GRACE_S`; expirou sem reconectar → o servidor apaga **todos** os vínculos desse host
+  (`live.removed`, `reason: 'host_dropped'`). Reconectou → `online` (`live.host`) e o host DEVE reanunciar
+  (`full: true`); vínculos dele ainda sem reanúncio `HOST_DROP_GRACE_S` depois do `welcome` são apagados
+  (`withdrawn`). Dispositivo revogado (§5.4) → vínculos apagados (`device_revoked`); conta apagada ou
+  `keys.reset` → apagados (as conexões fecham).
+- **Roteamento**: `remote.send` (§8.6), `stream.subscribe`/`stream.resync` e `stream.event` (§11)
+  procuram primeiro o vínculo ao vivo do `chat_id` e, se existir, usam o host e o `epoch` dele; senão
+  `chat_states`, como antes.
+- **Exclusividade** (`409 live_conflict`, §17.4):
+  - anunciar um `chat_id` que tem registro `chat` não apagado ou linha em `chat_states`
+    (`reason: 'exists_online'`), ou que está vinculado a outro dispositivo (`reason: 'other_host'`) → o
+    item é recusado no ack do `live.announce`;
+  - `host.begin`, `host.takeover`, `host.pin` e `POST /chats/{id}/divergence/resolve` num chat vinculado →
+    `live_conflict` (`reason: 'live'`) — nunca nasce `chat_states` para um chat ao vivo;
+  - push com `chat` de id vinculado, ou `session`/`message` com `scope` vinculado: vindo de **outro**
+    dispositivo → o lote é recusado (`live_conflict`, `reason: 'live'`); vindo do **host do vínculo** → é a
+    conversão ao vivo → online (§23.8): segue as regras normais e, no commit que cria o registro `chat`, o
+    servidor apaga o vínculo e transmite `live.removed` (`reason: 'saved_online'`).
+- **Limites**: até `LIVE_MAX_CHATS_PER_HOST` vínculos por host e `LIVE_MAX_CHATS_PER_USER` por usuário;
+  acima, o item é recusado com `quota_exceeded` (`kind: 'live_chats'`, §7.10).
+
+### 23.4 Anúncio e lista
+
+**Host → servidor**:
+
+| Frame | Uso |
+|---|---|
+| `live.announce { full, chats: [{ chat_id, epoch, arev, running, env }] }` | `full: true` = o conjunto inteiro deste host: o servidor apaga os vínculos dele que não estão na lista (`live.removed`, `withdrawn`). `full: false` = cria/atualiza só os itens listados. |
+| `live.withdraw { chat_ids, reason }` | tira chats da lista (`chat_ids: null` = todos deste host). `reason`: `deleted` (apagado no host), `quit` (o app vai fechar, ou a conta bloqueou/saiu — some sem esperar a tolerância), `withdrawn` (outro motivo: saiu dos mais recentes, ficou sem a DEK…). |
+
+- O host DEVE mandar `live.announce { full: true }` logo depois de **cada** `welcome` (lista vazia se não
+  tiver chats ao vivo) e antes de qualquer `stream.event` de chat ao vivo. Com os limites da §17.1 o frame
+  cabe nos 4 MiB.
+- Ack: `{ accepted: [chat_id], rejected: [{ chat_id, code: 'live_conflict' | 'quota_exceeded' |
+  'invalid_request' }] }`. Item com `arev` ≤ a do vínculo no mesmo `epoch` é ignorado (vai em
+  `accepted`, sem efeito). `live_conflict` com `exists_online` num chat `live_pending` = a exclusão ainda
+  não terminou: anunciar depois do ack dela (§23.8); em outro caso, o chat fica "Só neste dispositivo" e
+  o app registra o erro.
+- Quando anunciar (`full: false`): chat ao vivo criado ou vindo de conversão; mudança de título, persona,
+  modelo, `status`/pendências ou `updatedAt`. Coalescer por chat a no máximo um anúncio a cada
+  `LIVE_ANNOUNCE_MIN_INTERVAL_S`, menos mudança de `running`/`status`, que vai na hora.
+  `live.refresh_request` → `full: true`.
+- O host anuncia no máximo `LIVE_MAX_CHATS_PER_HOST` chats: com mais, os de `updatedAt` mais recente (os
+  outros ficam visíveis só no host).
+- `arev`: contador do host por `(chat, epoch)`, começa em 1, +1 a cada anúncio daquele chat.
+- `running` (em claro, como a janela dos chats online — §2): o chat **não** está ocioso pelo critério da
+  §8.5, passo 4 (sessão rodando ou esperando, subagente em segundo plano, aprovação/pergunta/retry
+  pendente). Serve à lista do site e ao aviso "host caiu" (§22.6).
+- `env`: envelope (§3.9) com `K_stream` e AAD
+  `clearchat|v1|live-announce|<user_id>|<host_device_id>|<chat_id>|<epoch>|<arev>` (§3.10; vetores em
+  `live.json`); JSON do envelope ≤ `LIVE_ANNOUNCE_MAX_ENV_BYTES`. Plaintext:
+
+```ts
+LiveChatInfo = {
+  sv: 1,
+  chatId: string,                    // DEVE ser igual ao chat_id de fora
+  title: string,                     // ≤ LIVE_TITLE_MAX_CHARS
+  persona: { id: string, name: string, icon: string } | null,   // ChatConfig.presetId + nome/ícone atuais
+  model: { providerId: string | null, providerName: string | null, model: string | null },
+  status: 'idle' | 'running' | 'waiting',   // waiting = aprovação, pergunta ou retry pendente
+  pending: { approvals: number, questions: number, retries: number },
+  usesLocalTools: boolean,           // §8.9 (só exibição)
+  hostCwd: string | null,            // raiz do chat no host, ≤ LIVE_CWD_MAX_CHARS (só exibição)
+  createdAt: number, updatedAt: number,     // ms Unix; updatedAt ordena a lista
+  messageCount?: number              // mensagens do caminho ativo da sessão principal (informativo)
+}
+```
+Leitores ignoram campos desconhecidos; o escritor corta os textos nos limites.
+
+**Servidor → visualizadores** (todas as conexões do usuário com `caps` `live_chats`, menos a do host):
+
+```ts
+LiveChat = { chat_id: string, epoch: number, arev: number, running: boolean, env: Envelope,
+             host: { device_id: string, name: string, platform: string, status: 'online' | 'grace' },
+             announced_at: string }
+```
+
+| Frame | Quando |
+|---|---|
+| `live.update { chats: [LiveChat] }` | anúncio aceito que mudou algo |
+| `live.removed { host_device_id, chat_ids, reason }` | `deleted` / `host_quit` / `withdrawn` (pelo host), `host_dropped` (tolerância expirou), `saved_online` (virou chat online, §23.8), `device_revoked` |
+| `live.host { host_device_id, status }` | o host entrou em tolerância (`grace`) ou voltou (`online`) |
+
+- **Lista**: o cliente manda `live.list` depois de **cada** `welcome` → ack
+  `{ chats: [LiveChat], settling_s }`. Os frames de uma conexão chegam em ordem: o ack substitui a lista
+  inteira, eventos `live.*` recebidos antes dele são descartados (já estão nele) e os de depois são
+  aplicados por cima. Dentro de um `epoch`, `arev` menor ou igual à conhecida é ignorada (anti-replay).
+- `settling_s` = segundos que ainda faltam de `SERVER_RESTART_GRACE_S` desde o boot do servidor (0
+  normalmente). Chats que o cliente conhecia antes de reconectar e que não vieram na lista ficam como
+  "reconectando…" (composer desabilitado) até `settling_s` passar, e então somem; com 0, somem na hora.
+  Assim um reinício do servidor (hosts ainda reconectando) não esvazia a lista de uma vez.
+- `live.refresh { host_device_id? }` (ack `{}`): o servidor manda `live.refresh_request
+  { requester_device_id }` ao host indicado (ou a todos os hosts conectados com chats ao vivo), que
+  respondem com `full: true`. Para um visualizador que não conseguiu decifrar um item ou desconfia da
+  lista; limitado (§17.3).
+- Decifrar: `K_stream`, AAD montada com `user_id`, `host.device_id`, `chat_id`, `epoch` e `arev` **de
+  fora**; falha ou `chatId` de dentro diferente → o item é ignorado (não aparece).
+- O visualizador mostra `host.name` (vem do servidor) e o `status`; `host.status: 'grace'` =
+  "reconectando…".
+
+### 23.5 Abrir o chat noutro dispositivo: histórico sob demanda
+
+O histórico vem do host pelos comandos `history.*` (§8.6) — mesmo `remote.send`/`remote.result`, mesmas
+AADs de comando e resultado (`K_stream`), teto `COMMAND_MAX_BYTES`. Como `fs.*`, **não** são comandos de
+conteúdo (sem janela, não gravam nada, aceitos com o agente rodando) e o host NÃO os deduplica. O host só
+responde para chats que guarda como `live` (senão `rejected`, `code: 'not_live'`); `payload.chatId` DEVE
+ser igual ao `chat_id` do frame.
+
+**Itens** — todo resultado de `history.*` e todo `rec` (§23.6) usam:
+```ts
+LiveItem = { type: 'chat' | 'session' | 'message', id: string,
+             lseq: number,      // lseq da última mudança deste item no epoch atual (0 = não mudou desde o início do epoch)
+             deleted?: true,    // apagado (sem data)
+             data?: object,     // plaintext EXATAMENTE como o do registro (§4.3.6 sem cwd, §4.3.7, §4.3.8), com sv
+             omitted?: true,    // não coube nesta resposta / neste rec: pedir com history.item { items }
+             large?: number }   // bytes do JSON de data, acima de LIVE_ITEM_INLINE_MAX_BYTES: pedir em pedaços (history.item { piece })
+```
+Reusar o plaintext dos registros deixa o visualizador usar os mesmos leitores (árvore de versões e
+caminho ativo, §4.3.8; marcadores de voz; status transitórios, §4.3.7). Resultado aceito:
+`{ sv: 1, status: 'accepted', epoch, lseq, … }` (`epoch` ao vivo e `lseq` atual do host no momento da
+resposta). Recusa: `{ sv: 1, status: 'rejected', error: '<texto pt-BR>', code?: 'not_live' | 'missing' |
+'invalid' | 'too_large' }`.
+
+| `kind` | Payload | Resultado (além de `epoch` e `lseq`) |
+|---|---|---|
+| `history.list` | `{ chatId, type, sessionId?, after: string \| null, limit? }` | `{ items: LiveItem[], next: string \| null }`. `type: 'chat'` → o item do chat; `'session'` → as sessões do chat (ordem `createdAt`, `id`); `'message'` → as mensagens de `sessionId` na ordem da sessão (`seq`, `id`, §4.3.8). Página até `limit` (≤ `HISTORY_PAGE_MAX_ITEMS`, padrão o máximo) e `HISTORY_PAGE_MAX_BYTES`; o primeiro item sempre vem (como `large`, se preciso). `next` = cursor opaco do host (≤ 200 caracteres) ou `null` no fim. |
+| `history.changes` | `{ chatId, since: number }` | `{ changes: [{ type, id, lseq, deleted?: true }], reset?: true }` — referências (sem `data`) com `lseq > since`, em ordem de `lseq`. Mais que `HISTORY_CHANGES_MAX`, ou um `since` que o host não cobre mais → `reset: true` (sem `changes`): recarregar tudo. |
+| `history.item` | `{ chatId, items: [{ type, id }] }` (≤ 200) **ou** `{ chatId, piece: { type, id, offset } }` | `items` → `{ items: LiveItem[] }` (inexistente → `deleted: true`; o que não couber volta `omitted: true` e o visualizador pede de novo, como na §7.2). `piece` → `{ piece: { type, id, lseq, total, offset, data } }`: `data` = base64 (padrão) de até `HISTORY_CHUNK_BYTES` do JSON UTF-8 de `data` a partir de `offset`, `total` = tamanho desse JSON; o visualizador junta os pedaços e faz o parse; `lseq` mudou entre pedaços → recomeça. Item acima de `HISTORY_ITEM_MAX_BYTES` → `too_large`. |
+
+**`lseq` (no host)**: contador por `(chat, epoch)`, em memória, que começa em 0 no início do `epoch` e
+sobe 1 a cada evento `rec` (§23.6) — mesmo que o envio falhe (sem conexão). Durante o `epoch` o host
+guarda `(type, id) → lseq` da última mudança (inclusive exclusões) para responder `history.changes`; PODE
+esquecer as mais antigas (e responder `reset`).
+
+**Abrir (visualizador), nesta ordem:**
+1. `stream.subscribe [chat]` e esperar o ack (o servidor pede o `snapshot` ao host, §11). A partir daqui,
+   guardar os `rec` que chegarem.
+2. `history.list` do `chat`, das sessões (todas as páginas) e das mensagens da sessão principal (todas as
+   páginas — a mãe efetiva e o caminho ativo dependem das anteriores, §4.3.8; a tela mostra
+   "carregando…" com progresso). Subsessões (subagentes) sob demanda. Itens `large`/`omitted` →
+   `history.item`.
+3. Juntar por item: **o maior `lseq` vence** (empate = a mesma versão); exclusões ficam guardadas (em
+   memória) com o `lseq` delas. Os `rec` guardados entram com a mesma regra.
+4. `conhecido` = maior `lseq` visto (resultados e `rec`). Um `rec` com `lseq > conhecido + 1`, ou um
+   `snapshot` com `live.lseq > conhecido`, = mudanças perdidas → `history.changes { since: conhecido }` e
+   `history.item` do que veio; `reset` → recarregar a partir do passo 2.
+5. `epoch` diferente (no anúncio, num `stream.event` ou num resultado) → descartar tudo e recomeçar do
+   passo 1.
+6. Reconexão (do visualizador, do host ou do servidor): a inscrição volta por `hello.subscriptions`, mas o
+   servidor só consegue pedir o `snapshot` quando o vínculo existe. Quando o chat aberto volta a aparecer
+   (`live.list`/`live.update`) com o **mesmo** `epoch`, o visualizador manda `stream.resync` e segue pelo
+   passo 4; com `epoch` novo, passo 5.
+- No máximo 3 comandos `history.*`/`attach.*`/`fs.*` em voo por visualizador (como `fs.read`, §8.6).
+- **Só em memória**: o visualizador NÃO DEVE gravar nada do chat (banco, arquivos, cache de imagens,
+  índice de busca, logs). PODE manter o espelho enquanto o app está aberto (voltar ao chat sem
+  recarregar); DEVE descartá-lo quando o chat sai da lista (§23.4), quando a conta bloqueia/sai e quando o
+  `epoch` muda. O rascunho do composer também fica só em memória.
+
+### 23.6 Atualizações ao vivo: stream
+
+- O stream da §11 vale sem mudança, com o `epoch` ao vivo (o servidor confere host e `epoch` pelo
+  vínculo). Não há janela: o indicador "rodando" vem do anúncio (`running`/`status`).
+- **`rec`** (kind novo do stream, só em chats ao vivo): `{ lseq, items: LiveItem[] }`. O host emite, em
+  vez do push, cada mudança de `chat`/`session`/`message` desse chat que num chat online iria para a
+  outbox (mensagem nova, edição, exclusão, `insertAt` da compactação, `branchSel`, status de sessão
+  gravado, `chat.updatedAt`…), coalescendo como os lotes do push (~250 ms). Um `rec` = um `lseq`. Item com
+  JSON de `data` acima de `LIVE_REC_INLINE_MAX_BYTES` vai `omitted: true` (o visualizador o busca com
+  `history.item`); o evento inteiro respeita o teto do `stream.event` (256 KiB) — se não couber, vários
+  `rec`, cada um com o seu `lseq`.
+- A troca do draft pela mensagem persistida (§11) acontece quando um `rec` traz a mensagem `assistant`.
+- **`snapshot`** ganha `live: { lseq }`; o snapshot periódico da §11 (a cada 50 eventos ou 10 s rodando)
+  deixa o visualizador perceber `rec` perdidos (§23.5, passo 4).
+- Hosts NÃO DEVEM mandar `rec` em chats online (o conteúdo vem por `sync.changes`); receptores ignoram
+  `rec` de chats que não são ao vivo.
+
+### 23.7 Comandos remotos num chat ao vivo
+
+- Todos os kinds da §8.6 (`send`, `force`, fila, `stop`, `stop_subagents`, `approval`, `smart_override`,
+  `question`, `retry`, `regenerate`, `message.edit`/`delete`, `compact`, `memory.extract`, `branch.*`,
+  `fs.*`) funcionam: mesmo envelope, mesmo `cmd_id`, mesma dedupe no host, mesmo
+  `remote.result`/`remote.failed`, mesmas recusas. O servidor roteia pelo vínculo (§23.3): host `online` →
+  `remote.command`; `grace` → `host_offline`; sem vínculo (nem `chat_states`) → `no_host`.
+- No host, os comandos de conteúdo rodam pelos mesmos caminhos dos chats online, **sem**
+  `host.begin`/`host.end` e sem outbox: o efeito aparece nos `rec` (§23.6) e no anúncio.
+- **Anexos** (`attach.put` / `attach.get`): num chat ao vivo nada vira blob. Os bytes viajam em pedaços
+  dentro dos envelopes dos comandos remotos (AADs de comando e resultado, `K_stream`, cada envelope ≤
+  `COMMAND_MAX_BYTES`), só retransmitidos pelo servidor, nunca guardados nele. Como `fs.*`, não são
+  comandos de conteúdo (sem janela, aceitos com o agente rodando) e o host NÃO os deduplica por
+  `cmd_id`: a idempotência vem do `offset`. Contam no limite de 3 comandos de leitura/transferência em voo
+  por visualizador (§23.5). Com `ATTACH_CHUNK_BYTES` = 512 KiB o envelope fica em ~0,7 MiB (comprimido;
+  ~0,9 MiB sem compressão), abaixo de `COMMAND_MAX_BYTES`.
+  - **Enviar ao host — `attach.put`**. O visualizador escolhe um `uploadId` (uuid), calcula `size` e
+    `sha256` (hex minúsculo do arquivo inteiro) e manda pedaços **contíguos**, um por vez (espera o
+    resultado antes do próximo): `{ chatId, uploadId, name, mime?, size, sha256, offset, data }`, `data` =
+    base64 (padrão) de até `ATTACH_CHUNK_BYTES` a partir de `offset`; `name`/`mime`/`size`/`sha256` iguais
+    em todos os pedaços.
+    - Primeiro pedaço (`offset: 0`): o host valida **antes** de receber o resto — `size` ≤
+      `ATTACH_MAX_FILE_BYTES`, nome/tipo aceitos pelas regras de anexo do composer do app (imagem, PDF,
+      áudio, texto/código), uploads abertos no chat ≤ `ATTACH_MAX_UPLOADS` e soma deles ≤
+      `ATTACH_MAX_PENDING_BYTES`. Se o store do host já tem esse `sha256` (é content-addressed), responde
+      `done` na hora e o visualizador para de enviar.
+    - Os bytes vão para um arquivo temporário no host (nunca direto no store). `offset` DEVE ser igual ao
+      já recebido; pedaço repetido (mesmo `offset` já recebido — retentativa depois de timeout ou
+      `remote.failed`) → `accepted` com o mesmo `received`; `offset` diferente → `rejected`,
+      `code: 'offset'`, com `received` (o visualizador continua de lá).
+    - Último pedaço (`offset` + bytes = `size`): o host confere o tamanho e o SHA-256; diferente → descarta
+      o upload (`code: 'hash'`); certo → salva como **anexo local normal** do chat (a mesma rotina do
+      composer: validação de tipo, texto UTF-8, `<sha256>.<ext>` no store) e responde
+      `{ sv: 1, status: 'accepted', received: size, done: true, attachment: AttachmentInfo }`. Pedaços do
+      meio: `{ sv: 1, status: 'accepted', received, done: false }`.
+    - Cancelar: `{ chatId, uploadId, cancel: true }` → o host descarta → `{ sv: 1, status: 'accepted',
+      cancelled: true }`. Sem pedaço por `ATTACH_UPLOAD_IDLE_S`, o host descarta sozinho; um pedaço
+      depois disso (ou depois de o host reiniciar) → `code: 'expired'` (recomeçar do 0).
+    - Recusa: `{ sv: 1, status: 'rejected', error: '<texto pt-BR>', code }` com `code` ∈ `invalid`
+      (payload ou campos diferentes entre pedaços), `too_large`, `type` (tipo não suportado / texto que não
+      é UTF-8 — o `error` é o mesmo texto do composer), `busy` (uploads demais ou soma acima do teto),
+      `offset`, `expired`, `hash`, `not_live`.
+  - **Usar no `send`**: num chat ao vivo, `send.attachments`/`force.attachments` levam os `AttachmentInfo`
+    devolvidos pelo `attach.put` (ou de anexos já citados no chat) — referências ao **store do host**
+    (`file`/`sha256`), não blobs. O host aceita só se `<file>` existe no store dele com aquele `sha256`
+    (senão `rejected`, `error: 'attachment_missing'`) e dentro dos limites por mensagem do app
+    (`ATTACH_MAX_FILES`, `ATTACH_MAX_MESSAGE_BYTES`). O GC local de órfãos do host NÃO DEVE apagar um
+    anexo recebido por `attach.put` antes de `ATTACH_UNUSED_GRACE_H` sem uso (o usuário pode demorar a
+    enviar). O composer do visualizador mostra o progresso do envio e só libera "Enviar" com todos `done`.
+  - **Baixar do host — `attach.get`** `{ chatId, file, offset, length }`, para mostrar um anexo do
+    histórico (partes de imagem/PDF/áudio, resultados de `read_file`, imagens do questionário em
+    `meta.askUser`). `file` = `<sha256>.<ext>` como na referência `clearchat-attachment://…`
+    (`^[0-9a-f]{64}\.[a-z0-9]{1,10}$`). O host só serve arquivos do store citados por mensagens **deste**
+    chat ou recebidos por `attach.put` nele (senão `code: 'missing'`). Resultado como o do `fs.read`:
+    `{ sv: 1, status: 'accepted', file, size, mime?, offset, data }` — `data` = base64 (padrão) de até
+    `ATTACH_CHUNK_BYTES`; `length: 0` = só `size`; `mime` só com `offset: 0`; teto
+    `FS_READ_MAX_FILE_BYTES`. Sem estado no host (cancelar = parar de pedir). O visualizador junta os
+    pedaços e confere `SHA-256 == <sha256>` do nome; diferente → descarta e mostra erro. Os bytes ficam
+    **só em memória**, como o resto do espelho (§23.5) — nada em disco, cache de imagens ou galeria
+    (salvar/compartilhar explícito pelo usuário é outra ação, fora do protocolo); o visualizador DEVERIA
+    pedir só ao exibir e soltar o que saiu da tela. Recusa: `code` ∈ `missing`, `invalid`, `too_large`,
+    `not_live`.
+- **`chat.update`** (novo, só chats ao vivo): `{ chatId, title?, config? }` — `config` = as chaves de
+  `ChatConfig` a trocar (sem `cwd`; o valor substitui a chave inteira, como o merge por chave da §7.5). O
+  host aplica como uma edição local (as mesmas validações da tela de configuração do chat), emite o `rec`
+  do `chat` e um anúncio novo → `{ sv: 1, status: 'accepted' }`, ou `rejected` com `error` em texto. Nos
+  chats online, renomear/editar continua sendo o registro `chat` (§4.3.6) — o servidor recusa
+  `chat.update` sem vínculo ao vivo.
+- **Entre chats** (§8.6): um agente noutro dispositivo PODE mandar `send` com `meta` a um chat ao vivo
+  que o dispositivo dele conhece pelo anúncio; a resposta não pode ser lida dos registros (não há).
+- **Push** (§22.5): o host avisa como em qualquer chat; o `from_device_id` do comando decide o "turno do
+  celular".
+
+### 23.8 Conversões
+
+Só **no host** (o dispositivo que tem — ou vai ficar com — a cópia), pelo menu do chat.
+
+**Ao vivo → online ("Salvar online")** — não depende de `features.liveChats` (é push comum):
+1. Confirmação: "Salvar online? O histórico inteiro (N mensagens e os anexos) vai para o servidor,
+   cifrado, e o chat passa a sincronizar com os seus dispositivos." O app DEVERIA conferir antes a cota
+   (`GET /account`) contra o tamanho estimado e avisar.
+2. `storage = 'online'`. A partir daqui o chat é um chat comum **criado offline**: tudo vai para a outbox.
+3. Envio com as regras normais (§7.4, §8.4, §14), como no merge (§12, passo 7): blobs primeiro; o registro
+   `chat` **no primeiro lote**, junto com o começo do conteúdo; o resto em lotes de conteúdo em modo replay
+   (B) com `chat_bases = 0` em todos (todo conteúdo depois da base é do próprio host, §8.4) → o dispositivo
+   vira host do chat (`epoch + 1`, `host_changed`) e nasce o `chat_states` (pode dar `quota_exceeded`
+   `kind: 'chat_states'`). `base_rev` do `chat` = rev do tombstone se o chat já foi online antes (o host a
+   guardou na conversão anterior; conflito `gone` → reenviar com `base_rev = current.rev`, recriação
+   intencional como na §12); sessões e mensagens: `base_rev = 0`.
+4. No commit do lote que cria o `chat`, o servidor apaga o vínculo e transmite `live.removed`
+   (`saved_online`) — o host não precisa de `live.withdraw`. Dali em diante o host usa o `epoch` do
+   `chat_states` no stream e não anuncia mais o chat.
+5. Visualizadores: `saved_online` → descartam o espelho e abrem o chat comum (registros por
+   `sync.changes`, estado por `chat.state`); o histórico vai aparecendo conforme o host termina de enviar.
+6. Sem conexão: tudo espera na outbox (o chat some dos outros e só volta quando subir). Cota estourada no
+   meio: o chat fica online com envio pendente (como qualquer `quota_exceeded`, §7.10) e o host oferece
+   "Tirar do servidor" para voltar.
+
+**Online → ao vivo ("Tirar do servidor")** — precisa de `features.liveChats` e de conexão:
+1. Pré-condições: este dispositivo é o host do chat (ou o chat não tem host e ele tem `can_host`); chat
+   ocioso (sem janela), não divergente, outbox dele vazia; **todo** o conteúdo e **todos** os anexos do
+   chat estão locais — o que faltar (o celular puxa com `payload=0`; anexos nunca baixados) é baixado
+   antes; se falhar, não converte.
+2. Confirmação: "Tirar do servidor? O chat será apagado do servidor e dos seus outros dispositivos e
+   ficará só neste. Os outros só o verão ao vivo, enquanto este app estiver aberto. Os anexos saem do
+   servidor em até 24 h."
+3. `storage = 'live_pending'` (sobrevive a fechar o app: a conversão continua na próxima conexão).
+4. Push do tombstone do `chat` (§7.7): o servidor apaga fisicamente sessões, mensagens e o
+   `chat_states`; o tombstone do `chat` fica no feed (`TOMBSTONE_RETENTION_DAYS`); os blobs que só esse
+   chat referenciava saem pelo GC (`BLOB_ORPHAN_GRACE_H`). `chat_busy` → esperar e tentar de novo;
+   `rev_mismatch` → reenviar com a rev atual; `gone` (alguém apagou o chat online ao mesmo tempo) →
+   segue: o chat já não está no servidor, que era o pedido, e a cópia local fica.
+5. Ack → `storage = 'live'`; o host esquece a contabilidade de sync das sessões/mensagens do chat (revs,
+   outbox), guarda a rev do tombstone do `chat` (para uma volta futura) e **anuncia** o chat (`epoch`
+   novo). Um host com o chat em `live_pending`/`live` **ignora** o tombstone dele no pull (não apaga a
+   cópia local).
+6. Os outros dispositivos aplicam o tombstone (apagam a cópia, §7.7). Quem estava com o chat aberto
+   DEVERIA esperar até `LIVE_CONVERT_WAIT_S` por um anúncio do mesmo `chat_id` vindo do dispositivo que
+   escreveu o tombstone: chegou → "Este chat agora é só ao vivo em <host>" e abre o visualizador; não
+   chegou → "Este chat foi apagado". Um dispositivo com conteúdo não enviado desse chat cai no diálogo da
+   §7.7 ("Manter como novo chat" cria **outro** chat, online).
+- **Tombstone (decisão): aceito.** Ele só diz que um chat com aquele id existiu e foi apagado por aquele
+  dispositivo naquela hora — igual a qualquer exclusão — e é o que faz os outros dispositivos apagarem as
+  cópias. O servidor consegue ligar o id apagado ao mesmo id anunciado depois (fica sabendo que o chat
+  continua ao vivo naquele host), nunca o conteúdo. Trocar o id na conversão esconderia só essa ligação
+  (o servidor ainda vê o host e os horários) e obrigaria a reescrever referências locais (sessões,
+  `fromChatId`, `updatedByChatId`…), então o id é mantido.
+
+### 23.9 O que não existe em chats só ao vivo
+
+- **"Executar neste dispositivo"**, troca de host, "fixar host" (§8.7–§8.9): a única cópia está no host
+  (`live_conflict`). Host desligado = chat indisponível nos outros.
+- **Divergência** (§9): não acontece.
+- **Busca fora do host**: a busca do site/celular roda nos registros baixados e não encontra chats ao vivo;
+  a busca local do host funciona normalmente.
+- **Anexos como blobs**: nunca; outros dispositivos enviam e veem anexos só pelo host, com ele conectado
+  (`attach.put`/`attach.get`, §23.7).
+- **Ler a resposta pelos registros** (o `wait_for_reply` do celular, §8.6) e **qualquer acesso com o host
+  desligado** (inclusive o gateway da §21).
+- **Apagar ou converter pelo visualizador**: só no host (apagar = exclusão local + `live.withdraw
+  { reason: 'deleted' }`).
+
+### 23.10 Celular e site
+
+- **Celular como host**: a escolha é "Salvar online" · **"Só neste aparelho"** (`storage = 'live'`). Como
+  os chats executados no celular não aceitam controle remoto nem são transmitidos (decisão de produto do
+  app mobile, §8.6), o celular NÃO DEVE anunciá-los em 1.8.0: ficam só locais. As conversões (§23.8)
+  valem do mesmo jeito.
+- **Celular como visualizador**: seção "Ao vivo" na lista de chats (agrupada por host, ordem `updatedAt`,
+  com o `status`); abrir = §23.5; comandos = §23.7; notificações = §22.7.
+- **Site**: declara `caps: ["live_chats"]`, faz `live.list` e acompanha os `live.*`; em 1.8.0 mostra só a
+  **contagem** e uma **lista simples** (título, host, status: rodando / aguardando você / ocioso /
+  reconectando) — sem abrir, sem `history.*`, sem comandos. Decifra os anúncios com `K_stream` (a DEK já
+  está na memória da aba).
+- **Desktop como visualizador** dos chats ao vivo de outro desktop: PODE, com as mesmas regras.
+
+### 23.11 Diagramas
+
+Anúncio, lista e queda do host:
+
+```mermaid
+sequenceDiagram
+    participant H as Host (PC)
+    participant S as Servidor (memória)
+    participant C as Celular
+    H->>S: hello {caps:[live_chats]}
+    S-->>H: welcome {caps:[live_chats]}
+    H->>S: live.announce {full:true, chats:[{chat, epoch E, arev 1, running:false, env}]}
+    S-->>H: ack {accepted:[chat]}
+    C->>S: hello {caps:[live_chats]} → welcome
+    C->>S: live.list
+    S-->>C: ack {chats:[LiveChat], settling_s:0}
+    H->>S: live.announce {full:false, chats:[{chat, E, arev 2, running:true, env}]}
+    S-->>C: live.update
+    H--xS: conexão cai
+    S-->>C: live.host {grace} → "reconectando…"
+    S->>S: 10 s sem voltar
+    S-->>C: live.removed {host_dropped} → o chat some
+```
+
+Abrir um chat ao vivo e acompanhar:
+
+```mermaid
+sequenceDiagram
+    participant C as Celular (visualizador)
+    participant S as Servidor
+    participant H as Host
+    C->>S: stream.subscribe [chat]
+    S-->>C: ack
+    S->>H: stream.resync_request
+    H->>S: stream.event snapshot {live:{lseq 7}} (epoch E)
+    S-->>C: stream.event
+    C->>S: remote.send {history.list chat / session / message…}
+    S->>H: remote.command
+    H->>S: remote.result {epoch E, lseq 7, items, next}
+    S-->>C: remote.result
+    H->>S: stream.event rec {lseq 8, items:[message]}
+    S-->>C: stream.event (maior lseq vence)
+    C->>S: remote.send {send, attachments:[]}
+    S->>H: remote.command
+    H->>S: remote.result {accepted}
+```
+
+Conversões:
+
+```mermaid
+sequenceDiagram
+    participant H as Host
+    participant S as Servidor
+    participant O as Outros dispositivos
+    Note over H: online → ao vivo
+    H->>H: baixa o que faltar (registros, anexos); storage = live_pending
+    H->>S: sync.push {chat deleted:true}
+    S->>S: apaga sessões, mensagens e chat_state; tombstone no feed
+    S-->>O: sync.changes [tombstone] → apagam a cópia
+    S-->>H: ack (H ignora o tombstone; storage = live)
+    H->>S: live.announce {chat, epoch E'}
+    S-->>O: live.update → "agora é só ao vivo em <host>"
+    Note over H: ao vivo → online
+    H->>S: PUT blobs; sync.push {chat + conteúdo, chat_bases 0} (replay)
+    S->>S: cria registros + chat_state (host = H); apaga o vínculo
+    S-->>O: sync.changes + chat.state + live.removed {saved_online}
+    H->>S: demais lotes (replay, chat_bases 0)
+```

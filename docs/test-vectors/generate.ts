@@ -296,6 +296,16 @@ export const aadCommandResult = (userId: string, chatId: string, cmdId: string):
   utf8(`clearchat|v1|command-result|${userId}|${chatId}|${cmdId}`)
 export const aadPush = (userId: string, kind: string, tag: string): Uint8Array =>
   utf8(`clearchat|v1|push|${userId}|${kind}|${tag}`)
+/** Anúncio de chat só ao vivo (§23.4, desde 1.8.0): host → servidor → outros dispositivos, com
+ *  K_stream. Amarra o host, o chat, o epoch ao vivo e a revisão do anúncio. */
+export const aadLiveAnnounce = (
+  userId: string,
+  hostDeviceId: string,
+  chatId: string,
+  epoch: number,
+  arev: number
+): Uint8Array =>
+  utf8(`clearchat|v1|live-announce|${userId}|${hostDeviceId}|${chatId}|${epoch}|${arev}`)
 /** K_push (§22.4): fora de deriveSubkeys para não mexer em keys.json. */
 export const pushKey = (dek: Uint8Array): Uint8Array =>
   hkdf(dek, new Uint8Array(0), HKDF_INFO.push)
@@ -892,6 +902,198 @@ async function buildVectors(): Promise<Record<string, unknown>> {
     })
   }
 
+  // ---------------- chats só ao vivo (§23, desde 1.8.0) ----------------
+  // Anúncio: contexto novo (live-announce). Histórico e atualizações: os contextos de comando,
+  // resultado e stream que já existem, com os payloads novos (history.list, rec).
+  const HOST_DEVICE_ID = '8c2e4f6a-1b3d-4e5f-9a7b-0c1d2e3f4a5b'
+  const OTHER_DEVICE_ID = '1f2e3d4c-5b6a-4978-8a9b-0c1d2e3f4a5c'
+  const LIVE_CHAT_ID = '5a1e9c3b-2d4f-4e6a-8b7c-9d0e1f2a3b4c'
+  const LIVE_EPOCH = 1793923200000
+  const LIVE_SESSION_ID = '7c6b5a49-3827-4615-a4b3-c2d1e0f9a8b7'
+  const announceJson = JSON.stringify({
+    sv: 1,
+    chatId: LIVE_CHAT_ID,
+    title: 'Plano da viagem',
+    persona: { id: 'preset-default', name: 'Padrão', icon: 'sparkles' },
+    model: {
+      providerId: '0b9f6a1e-2c3d-4e5f-9a8b-7c6d5e4f3a2b',
+      providerName: 'OpenRouter',
+      model: 'anthropic/claude-sonnet-4.5'
+    },
+    status: 'waiting',
+    pending: { approvals: 1, questions: 0, retries: 0 },
+    usesLocalTools: true,
+    hostCwd: '/home/ana/viagem',
+    createdAt: 1793920000000,
+    updatedAt: 1793923260000,
+    messageCount: 14
+  })
+  const historyCmdJson = JSON.stringify({
+    sv: 1,
+    chatId: LIVE_CHAT_ID,
+    type: 'message',
+    sessionId: LIVE_SESSION_ID,
+    after: null,
+    limit: 200
+  })
+  const historyResultJson = JSON.stringify({
+    sv: 1,
+    status: 'accepted',
+    epoch: LIVE_EPOCH,
+    lseq: 3,
+    items: [
+      {
+        type: 'message',
+        id: 'b1c2d3e4-f5a6-4b7c-8d9e-0f1a2b3c4d5e',
+        lseq: 0,
+        data: {
+          sv: 1,
+          sessionId: LIVE_SESSION_ID,
+          seq: 1,
+          message: { role: 'user', content: 'Monte um roteiro de 3 dias em Lisboa.' },
+          meta: {},
+          createdAt: 1793920005000,
+          parentId: null
+        }
+      },
+      { type: 'message', id: 'c2d3e4f5-a6b7-4c8d-9e0f-1a2b3c4d5e6f', lseq: 2, large: 300000 }
+    ],
+    next: 'm:2:c2d3e4f5-a6b7-4c8d-9e0f-1a2b3c4d5e6f'
+  })
+  const recJson = JSON.stringify({
+    sv: 1,
+    kind: 'rec',
+    lseq: 4,
+    items: [
+      {
+        type: 'message',
+        id: 'd3e4f5a6-b7c8-4d9e-8f1a-2b3c4d5e6f70',
+        lseq: 4,
+        data: {
+          sv: 1,
+          sessionId: LIVE_SESSION_ID,
+          seq: 3,
+          message: { role: 'assistant', content: 'Dia 1: Alfama e Castelo de São Jorge…' },
+          meta: {},
+          createdAt: 1793923260000,
+          parentId: 'c2d3e4f5-a6b7-4c8d-9e0f-1a2b3c4d5e6f'
+        }
+      },
+      { type: 'message', id: 'e4f5a6b7-c8d9-4e0f-9a2b-3c4d5e6f7081', lseq: 4, deleted: true }
+    ]
+  })
+  const liveCases = [
+    {
+      name: 'live-announce',
+      aad: aadLiveAnnounce(USER_ID, HOST_DEVICE_ID, LIVE_CHAT_ID, LIVE_EPOCH, 3),
+      json: announceJson,
+      nonce: NONCE(0xbb)
+    },
+    {
+      name: 'history.list (comando)',
+      aad: aadCommand(USER_ID, LIVE_CHAT_ID, 'cmd-h1'),
+      json: historyCmdJson,
+      nonce: NONCE(0xcc)
+    },
+    {
+      name: 'history.list (resultado)',
+      aad: aadCommandResult(USER_ID, LIVE_CHAT_ID, 'cmd-h1'),
+      json: historyResultJson,
+      nonce: NONCE(0xdd)
+    },
+    {
+      name: 'rec (stream)',
+      aad: aadStream(USER_ID, LIVE_CHAT_ID, LIVE_EPOCH, 9),
+      json: recJson,
+      nonce: NONCE(0xee)
+    },
+    {
+      name: 'attach.put (comando, pedaço único)',
+      aad: aadCommand(USER_ID, LIVE_CHAT_ID, 'cmd-a1'),
+      json: JSON.stringify({
+        sv: 1,
+        chatId: LIVE_CHAT_ID,
+        uploadId: '2b3c4d5e-6f70-4182-93a4-b5c6d7e8f901',
+        name: 'hello.txt',
+        mime: 'text/plain',
+        size: 6,
+        sha256: hex(sha256(utf8('hello\n'))),
+        offset: 0,
+        data: Buffer.from('hello\n').toString('base64')
+      }),
+      nonce: NONCE(0xf1)
+    },
+    {
+      name: 'attach.put (resultado, done)',
+      aad: aadCommandResult(USER_ID, LIVE_CHAT_ID, 'cmd-a1'),
+      json: JSON.stringify({
+        sv: 1,
+        status: 'accepted',
+        received: 6,
+        done: true,
+        attachment: {
+          name: 'hello.txt',
+          mime: 'text/plain',
+          size: 6,
+          kind: 'text',
+          file: hex(sha256(utf8('hello\n'))) + '.txt',
+          sha256: hex(sha256(utf8('hello\n')))
+        }
+      }),
+      nonce: NONCE(0xf2)
+    }
+  ]
+  const liveSealed = liveCases.map((c) => {
+    const frame = frameJson(c.json, false)
+    return { c, frame, env: seal(sk.stream, c.aad, frame, c.nonce) }
+  })
+  const announceEnv = liveSealed[0].env
+  const liveMustFail = [
+    {
+      name: 'anúncio atribuído a outro host',
+      aad: aadLiveAnnounce(USER_ID, OTHER_DEVICE_ID, LIVE_CHAT_ID, LIVE_EPOCH, 3)
+    },
+    {
+      name: 'anúncio com revisão trocada',
+      aad: aadLiveAnnounce(USER_ID, HOST_DEVICE_ID, LIVE_CHAT_ID, LIVE_EPOCH, 4)
+    },
+    {
+      name: 'anúncio aberto como evento do stream',
+      aad: aadStream(USER_ID, LIVE_CHAT_ID, LIVE_EPOCH, 3)
+    }
+  ]
+  for (const f of liveMustFail) {
+    let opened = false
+    try {
+      open(sk.stream, f.aad, announceEnv)
+      opened = true
+    } catch {
+      /* esperado */
+    }
+    if (opened) throw new Error(`live must_fail abriu: ${f.name}`)
+  }
+  const live = {
+    ...header,
+    description:
+      'Chats só ao vivo (§23, desde 1.8.0): anúncio cifrado do host com K_stream e AAD live-announce (amarra usuário, host, chat, epoch ao vivo e revisão do anúncio); histórico sob demanda e atualizações pelos contextos de comando/resultado/stream que já existem.',
+    user_id: USER_ID,
+    host_device_id: HOST_DEVICE_ID,
+    stream_key_hex: hex(sk.stream),
+    cases: liveSealed.map(({ c, frame, env }) => ({
+      name: c.name,
+      aad_utf8: new TextDecoder().decode(c.aad),
+      json: c.json,
+      frame_hex: hex(frame),
+      nonce_hex: hex(c.nonce),
+      envelope: env
+    })),
+    must_fail: liveMustFail.map((f) => ({
+      name: f.name,
+      aad_utf8: new TextDecoder().decode(f.aad),
+      envelope: announceEnv
+    }))
+  }
+
   // ---------------- ids ----------------
   const ids = {
     ...header,
@@ -922,6 +1124,7 @@ async function buildVectors(): Promise<Record<string, unknown>> {
     'blobs.json': blobs,
     'realtime.json': realtime,
     'push.json': push,
+    'live.json': live,
     'ids.json': ids
   }
 }
