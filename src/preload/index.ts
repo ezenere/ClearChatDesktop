@@ -254,6 +254,7 @@ const api: FullClearApi = {
     renameDevice: (id, name) => invoke(IPC.sync.renameDevice, id, name),
     revokeDevice: (id) => invoke(IPC.sync.revokeDevice, id),
     syncNow: () => invoke(IPC.sync.syncNow),
+    setPushNotify: (on) => invoke(IPC.sync.setPushNotify, on),
     openSignup: () => invoke(IPC.sync.openSignup),
     openSetup: () => invoke(IPC.sync.openSetup),
     chatStates: () => invoke(IPC.sync.chatStates),

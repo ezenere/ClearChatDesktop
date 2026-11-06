@@ -203,6 +203,7 @@ export const IPC = {
     renameDevice: 'sync:renameDevice',
     revokeDevice: 'sync:revokeDevice',
     syncNow: 'sync:syncNow',
+    setPushNotify: 'sync:setPushNotify',
     openSignup: 'sync:openSignup',
     openSetup: 'sync:openSetup',
     chatStates: 'sync:chatStates',
@@ -1293,6 +1294,8 @@ export interface ClearApi {
     renameDevice(id: string, name: string): Promise<void>
     revokeDevice(id: string): Promise<void>
     syncNow(): Promise<SyncStatus>
+    /** "Avisar no celular quando eu estiver ausente ou quando o pedido vier do celular" (local). */
+    setPushNotify(on: boolean): Promise<SyncStatus>
     openSignup(): Promise<void>
     openSetup(): Promise<void>
     chatStates(): Promise<ChatHostInfo[]>

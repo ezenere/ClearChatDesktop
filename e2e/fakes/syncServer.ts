@@ -46,7 +46,21 @@ export interface FakeSyncOptions {
   helloTimeoutMs?: number
   idleTimeoutMs?: number
   accessTtlS?: number
+  /** true → features.push = { providers: ['fcm'] } e POST /push grava os avisos (§22). */
+  push?: boolean
   log?: (line: string) => void
+}
+
+/** Aviso recebido em POST /push (o que o servidor repassaria ao FCM), com os destinos resolvidos. */
+export interface FakePush {
+  at: number
+  fromDeviceId: string
+  kind: string
+  tag: string
+  to: 'all' | string[]
+  env: any
+  /** device_ids que receberiam (com token). */
+  targets: string[]
 }
 
 export interface FakeSyncServer {
@@ -71,6 +85,10 @@ export interface FakeSyncServer {
   devices(userId: string): any[]
   connections(userId: string): { deviceId: string; subscriptions: string[] }[]
   requests: { method: string; path: string; status: number; deviceId?: string }[]
+  /** Avisos push recebidos (§22.3). */
+  pushes: FakePush[]
+  /** Define/remove o token de push de um dispositivo (como o app móvel faria). */
+  setPushToken(deviceId: string, token: string | null): void
   wsLog: { dir: 'in' | 'out'; deviceId?: string; t: string; frame: any }[]
 }
 
@@ -151,6 +169,7 @@ interface Device {
   last_seen_at: string
   last_ip: string
   revoked: boolean
+  pushToken?: string | null
   inGrace: boolean
   graceTimer?: ReturnType<typeof setTimeout>
   /** Já ficou offline (tolerância esgotada) desde a última conexão (volta → `host_back`, como da tolerância). */
@@ -223,7 +242,8 @@ const MESSAGES: Record<string, string> = {
   payload_too_large: 'Dados grandes demais.',
   quota_exceeded: 'Cota excedida.',
   protocol_unsupported: 'Versão do protocolo não suportada.',
-  internal: 'Erro interno.'
+  internal: 'Erro interno.',
+  push_unavailable: 'Notificações push não estão configuradas nesta instância.'
 }
 
 const STATUS: Record<string, number> = {
@@ -258,7 +278,8 @@ const STATUS: Record<string, number> = {
   payload_too_large: 413,
   quota_exceeded: 413,
   protocol_unsupported: 426,
-  internal: 500
+  internal: 500,
+  push_unavailable: 503
 }
 
 const err = (code: string, details: any = {}, message?: string): ApiError =>
@@ -346,6 +367,7 @@ export async function startFakeSyncServer(opts: FakeSyncOptions = {}): Promise<F
     helloTimeoutMs: opts.helloTimeoutMs ?? 10_000,
     idleTimeoutMs: opts.idleTimeoutMs ?? 30_000,
     accessTtlS: opts.accessTtlS ?? 3600,
+    push: !!opts.push,
     log: opts.log ?? ((): void => {})
   }
 
@@ -363,6 +385,7 @@ export async function startFakeSyncServer(opts: FakeSyncOptions = {}): Promise<F
   const conns = new Set<Conn>()
   const pendingCmds = new Map<string, PendingCmd>()
   const requests: FakeSyncServer['requests'] = []
+  const pushes: FakePush[] = []
   const wsLog: FakeSyncServer['wsLog'] = []
   let url = ''
 
@@ -500,6 +523,7 @@ export async function startFakeSyncServer(opts: FakeSyncOptions = {}): Promise<F
   function revokeDevice(dev: Device, reason = 'device_revoked'): void {
     if (dev.revoked) return
     dev.revoked = true
+    dev.pushToken = null
     for (const [k, v] of access) if (v.deviceId === dev.id) access.delete(k)
     for (const [k, v] of refresh) if (v.deviceId === dev.id) refresh.delete(k)
     const c = connOf(dev.id)
@@ -1206,7 +1230,8 @@ export async function startFakeSyncServer(opts: FakeSyncOptions = {}): Promise<F
           signupOpen: o.signupOpen,
           captcha: o.captcha ? { provider: 'turnstile', siteKey: 'fake' } : null,
           landing: true,
-          gateway: false
+          gateway: false,
+          push: o.push ? { providers: ['fcm'] } : null
         },
         links: {
           download: 'https://github.com/ezenere/ClearChatDesktop/releases',
@@ -1390,9 +1415,62 @@ export async function startFakeSyncServer(opts: FakeSyncOptions = {}): Promise<F
             last_seen_at: d.last_seen_at,
             last_ip: d.last_ip,
             online: !!connOf(d.id),
-            current: d.id === dev.id
+            current: d.id === dev.id,
+            push: !!d.pushToken
           }))
       )
+    }
+    // notificações push (§22)
+    if (p === '/devices/current/push') {
+      if (method === 'PUT') {
+        if (body.provider !== 'fcm') throw err('invalid_request', { field: 'provider' })
+        if (typeof body.token !== 'string' || !body.token || body.token.length > 4096)
+          throw err('invalid_request', { field: 'token' })
+        for (const d of devices.values()) if (d.pushToken === body.token) d.pushToken = null
+        dev.pushToken = body.token
+        return json(204, undefined)
+      }
+      if (method === 'DELETE') {
+        dev.pushToken = null
+        return json(204, undefined)
+      }
+    }
+    if (method === 'POST' && p === '/push') {
+      if (!o.push) throw err('push_unavailable')
+      const kinds = ['approval', 'question', 'retry', 'reply', 'error', 'dismiss']
+      if (!kinds.includes(body.kind)) throw err('invalid_request', { field: 'kind' })
+      if (typeof body.tag !== 'string' || !/^[0-9a-f]{32}$/.test(body.tag))
+        throw err('invalid_request', { field: 'tag' })
+      const to = body.to
+      if (
+        to !== 'all' &&
+        !(Array.isArray(to) && to.length <= 20 && to.every((x: unknown) => typeof x === 'string'))
+      )
+        throw err('invalid_request', { field: 'to' })
+      if (body.kind === 'dismiss') {
+        if (body.env != null) throw err('invalid_request', { field: 'env' })
+      } else if (!validEnvelope(body.env) || JSON.stringify(body.env).length > 2048) {
+        throw err('invalid_request', { field: 'env' })
+      }
+      const targets = [...devices.values()]
+        .filter(
+          (d) =>
+            d.userId === u.id &&
+            !d.revoked &&
+            !!d.pushToken &&
+            (to === 'all' ? d.id !== dev.id : to.includes(d.id))
+        )
+        .map((d) => d.id)
+      pushes.push({
+        at: Date.now(),
+        fromDeviceId: dev.id,
+        kind: body.kind,
+        tag: body.tag,
+        to,
+        env: body.env ?? null,
+        targets
+      })
+      return json(200, { sent: targets.length })
     }
     const devMatch = /^\/devices\/([^/]+)$/.exec(p)
     if (devMatch) {
@@ -2008,6 +2086,11 @@ export async function startFakeSyncServer(opts: FakeSyncOptions = {}): Promise<F
       return { userId: newUser(email, input.name ?? email.split('@')[0]).id }
     },
     userIdOf: (email) => usersByEmail.get(normEmail(email)),
+    pushes,
+    setPushToken(deviceId, token) {
+      const d = devices.get(deviceId)
+      if (d) d.pushToken = token
+    },
     dropDevice(deviceId) {
       const c = connOf(deviceId)
       if (!c) return

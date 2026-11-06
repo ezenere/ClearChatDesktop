@@ -21,6 +21,8 @@ export interface SyncServerInfo {
   signupUrl?: string
   /** `http://` (sem criptografia de transporte). */
   insecure: boolean
+  /** Instância com notificações push (`features.push` não nulo, desde 1.7.0). */
+  push?: boolean
 }
 
 export type SyncConnection = 'disabled' | 'offline' | 'connecting' | 'online' | 'error'
@@ -74,6 +76,11 @@ export interface SyncStatus {
    * Vem do GET /devices (atualizado ao conectar e periodicamente). Vazio = nada a avisar.
    */
   outdatedHosts: { name: string; appVersion: string }[]
+  /**
+   * Avisos no celular (§22): `available` = o servidor tem push; `enabled` = preferência DESTE
+   * computador ("Avisar no celular…", padrão ligado; local, §4.4).
+   */
+  push: { available: boolean; enabled: boolean }
 }
 
 export interface SyncDevice {
@@ -88,6 +95,8 @@ export interface SyncDevice {
   lastIp: string | null
   online: boolean
   current: boolean
+  /** Recebe notificações push (celular com token; desde 1.7.0). */
+  push: boolean
 }
 
 export type HostStatus = 'online' | 'grace' | 'offline'

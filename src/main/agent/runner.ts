@@ -206,7 +206,51 @@ const MAX_DEPTH = 2
 type LoopOutcome =
   | { kind: 'final'; text: string }
   | { kind: 'aborted'; partial: string }
-  | { kind: 'error'; error: string }
+  /** userCancelled: falha de rede e o usuário cancelou o card (não é um erro a avisar). */
+  | { kind: 'error'; error: string; userCancelled?: boolean }
+
+/** Fim de um turno (uma execução do loop de uma sessão) — avisos push do sync (§22.5). */
+export interface TurnEnd {
+  sessionId: string
+  chatId: string
+  depth: number
+  outcome: 'final' | 'error' | 'aborted'
+  text: string
+  error?: string
+  /** Parado pelo usuário (Parar, ⚡ sem continuação, cancelar o card de falha de conexão). */
+  userStopped: boolean
+  /** Loop só de compactação (sem resposta nova). */
+  compactOnly: boolean
+}
+
+const turnEndListeners = new Set<(t: TurnEnd) => void>()
+
+/** Assina o fim de cada turno (todas as sessões; o ouvinte filtra). Devolve o cancelamento. */
+export function onTurnEnd(fn: (t: TurnEnd) => void): () => void {
+  turnEndListeners.add(fn)
+  return () => turnEndListeners.delete(fn)
+}
+
+function emitTurnEnd(st: RunState, o: LoopOutcome, compactOnly: boolean): void {
+  if (shuttingDown || !turnEndListeners.size) return
+  const t: TurnEnd = {
+    sessionId: st.sessionId,
+    chatId: st.chatId,
+    depth: st.depth,
+    outcome: o.kind,
+    text: o.kind === 'final' ? o.text : '',
+    ...(o.kind === 'error' ? { error: o.error } : {}),
+    userStopped: o.kind === 'aborted' || (o.kind === 'error' && !!o.userCancelled),
+    compactOnly
+  }
+  for (const fn of turnEndListeners) {
+    try {
+      fn(t)
+    } catch (e) {
+      console.error('[clearchat] onTurnEnd', e)
+    }
+  }
+}
 
 type StepResult =
   | { kind: 'final'; text: string }
@@ -623,6 +667,8 @@ function startLoop(
     emit({ type: 'error', sessionId: st.sessionId, error })
     return { kind: 'error', error }
   })
+  const compactOnly = !!init.compactOnly
+  void st.done.then((o) => emitTurnEnd(st, o, compactOnly))
   return st
 }
 
@@ -907,7 +953,7 @@ async function runLoop(st: RunState): Promise<LoopOutcome> {
         return r
       }
       finish(st, 'error')
-      return { kind: 'error', error: res.error }
+      return { kind: 'error', error: res.error, userCancelled: true }
     }
     if (signal.aborted || res.kind === 'aborted') {
       const r = onAborted(st, res.kind === 'aborted' ? res.partial : lastText)

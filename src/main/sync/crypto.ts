@@ -39,7 +39,8 @@ export const HKDF_INFO = {
   recordId: 'clearchat/v1/record-id',
   keyVerify: 'clearchat/v1/key-verify',
   recoveryKek: 'clearchat/v1/recovery-kek',
-  blobFile: 'clearchat/v1/blob-file'
+  blobFile: 'clearchat/v1/blob-file',
+  push: 'clearchat/v1/push'
 } as const
 
 export const FRAME_RAW = 0x00
@@ -224,6 +225,8 @@ export interface Subkeys {
   stream: Uint8Array
   recordId: Uint8Array
   keyVerify: Uint8Array
+  /** K_push: notificações push (§22.4, desde 1.7.0). */
+  push: Uint8Array
 }
 
 export function deriveSubkeys(dek: Uint8Array): Subkeys {
@@ -235,7 +238,8 @@ export function deriveSubkeys(dek: Uint8Array): Subkeys {
     blobId: hkdf(dek, empty, HKDF_INFO.blobId),
     stream: hkdf(dek, empty, HKDF_INFO.stream),
     recordId: hkdf(dek, empty, HKDF_INFO.recordId),
-    keyVerify: hkdf(dek, empty, HKDF_INFO.keyVerify)
+    keyVerify: hkdf(dek, empty, HKDF_INFO.keyVerify),
+    push: hkdf(dek, empty, HKDF_INFO.push)
   }
 }
 
@@ -266,6 +270,10 @@ export const aadCommand = (userId: string, chatId: string, cmdId: string): Uint8
 
 export const aadCommandResult = (userId: string, chatId: string, cmdId: string): Uint8Array =>
   utf8(`clearchat|v1|command-result|${userId}|${chatId}|${cmdId}`)
+
+/** Notificação push (§3.10, §22.4): amarra usuário, kind e tag. */
+export const aadPush = (userId: string, kind: string, tag: string): Uint8Array =>
+  utf8(`clearchat|v1|push|${userId}|${kind}|${tag}`)
 
 export const aadBlob = (userId: string, blobId: string, header: Uint8Array): Uint8Array =>
   concat(utf8(`clearchat|v1|blob|${userId}|${blobId}|`), header)

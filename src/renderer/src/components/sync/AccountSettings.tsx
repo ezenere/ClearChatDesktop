@@ -150,6 +150,11 @@ function DevicesList({ status }: { status: SyncStatus }): React.JSX.Element {
                       este dispositivo
                     </span>
                   )}
+                  {d.push && (
+                    <span className="rounded-full bg-elevated px-1.5 py-px text-[10.5px] font-normal text-muted">
+                      notificações
+                    </span>
+                  )}
                 </div>
                 <div className="truncate text-[11px] text-subtle">
                   {d.platform} · {d.client}
@@ -477,6 +482,35 @@ export function AccountSettings(): React.JSX.Element {
         help="Cada chat roda num dispositivo (o host); os outros viram controle remoto enquanto ele está online."
       >
         <DevicesList status={status} />
+      </Section>
+
+      <Section
+        title="Notificações no celular"
+        help="O aviso vai cifrado de ponta a ponta para o app do celular (o servidor não lê o conteúdo). Vale para os chats que este computador executa."
+      >
+        <label className="flex items-start gap-2 text-[12.5px]" data-testid="push-notify">
+          <input
+            type="checkbox"
+            className="mt-0.5"
+            checked={status.push.enabled}
+            disabled={!status.push.available}
+            onChange={(e) => {
+              const on = e.target.checked
+              void run(async () => {
+                await api.sync.setPushNotify(on)
+                await refreshSync()
+              })
+            }}
+          />
+          <span>
+            Avisar no celular quando eu estiver ausente ou quando o pedido vier do celular
+            <span className="block text-[11px] text-subtle">
+              {status.push.available
+                ? 'Aprovações, perguntas e respostas prontas. Ausente = tela bloqueada ou sem uso há 5 minutos.'
+                : 'Este servidor não tem notificações push configuradas.'}
+            </span>
+          </span>
+        </label>
       </Section>
 
       <Section title="Segurança">

@@ -1990,8 +1990,28 @@ Contrato do protocolo: `docs/SYNC_PROTOCOL.md` (compartilhado com o servidor). A
   recolhidas (`clearchat.collapse.*`), grupos recolhidos do seletor de modelo, largura do painel de arquivo
   (`clearchat.viewer.width`). Skills baixadas ficam em `<userData>/synced-skills/<nome>` (local do app, depois dos
   locais do usuário).
+- **Avisos no celular (push, protocolo 1.7.0, §22)** — `src/shared/push.ts` (regras puras: `pendingPlan`,
+  `turnEndPlan`, `plainExcerpt`, `approvalText`…), `src/main/sync/push.ts` (`PushNotifier`, no motor) e a presença
+  em `sync/index.ts`. Só para chats que **este** dispositivo executa (`host.hostsHere`), com `features.push` no
+  servidor, sync pronto e a preferência local ligada. **Turno do celular**: comando remoto `send`/`force`/
+  `branch.edit`/`branch.regenerate`/`regenerate` cujo `from_device_id` tem `push: true` no `GET /devices` (cache
+  de 5 min, relido quando o id é novo) — a origem vale até o fim daquele loop do runner. **Ausente**:
+  `powerMonitor.getSystemIdleState(AWAY_IDLE_S = 300)` = `idle`/`locked`, eventos `lock-screen` (macOS/Windows) e
+  `suspend`; `unknown` (ex.: Wayland sem suporte) = presente; o Electron não informa "tela desligada" (com a tela
+  apagada por ociosidade o tempo ocioso já passou do limite). Pendências (aprovação, pergunta, retry — também de
+  subagentes): na hora para o celular de origem / para todos se ausente; senão depois de `PUSH_PENDING_GRACE_S`
+  (60 s), se ainda pendente, para todos; resolvida/cancelada depois do aviso → `dismiss` (mesma tag aleatória por
+  pedido, mesmos destinos). Fim do turno da sessão principal (`runner.onTurnEnd`): `reply` (trecho sem Markdown,
+  ≤ 200) ou `error` para o celular de origem, ou para todos se ausente; parar pelo usuário, cancelar o card de falha
+  de conexão, compactação e subagentes não avisam; a tag é estável por chat (`HMAC(K_push, chatId)`). Payload
+  §22.4 cifrado com `K_push` (`deriveSubkeys().push`, AAD `aadPush`); envelope > 2048 bytes encurta o texto. Fogo e
+  esquece: falha/429 só vão ao log; `push_unavailable` desliga até reler o `/api/info`. Preferência local
+  (`sync_kv.push_notify`, padrão ligada, mantida no logout): Configurações → Conta → **Notificações no celular**
+  ("Avisar no celular quando eu estiver ausente ou quando o pedido vier do celular"; IPC `sync.setPushNotify`;
+  `SyncStatus.push = { available, enabled }`). `SyncDevice.push` vem do `GET /devices`.
 - **Env**: `CLEARCHAT_SYNC_URL` (servidor fixo), `CLEARCHAT_DEVICE_NAME` (nome do dispositivo),
-  `CLEARCHAT_SYNC_FAST=1` (backoff/heartbeat curtos — testes).
+  `CLEARCHAT_SYNC_FAST=1` (backoff/heartbeat curtos — testes), `CLEARCHAT_FORCE_AWAY=1|0` (força ausente/presente
+  nos avisos push — testes/depuração), `CLEARCHAT_PUSH_GRACE_MS` (espera das pendências, padrão 60 s — testes).
 - **UI**: Configurações → **Conta** (servidor, entrar/desbloquear/recuperação, merge, estado do sync,
   dispositivos, senha, chave de recuperação, skills, sair/bloquear); onboarding com "Entrar"/"Criar conta";
   **ícone do host** num lugar só, a barra do composer (`HostIndicator`, `data-testid="host-indicator"`,

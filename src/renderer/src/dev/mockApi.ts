@@ -1847,7 +1847,9 @@ export function createMockApi(scenario: string): ClearApi {
     prompts: [],
     protocolError: null,
     // ?scenario=branches → aviso "Atualize <dispositivo> para usar versões de mensagens"
-    outdatedHosts: scenario === 'branches' ? [{ name: 'Notebook antigo', appVersion: '0.6.1' }] : []
+    outdatedHosts:
+      scenario === 'branches' ? [{ name: 'Notebook antigo', appVersion: '0.6.1' }] : [],
+    push: { available: false, enabled: true }
   })
   const noSync = (): Promise<never> =>
     Promise.reject(new Error('Sync indisponível no modo de demonstração.'))
@@ -1907,6 +1909,7 @@ export function createMockApi(scenario: string): ClearApi {
       renameDevice: noSync,
       revokeDevice: noSync,
       syncNow: noSync,
+      setPushNotify: noSync,
       openSignup: () => delay(undefined),
       openSetup: () => delay(undefined),
       chatStates: () => delay([]),

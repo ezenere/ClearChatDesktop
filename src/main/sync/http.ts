@@ -104,7 +104,8 @@ export async function fetchServerInfo(base: string, timeoutMs = 10_000): Promise
     signupOpen: features.signupOpen === true,
     captcha: !!features.captcha,
     signupUrl: typeof links.signup === 'string' ? links.signup : undefined,
-    insecure: base.startsWith('http://')
+    insecure: base.startsWith('http://'),
+    push: !!features.push
   }
 }
 

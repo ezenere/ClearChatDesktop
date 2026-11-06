@@ -5,7 +5,9 @@
 // mensagens nos dois sentidos, host de execução (envio remoto executado no host, stream ao vivo
 // visível no controle remoto, aprovação remota), host offline → composer desabilitado → assumir com
 // aviso de ferramentas locais, troca forçada, "o dispositivo remoto caiu", divergência (escolher e
-// descartar), skills opt-in e anexos (blob baixado sob demanda). Tira screenshots das telas novas.
+// descartar), skills opt-in, anexos (blob baixado sob demanda) e avisos push do host (§22: turno
+// vindo de um "celular" com token → aprovação, dismiss e resposta para ele, cifrados com K_push).
+// Tira screenshots das telas novas.
 //
 // Uso:
 //   unset ELECTRON_RUN_AS_NODE
@@ -25,6 +27,7 @@ import type { AddressInfo } from 'node:net'
 import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { startFakeSyncServer, type FakeSyncServer } from './fakes/syncServer.ts'
+import { aadPush, open, pushKey, unframeJson } from '../docs/test-vectors/generate.ts'
 
 const ROOT = resolve(import.meta.dirname, '..')
 const BASE = resolve(process.env.CLEARCHAT_E2E_DIR || join(tmpdir(), 'clearchat-sync-e2e'))
@@ -190,6 +193,8 @@ async function launch(name: string, dir: string, url?: string): Promise<Inst> {
   env.CLEARCHAT_SYNC_URL = url ?? srv.url
   env.CLEARCHAT_SYNC_FAST = '1'
   env.CLEARCHAT_DEVICE_NAME = name
+  // presença fixa (presente): os avisos push só saem pelos turnos vindos do "celular"
+  env.CLEARCHAT_FORCE_AWAY = '0'
   const app = await electron.launch({ args: [ROOT], env, timeout: 60_000 })
   const log = createWriteStream(join(BASE, `${name.replace(/\W+/g, '_')}.log`), { flags: 'a' })
   app.process().stdout?.pipe(log)
@@ -292,9 +297,14 @@ async function main(): Promise<void> {
   srv = await startFakeSyncServer({
     hostDropGraceMs: 1500,
     commandTimeoutMs: 15_000,
-    name: 'ClearChat (teste)'
+    name: 'ClearChat (teste)',
+    push: true
   })
-  await srv.createAccount({ email: EMAIL, name: 'Eduardo', password: PASSWORD })
+  const { dek, userId } = await srv.createAccount({
+    email: EMAIL,
+    name: 'Eduardo',
+    password: PASSWORD
+  })
 
   const A = await launch('PC de casa', join(BASE, 'a'))
   const B = await launch('Notebook', join(BASE, 'b'))
@@ -581,6 +591,117 @@ async function main(): Promise<void> {
     await settled(A)
     return 'shell executado em A com a aprovação dada em B'
   })
+
+  await step(
+    'push: turno vindo do "celular" (B com token) → aprovação na hora, dismiss e resposta para ele',
+    async () => {
+      const kPush = pushKey(dek)
+      const plain = (p: any): any =>
+        unframeJson(open(kPush, aadPush(userId, p.kind, p.tag), p.env)) as any
+      const sa = await status(A)
+      assert(
+        sa.push?.available === true && sa.push?.enabled === true,
+        `status.push de A: ${JSON.stringify(sa.push)}`
+      )
+      const bId = (await status(B)).device.id
+      const aId = (await status(A)).device.id
+      assert(
+        srv.pushes.filter((p) => p.fromDeviceId === aId).length === 0,
+        `sem avisos antes (PC presente, sem celular): ${JSON.stringify(srv.pushes)}`
+      )
+      // B passa a ser "celular": tem token de push (GET /devices → push: true). O host relê a lista
+      // de aparelhos a cada comando de turno, no máximo a cada 5 s (B mandou um há pouco)
+      srv.setPushToken(bId, 'tok-celular-b')
+      await sleep(5500)
+      const n0 = srv.pushes.length
+      try {
+        return await phoneTurn(n0, bId, aId, plain)
+      } catch (e) {
+        // não deixa a aprovação pendurada para os passos seguintes
+        for (const a of await api<any[]>(B, 'agent.pendingApprovals'))
+          if (a.chatId === toolChat.id) await api(B, 'agent.approve', a.id, 'allow').catch(() => {})
+        throw e
+      } finally {
+        srv.setPushToken(bId, null)
+      }
+    }
+  )
+
+  async function phoneTurn(
+    n0: number,
+    bId: string,
+    aId: string,
+    plain: (p: any) => any
+  ): Promise<string> {
+    {
+      await api(B, 'agent.send', toolChat.mainSessionId, 'rode o comando, por favor')
+      const req = await waitFor(
+        async () =>
+          (await api<any[]>(B, 'agent.pendingApprovals')).find((a) => a.chatId === toolChat.id),
+        15_000,
+        'aprovação espelhada em B'
+      )
+      const ap = await waitFor(
+        async () => srv.pushes.slice(n0).find((p) => p.kind === 'approval'),
+        10_000,
+        'aviso de aprovação'
+      )
+      assert(ap.fromDeviceId === aId, 'enviado pelo host A')
+      assert(
+        JSON.stringify(ap.to) === JSON.stringify([bId]),
+        `só para o celular: ${JSON.stringify(ap.to)}`
+      )
+      const pa = plain(ap)
+      assert(
+        pa.kind === 'approval' &&
+          pa.chatId === toolChat.id &&
+          pa.chatTitle === 'Chat com terminal' &&
+          pa.text === 'Executar: expr remoto-ok' &&
+          pa.requestId === req.id &&
+          pa.hostName === 'PC de casa',
+        `payload da aprovação: ${JSON.stringify(pa)}`
+      )
+      await api(B, 'agent.approve', req.id, 'allow')
+      const dm = await waitFor(
+        async () => srv.pushes.slice(n0).find((p) => p.kind === 'dismiss'),
+        10_000,
+        'dismiss da aprovação'
+      )
+      assert(dm.tag === ap.tag && dm.env === null, 'dismiss com a mesma tag, sem conteúdo')
+      assert(JSON.stringify(dm.to) === JSON.stringify([bId]), 'dismiss para o celular')
+      const rp = await waitFor(
+        async () => srv.pushes.slice(n0).find((p) => p.kind === 'reply'),
+        20_000,
+        'aviso de resposta pronta'
+      )
+      const pr = plain(rp)
+      assert(
+        JSON.stringify(rp.to) === JSON.stringify([bId]) &&
+          pr.kind === 'reply' &&
+          pr.text.startsWith('FIM:') &&
+          pr.text.includes('remoto-ok') &&
+          pr.sessionId === toolChat.mainSessionId,
+        `reply: ${JSON.stringify(rp.to)} ${JSON.stringify(pr)}`
+      )
+      // turno local em A (PC presente, sem origem móvel): nenhum aviso novo
+      const n1 = srv.pushes.length
+      await api(A, 'agent.send', toolChat.mainSessionId, 'só uma pergunta local')
+      await waitFor(
+        async () =>
+          (await texts(A, toolChat.mainSessionId)).some((t) => t.includes('só uma pergunta local')),
+        15_000,
+        'turno local'
+      )
+      await settled(A)
+      await sleep(1000)
+      assert(
+        srv.pushes.length === n1,
+        `turno local não avisa: ${JSON.stringify(srv.pushes.slice(n1))}`
+      )
+      await settled(B)
+      return `aprovação/dismiss/reply para o celular (${srv.pushes.length - n0} avisos)`
+    }
+  }
 
   await step(
     'controle remoto: texto antes da tool call fica na tela até a mensagem gravada; status ao vivo ao sair do chat',

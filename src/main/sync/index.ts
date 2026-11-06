@@ -1,7 +1,7 @@
 // Liga o motor do sync (engine.ts / host.ts, sem Electron) ao app: safeStorage, janela do captcha,
 // runner, skills, handlers IPC `sync:*` e o "portão" das ações do agente (host local × controle
 // remoto). Ver docs/SYNC_PROTOCOL.md.
-import { app, BrowserWindow, safeStorage, session, shell } from 'electron'
+import { app, BrowserWindow, powerMonitor, safeStorage, session, shell } from 'electron'
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs'
 import { hostname } from 'os'
 import { join } from 'path'
@@ -23,6 +23,8 @@ import * as skills from '../skills'
 import { clearSkillsCache } from '../skills/discovery'
 import { SyncEngine, type SecretStore } from './engine'
 import { cmdPurpose, NoHostError, type RunnerAdapter } from './host'
+import type { Presence } from './push'
+import { AWAY_IDLE_S } from '@shared/push'
 
 let engine: SyncEngine | null = null
 
@@ -209,7 +211,43 @@ function runnerAdapter(): RunnerAdapter {
       if (!chat) return []
       const list = await skills.activeSkillsFor(chat.config)
       return list.map((s) => ({ name: s.name, description: s.description }))
-    }
+    },
+    onTurnEnd: (fn) => runner.onTurnEnd(fn)
+  }
+}
+
+// ---------------- presença (avisos push, §22.5) ----------------
+
+/**
+ * "Ausente" = tela bloqueada, sem interação há ≥ AWAY_IDLE_S (como o "ausente" do Discord) ou
+ * suspenso. O Electron não informa "tela desligada"; quando o sistema desliga a tela por
+ * ociosidade, o tempo ocioso já passou do limite. Sem como saber (ex.: Wayland sem suporte →
+ * 'unknown') = presente. CLEARCHAT_FORCE_AWAY=1|0 força (testes / depuração).
+ */
+let screenLocked = false
+let suspended = false
+function presence(): Presence {
+  const forced = process.env['CLEARCHAT_FORCE_AWAY']
+  if (forced === '1') return 'away'
+  if (forced === '0') return 'present'
+  if (screenLocked || suspended) return 'away'
+  try {
+    const s = powerMonitor.getSystemIdleState(AWAY_IDLE_S)
+    if (s === 'idle' || s === 'locked') return 'away'
+    return s === 'active' ? 'present' : 'unknown'
+  } catch {
+    return 'unknown'
+  }
+}
+
+function watchPresence(): void {
+  try {
+    powerMonitor.on('lock-screen', () => (screenLocked = true))
+    powerMonitor.on('unlock-screen', () => (screenLocked = false))
+    powerMonitor.on('suspend', () => (suspended = true))
+    powerMonitor.on('resume', () => (suspended = false))
+  } catch {
+    /* plataforma sem os eventos: fica só o estado ocioso */
   }
 }
 
@@ -222,6 +260,7 @@ export async function initSync(): Promise<void> {
   const userData = app.getPath('userData')
   const syncedDir = join(userData, 'synced-skills')
   skills.setSyncedSkillsDir(syncedDir)
+  watchPresence()
   engine = new SyncEngine({
     conn: getDb(),
     emit,
@@ -247,6 +286,8 @@ export async function initSync(): Promise<void> {
     captcha: captchaWindow,
     openExternal: (url) => void shell.openExternal(url),
     envUrl: process.env['CLEARCHAT_SYNC_URL'] || null,
+    presence,
+    pushGraceMs: Number(process.env['CLEARCHAT_PUSH_GRACE_MS']) || undefined,
     timing: process.env['CLEARCHAT_SYNC_FAST']
       ? {
           ws: { backoffBaseMs: 150, backoffMaxMs: 1500, pingMs: 3000, pongTimeoutMs: 3000 },
@@ -443,6 +484,7 @@ export function syncHandlers(): Record<string, Handler> {
     [IPC.sync.renameDevice]: (id: string, name: string) => need().renameDevice(id, name),
     [IPC.sync.revokeDevice]: (id: string) => need().revokeDevice(id),
     [IPC.sync.syncNow]: () => need().syncNow(),
+    [IPC.sync.setPushNotify]: (on: boolean) => need().setPushNotify(!!on),
     [IPC.sync.openSignup]: () => need().openSignup(),
     [IPC.sync.openSetup]: () => need().openSetup(),
     [IPC.sync.chatStates]: () => need().chatInfos(),

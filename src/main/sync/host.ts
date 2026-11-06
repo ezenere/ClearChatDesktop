@@ -48,6 +48,7 @@ import {
   type DraftState
 } from './stream'
 import type { SyncEngine } from './engine'
+import { TURN_COMMANDS, type TurnEndInfo } from './push'
 import {
   chatRootFrom,
   hostListDir,
@@ -98,6 +99,8 @@ export interface RunnerAdapter {
   retries(): RetryRequest[]
   processes(chatId: string): ProcessInfo[]
   skillsFor(chatId: string): Promise<{ name: string; description: string }[]>
+  /** Fim de cada turno do runner (avisos push, §22.5). Opcional (stubs de teste). */
+  onTurnEnd?(fn: (info: TurnEndInfo) => void): () => void
 }
 
 interface ServerChatState {
@@ -1354,10 +1357,17 @@ export class HostController {
       }
       return
     }
+    // turno vindo de outro dispositivo: o aviso push de resposta/pendência vai para ele se for um
+    // celular (§22.5) — anotado antes de executar (o turno começa dentro do execute)
+    const from = typeof f.from_device_id === 'string' ? f.from_device_id : null
+    const turn = TURN_COMMANDS.has(kind)
+    if (turn) this.engine.push.noteTurnOrigin(chatId, from)
     try {
       const r = await this.execute(chatId, kind, payload)
       await reply({ status: 'accepted', ...(r.queued !== undefined ? { queued: r.queued } : {}) })
     } catch (e) {
+      if (turn && !this.runner?.busyChats().has(chatId))
+        this.engine.push.dropTurnOrigin(chatId, from)
       await reply({ status: 'rejected', error: errMsg(e) })
     }
   }
@@ -1596,6 +1606,11 @@ export class HostController {
     return p
   }
 
+  /** Este dispositivo executa o chat agora (é o host com conexão, ou tem a janela aberta)? */
+  hostsHere(chatId: string): boolean {
+    return this.isHostHere(chatId)
+  }
+
   private isHostHere(chatId: string): boolean {
     if (!this.engine.active || !this.connected) return false
     const st = this.states.get(chatId)
@@ -1608,6 +1623,11 @@ export class HostController {
     if (this.emittingMirror) return
     const chatId = this.chatOfEvent(e)
     if (!chatId) return
+    try {
+      this.engine.push.onAgentEvent(e)
+    } catch (err) {
+      this.engine.log('push', errMsg(err))
+    }
     const pub = this.publisher(chatId)
     // estado local para snapshots
     switch (e.type) {

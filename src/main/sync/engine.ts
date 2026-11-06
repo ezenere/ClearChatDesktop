@@ -98,6 +98,7 @@ import {
   type RecordType
 } from './records'
 import { HostController, type RunnerAdapter } from './host'
+import { PushNotifier, type Presence } from './push'
 import { buildBundle, extractBundle, folderContentHash, parseBundle } from './skillsBundle'
 import { attachmentsDir, saveStoreFile } from '../attachments'
 
@@ -139,6 +140,10 @@ export interface SyncDeps {
     retryMs?: number
   }
   log?: (...a: unknown[]) => void
+  /** Presença do usuário (tela bloqueada / ocioso ≥ 5 min = ausente) para os avisos push (§22.5). */
+  presence?: () => Presence
+  /** Espera das pendências antes do aviso push (padrão PUSH_PENDING_GRACE_S; testes encurtam). */
+  pushGraceMs?: number
 }
 
 export interface Change {
@@ -306,6 +311,7 @@ export class SyncEngine {
   readonly http: SyncHttp
   readonly ws: RealtimeClient
   readonly host: HostController
+  readonly push: PushNotifier
   sk: Subkeys | null = null
   private dek: Uint8Array | null = null
   private tokens: Tokens | null = null
@@ -331,6 +337,9 @@ export class SyncEngine {
   private outdated: { name: string; appVersion: string }[] = []
   private devicesAt = 0
   private devicesTimer: ReturnType<typeof setInterval> | null = null
+  /** POST /push respondeu push_unavailable: sem avisos até reconferir o /api/info. */
+  private pushOff = false
+  private unsubTurnEnd: (() => void) | null = null
 
   readonly deps: SyncDeps
 
@@ -373,6 +382,7 @@ export class SyncEngine {
       timing: deps.timing?.ws
     })
     this.host = new HostController(this)
+    this.push = new PushNotifier(this, { graceMs: deps.pushGraceMs })
     this.tokens = this.loadTokens()
   }
 
@@ -495,8 +505,34 @@ export class SyncEngine {
       merge: phase === 'merge' ? this.mergeInfo : null,
       prompts: [...this.prompts],
       protocolError: this.protocolError,
-      outdatedHosts: phase === 'signed-out' ? [] : this.outdated.map((d) => ({ ...d }))
+      outdatedHosts: phase === 'signed-out' ? [] : this.outdated.map((d) => ({ ...d })),
+      push: { available: this.pushAvailable(), enabled: this.pushNotifyOn() }
     }
+  }
+
+  // ---------------- avisos push (§22) ----------------
+
+  /** O servidor tem push (`features.push`, §6.2) e não recusou com push_unavailable. */
+  pushAvailable(): boolean {
+    return !!this.info?.push && !this.pushOff
+  }
+
+  markPushUnavailable(): void {
+    if (this.pushOff) return
+    this.pushOff = true
+    this.emitStatus()
+  }
+
+  /** "Avisar no celular…" deste computador (local, §4.4; padrão ligado). */
+  pushNotifyOn(): boolean {
+    return this.kv('push_notify') !== '0'
+  }
+
+  setPushNotify(on: boolean): SyncStatus {
+    this.setKv('push_notify', on ? '1' : '0')
+    if (!on) this.push.reset()
+    this.emitStatus()
+    return this.status()
   }
 
   private statusTimer: ReturnType<typeof setTimeout> | null = null
@@ -545,6 +581,14 @@ export class SyncEngine {
     setTracking(this.conn, true)
     this.connection = 'connecting'
     this.host.start()
+    if (!this.unsubTurnEnd && this.deps.runner?.onTurnEnd)
+      this.unsubTurnEnd = this.deps.runner.onTurnEnd((i) => {
+        try {
+          this.push.onTurnEnd(i)
+        } catch (e) {
+          this.log('push', errMsg(e))
+        }
+      })
     void this.checkServer()
     this.ws.start()
     const poll = this.deps.timing?.pollMs ?? 400
@@ -564,6 +608,9 @@ export class SyncEngine {
     this.pollTimer = this.pushTimer = this.retryTimer = this.devicesTimer = null
     this.ws.stop()
     this.host.stop()
+    this.unsubTurnEnd?.()
+    this.unsubTurnEnd = null
+    this.push.reset()
   }
 
   destroy(): void {
@@ -575,6 +622,7 @@ export class SyncEngine {
     try {
       const info = await fetchServerInfo(this.baseUrl())
       this.info = info
+      this.pushOff = false
       this.setKv('server_name', info.name)
       this.protocolError = protocolMismatch(info)
       if (this.protocolError) {
@@ -837,7 +885,9 @@ export class SyncEngine {
     const kind = this.kv('server_kind')
     const url = this.kv('server_url')
     const last = this.kv('last_user_id')
+    const pushNotify = this.kv('push_notify')
     wipeSyncState(this.conn)
+    if (pushNotify) this.setKv('push_notify', pushNotify)
     if (kind) this.setKv('server_kind', kind)
     if (url) this.setKv('server_url', url)
     if (last) this.setKv('last_user_id', last)
@@ -939,7 +989,8 @@ export class SyncEngine {
       lastSeenAt: (d.last_seen_at as string) ?? null,
       lastIp: (d.last_ip as string) ?? null,
       online: !!d.online,
-      current: !!d.current || d.id === this.deviceId
+      current: !!d.current || d.id === this.deviceId,
+      push: d.push === true
     }))
     this.devicesAt = Date.now()
     // renomeado em outro aparelho (PATCH /devices/{id}): o servidor é a fonte do nome — sem isso
