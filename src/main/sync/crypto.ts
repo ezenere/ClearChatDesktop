@@ -275,6 +275,19 @@ export const aadCommandResult = (userId: string, chatId: string, cmdId: string):
 export const aadPush = (userId: string, kind: string, tag: string): Uint8Array =>
   utf8(`clearchat|v1|push|${userId}|${kind}|${tag}`)
 
+/**
+ * Anúncio de chat só ao vivo (§3.10, §23.4, desde 1.8.0): K_stream, amarra o host, o chat, o epoch
+ * ao vivo e a revisão do anúncio.
+ */
+export const aadLiveAnnounce = (
+  userId: string,
+  hostDeviceId: string,
+  chatId: string,
+  epoch: number,
+  arev: number
+): Uint8Array =>
+  utf8(`clearchat|v1|live-announce|${userId}|${hostDeviceId}|${chatId}|${epoch}|${arev}`)
+
 export const aadBlob = (userId: string, blobId: string, header: Uint8Array): Uint8Array =>
   concat(utf8(`clearchat|v1|blob|${userId}|${blobId}|`), header)
 

@@ -4,6 +4,7 @@
 import {
   CircleAlert,
   Cloud,
+  Radio,
   CloudOff,
   GitFork,
   Laptop,
@@ -57,6 +58,8 @@ export function HostIndicator({
   if (!info || info.mode === 'off' || !sync || sync.phase !== 'ready') return null
   const host = info.host
   const self = !!host?.self
+  // chat só ao vivo (§23): sem troca de host, sem fixar — só o selo e o estado
+  if (info.live) return <LiveIndicator chat={chat} className={className} />
   const label =
     info.mode === 'diverged'
       ? 'Divergente'
@@ -245,12 +248,81 @@ export function HostIndicator({
   )
 }
 
+/**
+ * Indicador de chat só ao vivo (§23): no host, "Só ao vivo" (visível nos outros ou não); no
+ * visualizador, "Ao vivo em <host>". Sem ações de host (a única cópia está no host, §23.9).
+ */
+function LiveIndicator({
+  chat,
+  className
+}: {
+  chat: Chat
+  className?: string
+}): React.JSX.Element | null {
+  const info = useHostInfo(chat.id)
+  const live = info?.live
+  if (!info || !live) return null
+  const viewer = live.role === 'viewer'
+  const label = viewer
+    ? live.status === 'online'
+      ? `Ao vivo em ${live.hostName}`
+      : `Reconectando a ${live.hostName}…`
+    : live.unsupported
+      ? 'Só neste dispositivo — o servidor não suporta chats ao vivo'
+      : live.announced
+        ? 'Só ao vivo: os outros dispositivos o veem enquanto este app estiver aberto'
+        : 'Só ao vivo (ainda não visível nos outros dispositivos)'
+  return (
+    <Tip label={label}>
+      <span
+        data-testid="live-indicator"
+        data-role={live.role}
+        aria-label={label}
+        className={cn(
+          'relative flex size-7 shrink-0 items-center justify-center rounded-lg',
+          viewer && live.status !== 'online'
+            ? 'text-faint'
+            : live.unsupported
+              ? 'text-subtle'
+              : 'text-accent-strong',
+          className
+        )}
+      >
+        <Radio className="size-4" />
+        {(viewer ? live.status === 'online' : live.announced) && (
+          <span className="absolute top-1 right-1 size-1.5 animate-pulse-soft rounded-full bg-success ring-2 ring-surface" />
+        )}
+      </span>
+    </Tip>
+  )
+}
+
 // ---------------- composer ----------------
 
 /** Composer com host offline: só "Executar neste dispositivo" (§8.7). */
 export function HostOfflineCard({ chat }: { chat: Chat }): React.JSX.Element {
   const info = useHostInfo(chat.id)
   const { start, dialog, busy } = useTakeover(chat)
+  // chat só ao vivo de outro dispositivo em tolerância: só "reconectando…" (§8.7, §23.9)
+  if (info?.live?.role === 'viewer')
+    return (
+      <div
+        data-testid="live-reconnecting"
+        className="flex items-center gap-3 rounded-2xl border border-border bg-surface px-4 py-3.5 shadow-[0_8px_30px_-12px_rgb(0_0_0/0.7)]"
+      >
+        <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-hover text-subtle">
+          <Spinner className="size-4" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="text-[13px] font-medium text-fg">
+            Reconectando a {info.live.hostName}…
+          </div>
+          <div className="text-[11.5px] text-subtle">
+            Este chat é só ao vivo: fica só em {info.live.hostName} e volta quando ele reconectar.
+          </div>
+        </div>
+      </div>
+    )
   return (
     <div
       data-testid="host-offline"
@@ -337,7 +409,17 @@ export function HostComposerLine({
         </span>
       </div>
     )
-  if (info.mode === 'offline' && info.host && !info.host.self)
+  if (info.mode === 'offline' && info.live?.role === 'viewer')
+    items.push(
+      <div
+        key="offline"
+        className="flex items-start gap-2 rounded-lg border border-warning/25 bg-warning/[0.06] px-2.5 py-1.5 text-[12px] text-warning"
+      >
+        <TriangleAlert className="mt-px size-3.5 shrink-0" />
+        Sem conexão com o servidor — este chat ao vivo volta quando reconectar.
+      </div>
+    )
+  else if (info.mode === 'offline' && info.host && !info.host.self)
     items.push(
       <div
         key="offline"

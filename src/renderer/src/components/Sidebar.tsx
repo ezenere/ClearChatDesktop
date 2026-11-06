@@ -6,11 +6,13 @@ import {
   MessageSquarePlus,
   MonitorSmartphone,
   Pencil,
+  Radio,
   Settings,
   Trash2,
   X
 } from 'lucide-react'
 import { SyncIndicator } from './sync/ChatHost'
+import { LiveChatsSection } from './sync/LiveChats'
 import { useMemo, useState } from 'react'
 import type { Chat } from '@shared/types'
 import { cn, isMac, relativeTime } from '../lib/format'
@@ -21,7 +23,9 @@ import { Tip } from './ui/Tooltip'
 import { UpdateNotice } from './UpdateNotice'
 
 export function Sidebar(): React.JSX.Element {
-  const chats = useStore((s) => s.chats)
+  const allChats = useStore((s) => s.chats)
+  // chats ao vivo de outros dispositivos ficam na seção "Ao vivo em <host>" (só memória, §23)
+  const chats = useMemo(() => allChats.filter((c) => !c.liveViewer), [allChats])
   const view = useStore((s) => s.view)
   const goNew = useStore((s) => s.goNew)
   const setSettingsOpen = useStore((s) => s.setSettingsOpen)
@@ -100,6 +104,7 @@ export function Sidebar(): React.JSX.Element {
             failures={marks[c.id]?.failures}
           />
         ))}
+        <LiveChatsSection />
       </nav>
 
       <div className="border-t border-border p-2.5">
@@ -220,7 +225,24 @@ function ChatItem({
           <GitFork data-testid="chat-diverged" className="size-3.5 shrink-0 text-danger" />
         </Tip>
       )}
-      {(host?.mode === 'remote' || host?.mode === 'host-offline') && (
+      {host?.live?.role === 'host' && (
+        <Tip
+          label={
+            host.live.unsupported
+              ? 'Só neste dispositivo — o servidor não suporta chats ao vivo'
+              : 'Só ao vivo'
+          }
+        >
+          <Radio
+            data-testid="chat-live"
+            className={cn(
+              'size-3 shrink-0',
+              host.live.announced ? 'text-accent-strong/80' : 'text-faint'
+            )}
+          />
+        </Tip>
+      )}
+      {!host?.live && (host?.mode === 'remote' || host?.mode === 'host-offline') && (
         <Tip
           label={`Executando em ${host.host?.name ?? 'outro dispositivo'}${host.mode === 'host-offline' ? ' (offline)' : ''}`}
         >

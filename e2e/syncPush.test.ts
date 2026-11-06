@@ -369,6 +369,8 @@ test('turno vindo do celular: aprovação na hora para ele, dismiss ao resolver,
   assert.deepEqual(Object.keys(pl).sort(), [
     'chatId',
     'chatTitle',
+    // desde 1.8.0 (§22.4): o host se identifica no payload
+    'hostDeviceId',
     'hostName',
     'kind',
     'requestId',
@@ -385,6 +387,8 @@ test('turno vindo do celular: aprovação na hora para ele, dismiss ao resolver,
   assert.equal(pl.text, 'Executar: npm test')
   assert.equal(pl.requestId, 'ap-1')
   assert.equal(pl.hostName, 'PC de casa')
+  assert.equal(pl.hostDeviceId, A.eng.deviceId)
+  assert.equal(pl.live, undefined)
   assert.ok(Math.abs(pl.ts - Date.now()) < 10_000)
   // o celular aprova (comando remoto) → o runner resolve → dismiss com a mesma tag, para ele
   A.agent({ type: 'approval-resolved', id: 'ap-1' })

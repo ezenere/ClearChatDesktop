@@ -98,6 +98,8 @@ import {
   type RecordType
 } from './records'
 import { HostController, type RunnerAdapter } from './host'
+import { LiveHost } from './live'
+import { LiveViewer } from './liveViewer'
 import { PushNotifier, type Presence } from './push'
 import { buildBundle, extractBundle, folderContentHash, parseBundle } from './skillsBundle'
 import { attachmentsDir, saveStoreFile } from '../attachments'
@@ -312,6 +314,10 @@ export class SyncEngine {
   readonly ws: RealtimeClient
   readonly host: HostController
   readonly push: PushNotifier
+  /** Chats só ao vivo deste dispositivo (§23, host). */
+  readonly live: LiveHost
+  /** Chats só ao vivo de outros dispositivos (§23.5, visualizador — só memória). */
+  readonly liveViewer: LiveViewer
   sk: Subkeys | null = null
   private dek: Uint8Array | null = null
   private tokens: Tokens | null = null
@@ -365,7 +371,9 @@ export class SyncEngine {
           cursor: this.cursor(),
           state_cursor: Number(this.kv('state_cursor') ?? 0),
           active_windows: this.host.activeWindows(),
-          subscriptions: this.host.subscriptions()
+          subscriptions: this.host.subscriptions(),
+          // §10.3 (1.8.0): chats só ao vivo — o servidor só manda live.* a quem declarou
+          caps: ['live_chats']
         }
       },
       onWelcome: (w) => this.onWelcome(w),
@@ -382,6 +390,8 @@ export class SyncEngine {
       timing: deps.timing?.ws
     })
     this.host = new HostController(this)
+    this.live = new LiveHost(this)
+    this.liveViewer = new LiveViewer(this)
     this.push = new PushNotifier(this, { graceMs: deps.pushGraceMs })
     this.tokens = this.loadTokens()
   }
@@ -457,6 +467,11 @@ export class SyncEngine {
     }
   }
 
+  /** Último `GET /api/info` desta execução (null antes de responder). */
+  get serverInfo(): SyncServerInfo | null {
+    return this.info
+  }
+
   get unlocked(): boolean {
     return !!this.sk
   }
@@ -506,7 +521,8 @@ export class SyncEngine {
       prompts: [...this.prompts],
       protocolError: this.protocolError,
       outdatedHosts: phase === 'signed-out' ? [] : this.outdated.map((d) => ({ ...d })),
-      push: { available: this.pushAvailable(), enabled: this.pushNotifyOn() }
+      push: { available: this.pushAvailable(), enabled: this.pushNotifyOn() },
+      live: { supported: this.live.supported(), newChatStorage: this.live.deviceDefault() }
     }
   }
 
@@ -552,6 +568,17 @@ export class SyncEngine {
 
   /** Inicialização do app: retoma a sessão salva (DEK lembrada → sincroniza). */
   async init(): Promise<void> {
+    // §23.1: padrão de chats novos gravado na primeira execução da 1.8.0
+    this.live.ensureDeviceDefault()
+    // conversões online → ao vivo interrompidas continuam (o tombstone espera na outbox)
+    try {
+      for (const r of this.conn
+        .prepare("SELECT id FROM chats WHERE storage = 'live_pending'")
+        .all() as { id: string }[])
+        this.markDirty('chat', r.id, r.id)
+    } catch {
+      /* */
+    }
     if (this.tokens && this.userId) {
       const dek = this.kv('remember') !== '0' ? this.deps.secrets.get('dek') : null
       if (dek) {
@@ -600,6 +627,10 @@ export class SyncEngine {
 
   /** Para o sync (logout, bloqueio). Não apaga nada. */
   stop(): void {
+    // chats ao vivo: somem dos outros na hora (bloqueio/logout/saída) e o espelho é descartado
+    this.live.quit()
+    this.live.stop()
+    this.liveViewer.reset()
     this.started = false
     if (this.pollTimer) clearInterval(this.pollTimer)
     if (this.pushTimer) clearTimeout(this.pushTimer)
@@ -622,6 +653,7 @@ export class SyncEngine {
     try {
       const info = await fetchServerInfo(this.baseUrl())
       this.info = info
+      this.live.onServerInfo(!!info.liveChats)
       this.pushOff = false
       this.setKv('server_name', info.name)
       this.protocolError = protocolMismatch(info)
@@ -1240,6 +1272,8 @@ export class SyncEngine {
   // ---------------- loop ----------------
 
   private pollDirty(): void {
+    // chats só ao vivo: o que iria para a outbox vira `rec` (§23.6)
+    this.live.drainDirty()
     try {
       const r = this.conn
         .prepare('SELECT COUNT(*) AS n, COALESCE(SUM(mark), 0) AS s FROM sync_dirty')
@@ -1505,6 +1539,25 @@ export class SyncEngine {
       return
     }
     const type = c.type as RecordType
+    // chat só ao vivo neste dispositivo: o tombstone dele é ignorado (a cópia local fica, §23.8) e
+    // conteúdo online dele não existe
+    const liveScope = type === 'chat' ? c.id : isContent(type) ? c.scope : null
+    if (liveScope && this.live.isLive(liveScope)) {
+      if (type === 'chat' && c.deleted) {
+        this.putRecord({
+          type,
+          id: c.id,
+          scope: c.scope,
+          rev: c.rev,
+          seq: c.seq,
+          deleted: true,
+          base: null
+        })
+        this.dropChatState(c.id)
+        if (this.live.storage(c.id) === 'live_pending') this.finishLivePending(c.id)
+      }
+      return
+    }
     if (isContent(type)) {
       const chatId = c.scope ?? ''
       this.bumpHead(chatId, c.seq, false)
@@ -1855,12 +1908,46 @@ export class SyncEngine {
         continue
       }
       let chatId: string | null = null
+      // chats só ao vivo nunca vão ao servidor (§23.2); o drainDirty os leva ao emissor ao vivo
+      if (d.type === 'chat' && this.live.storage(d.id) === 'live') continue
+      if (d.type === 'chat' && this.live.storage(d.id) === 'live_pending') {
+        // conversão online → ao vivo (§23.8): o tombstone comum do chat, mantendo a cópia local
+        if (!rec || rec.deleted) {
+          drop(d.type, d.id, d.mark)
+          this.finishLivePending(d.id)
+          continue
+        }
+        const item: PushItem = {
+          type: 'chat',
+          id: d.id,
+          scope: rec.scope,
+          base_rev: rec.rev,
+          rev: rec.rev + 1,
+          deleted: true,
+          blobs: []
+        }
+        lww.push({
+          item,
+          meta: {
+            type: 'chat',
+            id: d.id,
+            scope: rec.scope,
+            rev: item.rev,
+            mark: d.mark,
+            deleted: true,
+            plain: null
+          },
+          bytes: 64
+        })
+        continue
+      }
       if (isContent(d.type)) {
         chatId = d.scope ?? rec?.scope ?? null
         if (!chatId) {
           drop(d.type, d.id, d.mark)
           continue
         }
+        if (this.live.isLive(chatId)) continue
         // chat apagado localmente: o tombstone do chat leva o conteúdo (cascata no servidor)
         if (!existsLocal(this.conn, 'chat', chatId)) {
           drop(d.type, d.id, d.mark)
@@ -2115,10 +2202,14 @@ export class SyncEngine {
           this.conn
             .prepare("DELETE FROM sync_records WHERE type = 'memory' AND scope = ?")
             .run(m.id)
+        if (!m.deleted && m.type === 'chat') this.setKv(`live_recreate:${m.id}`, null)
       }
       for (const [cid, h] of Object.entries(res.chat_heads ?? {}))
         this.bumpHead(cid, h, cid === chatId)
     })()
+    for (const m of meta)
+      if (m.deleted && m.type === 'chat' && this.live.storage(m.id) === 'live_pending')
+        this.finishLivePending(m.id)
     this.emitStatus()
   }
 
@@ -2192,6 +2283,36 @@ export class SyncEngine {
         const current = c.current as Change | undefined
         const m = meta.find((x) => x.type === type && x.id === id)
         if (reason === 'gone' || (reason === 'rev_mismatch' && current?.deleted)) {
+          if (type === 'chat' && this.live.storage(id) === 'live_pending') {
+            // alguém apagou o chat online ao mesmo tempo: já não está no servidor (era o pedido)
+            if (current)
+              this.putRecord({
+                type,
+                id,
+                scope: current.scope,
+                rev: current.rev,
+                seq: current.seq,
+                deleted: true,
+                base: null
+              })
+            this.dropChatState(id)
+            this.finishLivePending(id)
+            continue
+          }
+          if (type === 'chat' && current && this.kv(`live_recreate:${id}`) === '1') {
+            // ao vivo → online de um chat que já foi online: recriação intencional (§23.8)
+            this.putRecord({
+              type,
+              id,
+              scope: current.scope,
+              rev: current.rev,
+              seq: current.seq,
+              deleted: true,
+              base: null
+            })
+            this.markDirty(type, id, id)
+            continue
+          }
           if (type === 'chat' && this.hasPendingContent(id) && existsLocal(this.conn, 'chat', id)) {
             this.addPrompt(id)
             continue
@@ -2587,7 +2708,9 @@ export class SyncEngine {
   private localHasData(): boolean {
     const n = (sql: string): number => (this.conn.prepare(sql).get() as { n: number }).n
     if (n('SELECT COUNT(*) AS n FROM providers')) return true
-    if (n('SELECT COUNT(*) AS n FROM chats')) return true
+    // chats só ao vivo ficam fora do merge (§12 passo 7)
+    if (n("SELECT COUNT(*) AS n FROM chats WHERE COALESCE(storage, 'online') = 'online'"))
+      return true
     if (n('SELECT COUNT(*) AS n FROM memories')) return true
     if (n('SELECT COUNT(*) AS n FROM memory_collections')) return true
     const presets = this.conn.prepare('SELECT name, config_json FROM presets').all() as {
@@ -2677,7 +2800,7 @@ export class SyncEngine {
     return {
       local: {
         providers: n('SELECT COUNT(*) AS n FROM providers'),
-        chats: n('SELECT COUNT(*) AS n FROM chats'),
+        chats: n("SELECT COUNT(*) AS n FROM chats WHERE COALESCE(storage, 'online') = 'online'"),
         presets: n('SELECT COUNT(*) AS n FROM presets'),
         memories: n('SELECT COUNT(*) AS n FROM memories')
       },
@@ -2687,7 +2810,8 @@ export class SyncEngine {
         presets: live('preset'),
         memories: live('memory')
       },
-      conflictingChats: this.conflictingChats(snap).length
+      conflictingChats: this.conflictingChats(snap).length,
+      liveChats: this.live.countLive()
     }
   }
 
@@ -2696,6 +2820,7 @@ export class SyncEngine {
     const out: string[] = []
     for (const r of this.onlineOf(snap, 'chat')) {
       if (r.change.deleted || !existsLocal(this.conn, 'chat', r.change.id)) continue
+      if (this.live.isLive(r.change.id)) continue
       if (!this.sameContent(snap, r.change.id)) out.push(r.change.id)
     }
     return out
@@ -2778,6 +2903,21 @@ export class SyncEngine {
         const c = r.change
         if (!isRecordType(c.type)) {
           this.putRecord({ ...c, deleted: c.deleted, base: null, opaque: c })
+          continue
+        }
+        // chats só ao vivo locais nunca entram no merge (§12 passo 7): guarda só o tombstone
+        const liveId = c.type === 'chat' ? c.id : isContent(c.type) ? c.scope : null
+        if (liveId && this.live.isLive(liveId)) {
+          if (c.type === 'chat' && c.deleted)
+            this.putRecord({
+              type: c.type,
+              id: c.id,
+              scope: c.scope,
+              rev: c.rev,
+              seq: c.seq,
+              deleted: true,
+              base: null
+            })
           continue
         }
         if (c.type === 'skill') {
@@ -2863,6 +3003,10 @@ export class SyncEngine {
       ] as RecordType[]) {
         for (const id of listLocalIds(this.conn, type)) {
           const rec = this.record(type, id)
+          if (type === 'chat' || type === 'session' || type === 'message') {
+            const l0 = buildLocal(this.conn, type, id)
+            if (l0?.scope && this.live.isLive(l0.scope)) continue
+          }
           if (!rec) {
             const l = buildLocal(this.conn, type, id)
             this.markDirty(type, id, l?.scope ?? null)
@@ -2901,6 +3045,17 @@ export class SyncEngine {
     this.flushApply(acc)
     this.start()
     this.emitStatus()
+    // §12 passo 7: chats só ao vivo (inclusive os criados antes do login) continuam locais
+    const nLive = this.live.countLive()
+    if (nLive)
+      this.emit({
+        type: 'sync-notice',
+        kind: 'info',
+        text:
+          nLive === 1
+            ? '1 chat só ao vivo continua só neste dispositivo — use “Salvar online” no menu do chat para enviá-lo.'
+            : `${nLive} chats só ao vivo continuam só neste dispositivo — use “Salvar online” no menu de cada chat para enviá-los.`
+      })
   }
 
   /** Mapa id local → id online das entidades deduplicadas (§12.4). */
@@ -3520,6 +3675,7 @@ export class SyncEngine {
             : this.connection
     else if (s === 'offline') this.connection = 'offline'
     this.host.onConnection(s === 'online')
+    if (s !== 'online') this.live.onDisconnect()
     if (info?.code) this.log('ws fechado', info.code, info.reason)
     this.emitStatus()
   }
@@ -3529,6 +3685,8 @@ export class SyncEngine {
     if (typeof w.keys_rev === 'number' && w.keys_rev !== Number(this.kv('keys_rev') ?? 0))
       void this.refreshKeys().catch(() => undefined)
     this.host.onWelcome(w)
+    this.live.onWelcome(w)
+    this.liveViewer.onWelcome(w)
     if (typeof w.state_cursor === 'number') this.setKv('state_cursor', w.state_cursor)
     void this.refreshDevices()
     this.scheduleCycle(0)
@@ -3553,6 +3711,137 @@ export class SyncEngine {
       default:
         this.host.onEvent(f)
     }
+  }
+
+  // ---------------- chats só ao vivo: conversões (§23.8) ----------------
+
+  /** Tombstone aceito (ou o chat já não estava online): o chat vira só ao vivo e é anunciado. */
+  finishLivePending(chatId: string): void {
+    if (this.live.storage(chatId) !== 'live_pending') return
+    this.conn.prepare("DELETE FROM sync_dirty WHERE type = 'chat' AND id = ?").run(chatId)
+    this.conn.prepare('DELETE FROM sync_dirty WHERE scope = ?').run(chatId)
+    this.live.setStorage(chatId, 'live')
+    this.host.forgetChat(chatId)
+    this.live.newEpoch(chatId)
+    this.live.schedule(chatId, true)
+    this.host.emitInfoOf(chatId)
+    this.emit({
+      type: 'sync-notice',
+      kind: 'success',
+      text: 'O chat saiu do servidor: agora é só ao vivo neste dispositivo.',
+      chatId
+    })
+    this.emitStatus()
+  }
+
+  /** Números para a confirmação de "Salvar online" (mensagens, anexos, bytes estimados). */
+  liveStats(chatId: string): { messages: number; attachments: number; bytes: number } {
+    const rows = this.conn
+      .prepare(
+        `SELECT m.message_json, m.meta_json FROM messages m JOIN sessions s ON s.id = m.session_id
+          WHERE s.chat_id = ?`
+      )
+      .all(chatId) as { message_json: string; meta_json: string }[]
+    const files = new Set<string>()
+    let bytes = 0
+    for (const r of rows) {
+      bytes += r.message_json.length + (r.meta_json?.length ?? 0)
+      for (const f of attachmentFiles(r.message_json + '\n' + (r.meta_json ?? ''))) files.add(f)
+    }
+    const dir = (() => {
+      try {
+        return attachmentsDir()
+      } catch {
+        return null
+      }
+    })()
+    if (dir)
+      for (const f of files) {
+        try {
+          bytes += readFileSync(join(dir, f)).length
+        } catch {
+          /* ausente */
+        }
+      }
+    return { messages: rows.length, attachments: files.size, bytes }
+  }
+
+  /**
+   * "Salvar online" (ao vivo → online, §23.8): o chat vira um chat comum criado offline e tudo vai
+   * pela outbox (chat no lote LWW, conteúdo em replay com chat_bases = 0). Não depende de
+   * `features.liveChats`. O servidor apaga o vínculo no commit do `chat`.
+   */
+  saveOnline(chatId: string): void {
+    const st = this.live.storage(chatId)
+    if (!st) throw new Error('Chat não encontrado.')
+    if (st === 'online') return
+    if (this.phase() !== 'ready') throw new Error('Entre e desbloqueie a conta para salvar online.')
+    const rec = this.record('chat', chatId)
+    if (rec?.deleted) this.setKv(`live_recreate:${chatId}`, '1')
+    else if (!rec) this.setKv(`live_recreate:${chatId}`, '1')
+    this.live.setStorage(chatId, 'online')
+    this.live.forget(chatId)
+    this.setChatRow(chatId, { head: 0, base_head: 0, state: null, needs_refetch: 0 })
+    this.markDirty('chat', chatId, chatId)
+    for (const s of this.conn.prepare('SELECT id FROM sessions WHERE chat_id = ?').all(chatId) as {
+      id: string
+    }[])
+      this.markDirty('session', s.id, chatId)
+    for (const m of this.conn
+      .prepare(
+        'SELECT m.id FROM messages m JOIN sessions s ON s.id = m.session_id WHERE s.chat_id = ?'
+      )
+      .all(chatId) as { id: string }[])
+      this.markDirty('message', m.id, chatId)
+    this.host.emitInfoOf(chatId)
+    this.schedulePush()
+    this.emitStatus()
+  }
+
+  /**
+   * "Tirar do servidor" (online → ao vivo, §23.8): confere as pré-condições, baixa o que faltar
+   * (conteúdo, anexos) e grava `live_pending`; o tombstone comum sai pela outbox e, no ack, o chat
+   * vira `live` e é anunciado com um epoch novo.
+   */
+  async takeOffServer(chatId: string): Promise<void> {
+    if (this.live.storage(chatId) !== 'online') throw new Error('Este chat já é só ao vivo.')
+    if (!this.active) throw new Error('Entre e desbloqueie a conta primeiro.')
+    if (!this.ws.online) throw new Error('Sem conexão com o servidor.')
+    if (!this.live.serverSupports())
+      throw new Error('O servidor não suporta chats só ao vivo — atualize o servidor.')
+    const mode = this.host.mode(chatId)
+    if (mode === 'diverged') throw new Error('Este chat está divergente: escolha a versão antes.')
+    if (mode !== 'local')
+      throw new Error(
+        `Só o dispositivo que executa o chat (${this.host.hostName(chatId)}) pode tirá-lo do servidor.`
+      )
+    if (this.host.windowOpen(chatId) || this.deps.runner?.busyChats().has(chatId))
+      throw new Error('O chat está rodando — espere o turno terminar.')
+    if (this.hasPendingContent(chatId) || this.isDirty('chat', chatId))
+      throw new Error('O chat ainda tem mudanças sendo enviadas — tente de novo em instantes.')
+    if (this.chatRow(chatId).needs_refetch) {
+      await this.replaceContentWithOnline(chatId, false)
+      if (this.chatRow(chatId).needs_refetch)
+        throw new Error('Não foi possível baixar o chat inteiro — tente de novo.')
+    }
+    // todos os anexos locais (os que faltam são baixados antes; falhou → não converte)
+    const rows = this.conn
+      .prepare(
+        `SELECT m.message_json, m.meta_json FROM messages m JOIN sessions s ON s.id = m.session_id
+          WHERE s.chat_id = ?`
+      )
+      .all(chatId) as { message_json: string; meta_json: string }[]
+    const files = new Set<string>()
+    for (const r of rows)
+      for (const f of attachmentFiles(r.message_json + '\n' + (r.meta_json ?? ''))) files.add(f)
+    for (const f of files)
+      if (!(await this.ensureAttachment(f)))
+        throw new Error('Não foi possível baixar todos os anexos do chat — tente de novo.')
+    this.live.setStorage(chatId, 'live_pending')
+    this.markDirty('chat', chatId, chatId)
+    this.host.emitInfoOf(chatId)
+    this.schedulePush()
+    this.emitStatus()
   }
 
   // ---------------- pontes para o host ----------------
@@ -3584,6 +3873,7 @@ export class SyncEngine {
 
   /** Sessões (do banco) do chat, com o status gravado. */
   sessionsOf(chatId: string): Session[] {
+    if (this.host.isViewerChat(chatId)) return this.liveViewer.sessions(chatId)
     const ids = this.conn
       .prepare('SELECT id FROM sessions WHERE chat_id = ? ORDER BY depth, created_at')
       .all(chatId) as { id: string }[]

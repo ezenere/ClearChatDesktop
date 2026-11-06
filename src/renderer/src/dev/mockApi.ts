@@ -1849,7 +1849,8 @@ export function createMockApi(scenario: string): ClearApi {
     // ?scenario=branches → aviso "Atualize <dispositivo> para usar versões de mensagens"
     outdatedHosts:
       scenario === 'branches' ? [{ name: 'Notebook antigo', appVersion: '0.6.1' }] : [],
-    push: { available: false, enabled: true }
+    push: { available: false, enabled: true },
+    live: { supported: false, newChatStorage: 'live' }
   })
   const noSync = (): Promise<never> =>
     Promise.reject(new Error('Sync indisponível no modo de demonstração.'))
@@ -1930,7 +1931,13 @@ export function createMockApi(scenario: string): ClearApi {
       hostSkills: () => delay(null),
       remoteListDir: (chatId, path) => remoteFs.remoteListDir(chatId, path),
       remoteReadFile: (chatId, path, offset, length) =>
-        remoteFs.remoteReadFile(chatId, path, offset, length)
+        remoteFs.remoteReadFile(chatId, path, offset, length),
+      liveChats: () => Promise.resolve([]),
+      liveOpen: noSync,
+      liveAttach: noSync,
+      liveStats: () => Promise.resolve({ messages: 0, attachments: 0, bytes: 0 }),
+      saveOnline: noSync,
+      takeOffServer: noSync
     },
     memory: createMemoryMock({
       emit,

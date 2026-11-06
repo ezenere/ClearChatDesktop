@@ -143,6 +143,61 @@ export function saveAttachment(input: AttachmentInput): AttachmentInfo {
 }
 
 /**
+ * Classificação prévia de um anexo pelo nome/tipo (sem os bytes) — o primeiro pedaço de um
+ * `attach.put` (sync §23.7) é validado antes de o resto chegar. `kind` null = tipo não suportado;
+ * 'maybe-text' só se confirma (UTF-8) com os bytes.
+ */
+export function precheckAttachment(
+  name: string,
+  mime?: string
+): { kind: AttachmentInfo['kind'] | 'maybe-text' | null; mime: string; ext: string | null } {
+  const c = classifyAttachment(sanitizeName(name), mime)
+  const ext =
+    c.kind === 'text' || c.kind === 'maybe-text'
+      ? 'txt'
+      : c.kind
+        ? (EXT_BY_MIME[c.mime] ?? 'bin')
+        : null
+  return { kind: c.kind, mime: c.mime, ext }
+}
+
+/**
+ * O store já tem o arquivo de um anexo (`<sha256>.<ext>` como o saveAttachment gravaria)? Devolve o
+ * `AttachmentInfo` dele (renovando o mtime para o GC) ou null.
+ */
+export function existingAttachment(
+  name: string,
+  mime: string | undefined,
+  sha256: string,
+  size: number
+): AttachmentInfo | null {
+  if (!/^[0-9a-f]{64}$/.test(sha256) || !dir) return null
+  const c = classifyAttachment(sanitizeName(name), mime)
+  if (!c.kind) return null
+  const candidates =
+    c.kind === 'maybe-text' || c.kind === 'text' ? ['txt'] : [EXT_BY_MIME[c.mime] ?? 'bin']
+  for (const ext of candidates) {
+    const file = `${sha256}.${ext}`
+    const path = join(dir, file)
+    try {
+      const st = statSync(path)
+      if (!st.isFile() || st.size !== size) continue
+      const t = new Date()
+      utimesSync(path, t, t)
+      const kind = c.kind === 'maybe-text' ? 'text' : c.kind
+      const m =
+        kind === 'text' && (!c.mime || c.mime === 'application/octet-stream')
+          ? 'text/plain'
+          : c.mime
+      return { sha256, name: sanitizeName(name), mime: m, size, kind, file }
+    } catch {
+      /* não existe */
+    }
+  }
+  return null
+}
+
+/**
  * Salva bytes já validados no store com a extensão dada (content-addressed, escrita atômica,
  * dedup renova o mtime). Usado pelas imagens do questionário (ask_user). Retorna o nome do arquivo.
  */

@@ -7,7 +7,7 @@ import { hostname } from 'os'
 import { join } from 'path'
 import { randomBytes } from 'crypto'
 import { IPC } from '@shared/ipc'
-import type { AttachmentInfo, QueuedMessage } from '@shared/types'
+import type { AttachmentInfo, ChatConfig, QueuedMessage } from '@shared/types'
 import type { SyncServerKind, TakeoverOptions } from '@shared/sync'
 import { REMOTE_FS_LIMITS, type RemoteDirResult, type RemoteReadResult } from '@shared/remoteFs'
 import { emit, onAgentEvent } from '../events'
@@ -212,7 +212,19 @@ function runnerAdapter(): RunnerAdapter {
       const list = await skills.activeSkillsFor(chat.config)
       return list.map((s) => ({ name: s.name, description: s.description }))
     },
-    onTurnEnd: (fn) => runner.onTurnEnd(fn)
+    onTurnEnd: (fn) => runner.onTurnEnd(fn),
+    // chat.update de um chat ao vivo (§23.7): como a edição local na tela de configuração
+    updateChat(chatId, patch) {
+      const { chat, modelChanged } = chatsRepo.update(chatId, {
+        ...(patch.title !== undefined ? { title: patch.title } : {}),
+        ...(patch.config ? { config: patch.config as Partial<ChatConfig> } : {})
+      })
+      if (modelChanged && chat.mainSessionId) {
+        const s = sessionsRepo.setModel(chat.mainSessionId, chat.config.model)
+        if (s) emit({ type: 'session-updated', session: s })
+      }
+      emit({ type: 'chat-updated', chat })
+    }
   }
 }
 
@@ -327,8 +339,23 @@ export async function gateChat<T>(
   } = {}
 ): Promise<T> {
   const e = engine
-  if (!e || !chatId || !e.active) return local()
+  if (!e || !chatId || !e.active) {
+    if (chatId && e?.host.isViewerChat(chatId))
+      throw new Error('Entre na conta para usar este chat.')
+    return local()
+  }
   const mode = e.host.mode(chatId)
+  // chat só ao vivo de outro dispositivo (§23.7): só comandos ao host; nunca roda aqui
+  if (e.host.isViewerChat(chatId)) {
+    if (mode !== 'remote')
+      throw new Error(
+        mode === 'offline'
+          ? 'Sem conexão com o servidor — o chat ao vivo volta quando reconectar.'
+          : `Reconectando a ${e.host.hostName(chatId)}…`
+      )
+    const r = await e.host.sendCommand(chatId, kind, payload)
+    return opts.remote ? opts.remote(r) : (undefined as T)
+  }
   if (mode === 'remote') {
     try {
       const r = await e.host.sendCommand(chatId, kind, payload)
@@ -384,12 +411,13 @@ runner.setInterChatRouter(async (chatId, sessionId, text, meta) => {
 })
 
 export function chatOfSession(sessionId: string): string | null {
-  return sessionsRepo.get(sessionId)?.chatId ?? null
+  return sessionsRepo.get(sessionId)?.chatId ?? engine?.liveViewer.chatOfSession(sessionId) ?? null
 }
 
 export function chatOfMessage(messageId: string): string | null {
   const m = messagesRepo.get(messageId)
-  return m ? chatOfSession(m.sessionId) : null
+  if (m) return chatOfSession(m.sessionId)
+  return engine?.liveViewer.chatOfMessage(messageId) ?? null
 }
 
 /** agent.send com o portão (anexos sobem antes quando vai ao host). */
@@ -415,7 +443,8 @@ export async function gatedSend(
       })
     )
       return { queued: true }
-    if (e.host.mode(chatId) === 'remote' && attachments?.length)
+    // chat ao vivo de outro dispositivo: os anexos já estão no host (attach.put), nada de blob
+    if (e.host.mode(chatId) === 'remote' && attachments?.length && !e.host.isViewerChat(chatId))
       await e.ensureBlobs(new Map([['send', attachments.map((a) => a.sha256)]]))
   }
   return gateChat(
@@ -528,6 +557,25 @@ export function syncHandlers(): Record<string, Handler> {
       engine && typeof chatId === 'string'
         ? engine.host.fsList(chatId, typeof path === 'string' ? path : '')
         : SYNC_OFF,
+    // ---- chats só ao vivo (§23) ----
+    [IPC.sync.liveChats]: () => engine?.liveViewer.views() ?? [],
+    [IPC.sync.liveOpen]: (chatId: string) => need().liveViewer.open(String(chatId)),
+    [IPC.sync.liveAttach]: (
+      chatId: string,
+      name: string,
+      mime: string | undefined,
+      data: Uint8Array
+    ) => {
+      if (!(data instanceof Uint8Array)) throw new Error('Arquivo inválido.')
+      return need().liveViewer.upload(String(chatId), {
+        name: String(name ?? 'arquivo'),
+        ...(typeof mime === 'string' && mime ? { mime } : {}),
+        data
+      })
+    },
+    [IPC.sync.liveStats]: (chatId: string) => need().liveStats(String(chatId)),
+    [IPC.sync.saveOnline]: (chatId: string) => need().saveOnline(String(chatId)),
+    [IPC.sync.takeOffServer]: (chatId: string) => need().takeOffServer(String(chatId)),
     [IPC.sync.remoteReadFile]: (
       chatId: string,
       path: string,

@@ -275,7 +275,13 @@ const api: FullClearApi = {
     hostSkills: (chatId) => invoke(IPC.sync.hostSkills, chatId),
     remoteListDir: (chatId, path) => invoke(IPC.sync.remoteListDir, chatId, path),
     remoteReadFile: (chatId, path, offset, length) =>
-      invoke(IPC.sync.remoteReadFile, chatId, path, offset, length)
+      invoke(IPC.sync.remoteReadFile, chatId, path, offset, length),
+    liveChats: () => invoke(IPC.sync.liveChats),
+    liveOpen: (chatId) => invoke(IPC.sync.liveOpen, chatId),
+    liveAttach: (chatId, name, mime, data) => invoke(IPC.sync.liveAttach, chatId, name, mime, data),
+    liveStats: (chatId) => invoke(IPC.sync.liveStats, chatId),
+    saveOnline: (chatId) => invoke(IPC.sync.saveOnline, chatId),
+    takeOffServer: (chatId) => invoke(IPC.sync.takeOffServer, chatId)
   },
   onEvent: (cb) => {
     const listener = (_e: IpcRendererEvent, event: AgentEvent): void => cb(event)

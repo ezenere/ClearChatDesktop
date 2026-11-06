@@ -1333,6 +1333,214 @@ async function main(): Promise<void> {
     }
   )
 
+  // ---------------- chats só ao vivo (§23, desde 1.8.0) ----------------
+  // Instância com `liveChats` e duas instâncias novas do app (as de cima ficam fechadas para
+  // poupar memória). O "banco do servidor" é o estado do servidor falso (registros + chat_states).
+  await A.app.close().catch(() => {})
+  await B.app.close().catch(() => {})
+  const LIVE_EMAIL = 'aovivo@teste.dev'
+  const srvLive = await startFakeSyncServer({
+    hostDropGraceMs: 1500,
+    commandTimeoutMs: 15_000,
+    name: 'ClearChat (ao vivo)',
+    liveChats: true
+  })
+  const live = await srvLive.createAccount({ email: LIVE_EMAIL, password: PASSWORD })
+  const L1 = await launch('PC ao vivo', join(BASE, 'live-a'), srvLive.url)
+  const L2 = await launch('Notebook ao vivo', join(BASE, 'live-b'), srvLive.url)
+  const loginLive = async (i: Inst): Promise<void> => {
+    await api(i, 'sync.requestCode', LIVE_EMAIL)
+    await api(i, 'sync.verifyCode', LIVE_EMAIL, srvLive.lastCode(LIVE_EMAIL))
+    await api(i, 'sync.unlock', PASSWORD, true)
+  }
+  const liveRows = (chatId: string): any[] =>
+    srvLive.records(live.userId).filter((r) => r.id === chatId || r.scope === chatId)
+  /** O título/texto não pode estar em nenhum arquivo do banco do visualizador (nada gravado, §23.5). */
+  const dbHas = (i: Inst, text: string): boolean =>
+    ['clearchat.db', 'clearchat.db-wal'].some((f) => {
+      try {
+        return readFileSync(join(i.dir, f)).includes(Buffer.from(text, 'utf8'))
+      } catch {
+        return false
+      }
+    })
+  let liveChat: any = null
+  let liveProvider = ''
+
+  await step(
+    '§23 escolha "Salvar online"/"Só ao vivo" no Novo chat (padrão só ao vivo)',
+    async () => {
+      await loginLive(L1)
+      await waitFor(async () => (await status(L1)).live?.supported, 20_000, 'L1 com suporte')
+      const st = await status(L1)
+      assert(
+        st.live.newChatStorage === 'live',
+        `padrão de instalação nova (${st.live.newChatStorage})`
+      )
+      liveProvider = (
+        await api(L1, 'providers.create', {
+          name: 'LLM falso',
+          baseUrl: llmBase,
+          apiKey: 'sk-fake'
+        })
+      ).id
+      await L1.page.getByTestId('new-chat-storage').waitFor({ timeout: 10_000 })
+      assert(
+        (await L1.page.getByTestId('new-chat-storage-live').getAttribute('aria-pressed')) ===
+          'true',
+        'Só ao vivo marcado'
+      )
+      await shot(L1, '40-novo-chat-ao-vivo')
+    }
+  )
+
+  await step(
+    '§23 chat criado em A aparece em B ("Ao vivo em <host>"), sem nada no servidor',
+    async () => {
+      liveChat = await api(L1, 'chats.create', {
+        title: 'Plano só ao vivo',
+        storage: 'live',
+        config: { providerId: liveProvider, model: 'fake/agent', cwd: BASE, enabledTools: [] }
+      })
+      await api(L1, 'agent.send', liveChat.mainSessionId, 'primeira mensagem ao vivo')
+      await waitFor(
+        async () =>
+          (await texts(L1, liveChat.mainSessionId)).includes('ok: primeira mensagem ao vivo'),
+        15_000,
+        'A respondeu'
+      )
+      await waitFor(
+        async () => srvLive.liveBindings(live.userId).some((b) => b.chat_id === liveChat.id),
+        10_000,
+        'vínculo no servidor'
+      )
+      await loginLive(L2)
+      await L2.page
+        .locator('[data-testid="live-chat-item"]', { hasText: 'Plano só ao vivo' })
+        .waitFor({ timeout: 20_000 })
+      await L2.page.getByText('Ao vivo em PC ao vivo').waitFor()
+      assert(liveRows(liveChat.id).length === 0, 'zero registros do chat ao vivo no servidor')
+      assert(!srvLive.chatState(live.userId, liveChat.id), 'sem chat_states')
+      await openChatUi(L1, 'Plano só ao vivo')
+      await L1.page.getByTestId('live-badge').waitFor()
+      await shot(L1, '41-host-so-ao-vivo')
+    }
+  )
+
+  await step(
+    '§23 B abre (histórico vindo de A) e envia mensagem com anexo; A executa; B vê a resposta',
+    async () => {
+      await L2.page
+        .locator('[data-testid="live-chat-item"]', { hasText: 'Plano só ao vivo' })
+        .click()
+      await L2.page
+        .getByText('primeira mensagem ao vivo', { exact: true })
+        .waitFor({ timeout: 20_000 })
+      await L2.page.getByTestId('live-badge').waitFor()
+      const info = await L2.page.evaluate(
+        ([cid]) =>
+          (window as any).api.sync.liveAttach(
+            cid,
+            'nota-ao-vivo.txt',
+            'text/plain',
+            new TextEncoder().encode('CONTEUDO-DO-ANEXO-AO-VIVO\n')
+          ),
+        [liveChat.id] as const
+      )
+      assert(/^[0-9a-f]{64}\.txt$/.test(info.file), `anexo no store do host (${info.file})`)
+      assert(!existsSync(join(L2.dir, 'attachments', info.file)), 'B não gravou o anexo')
+      await api(L2, 'agent.send', liveChat.mainSessionId, 'resuma o anexo', [info])
+      await waitFor(
+        async () =>
+          hits.some((h) => JSON.stringify(h.messages ?? []).includes('CONTEUDO-DO-ANEXO-AO-VIVO')),
+        20_000,
+        'o host mandou o anexo ao modelo'
+      )
+      // a resposta do modelo falso repete o começo da mensagem (o bloco do anexo de texto)
+      await waitFor(
+        async () =>
+          (await texts(L2, liveChat.mainSessionId)).some((t) => t.startsWith('ok: <file name=')),
+        20_000,
+        'B recebeu a resposta (rec)'
+      )
+      await L2.page.getByText(/^ok: <file name=/).waitFor({ timeout: 10_000 })
+      await shot(L2, '42-visualizador-ao-vivo')
+      assert(liveRows(liveChat.id).length === 0, 'continua sem registros no servidor')
+      assert(!dbHas(L2, 'Plano só ao vivo') && !dbHas(L2, 'resuma o anexo'), 'nada no banco de B')
+    }
+  )
+
+  await step(
+    '§23 ao vivo → online ("Salvar online") e online → ao vivo ("Tirar do servidor")',
+    async () => {
+      await L1.page.getByTestId('chat-menu').click()
+      await L1.page.getByTestId('chat-save-online').click()
+      await L1.page.getByTestId('live-convert-confirm').click()
+      await waitFor(
+        async () => liveRows(liveChat.id).some((r) => r.type === 'chat' && !r.deleted),
+        20_000,
+        'chat online no servidor'
+      )
+      await waitFor(
+        async () => !srvLive.liveBindings(live.userId).some((b) => b.chat_id === liveChat.id),
+        10_000,
+        'vínculo apagado (saved_online)'
+      )
+      await waitFor(
+        async () =>
+          (await texts(L2, liveChat.mainSessionId)).some((t) => t.startsWith('ok: <file name=')),
+        20_000,
+        'B recebeu o chat comum pelo sync'
+      )
+      await settled(L1)
+      await L2.page
+        .locator('[data-testid="chat-item"]', { hasText: 'Plano só ao vivo' })
+        .waitFor({ timeout: 15_000 })
+      assert(
+        (await L2.page.locator('[data-testid="live-chat-item"]').count()) === 0,
+        'saiu da seção ao vivo'
+      )
+      // de volta: tira do servidor
+      await L1.page.getByTestId('chat-menu').click()
+      await L1.page.getByTestId('chat-take-off-server').click()
+      await L1.page.getByTestId('live-convert-confirm').click()
+      await waitFor(
+        async () => srvLive.liveBindings(live.userId).some((b) => b.chat_id === liveChat.id),
+        20_000,
+        'anunciado de novo'
+      )
+      const rows = liveRows(liveChat.id)
+      assert(
+        rows.length === 1 && rows[0].type === 'chat' && rows[0].deleted,
+        `só o tombstone do chat (${JSON.stringify(rows.map((r) => [r.type, r.deleted]))})`
+      )
+      assert(!srvLive.chatState(live.userId, liveChat.id), 'sem chat_states')
+      await L2.page
+        .locator('[data-testid="live-chat-item"]', { hasText: 'Plano só ao vivo' })
+        .waitFor({ timeout: 15_000 })
+      assert(
+        (await L2.page
+          .locator('[data-testid="chat-item"]', { hasText: 'Plano só ao vivo' })
+          .count()) === 0,
+        'B apagou a cópia online'
+      )
+      assert((await texts(L1, liveChat.mainSessionId)).length >= 4, 'A manteve o histórico')
+    }
+  )
+
+  await step('§23 A fecha o app → o chat some de B', async () => {
+    await L1.app.close()
+    await waitFor(
+      async () => (await L2.page.locator('[data-testid="live-chat-item"]').count()) === 0,
+      15_000,
+      'sumiu de B'
+    )
+    assert(srvLive.liveBindings(live.userId).length === 0, 'servidor sem vínculos')
+    await shot(L2, '43-host-fechou')
+  })
+  await L2.app.close().catch(() => {})
+  await srvLive.close()
+
   const failed = results.filter((r) => !r.ok)
   writeFileSync(join(BASE, 'report.json'), JSON.stringify(results, null, 2))
   console.log(

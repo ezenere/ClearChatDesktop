@@ -48,6 +48,8 @@ export interface FakeSyncOptions {
   accessTtlS?: number
   /** true → features.push = { providers: ['fcm'] } e POST /push grava os avisos (§22). */
   push?: boolean
+  /** true → features.liveChats e os frames live.* (chats só ao vivo, §23, desde 1.8.0). */
+  liveChats?: boolean
   log?: (line: string) => void
 }
 
@@ -90,6 +92,14 @@ export interface FakeSyncServer {
   /** Define/remove o token de push de um dispositivo (como o app móvel faria). */
   setPushToken(deviceId: string, token: string | null): void
   wsLog: { dir: 'in' | 'out'; deviceId?: string; t: string; frame: any }[]
+  /** Vínculos ao vivo em memória do usuário (§23.3). */
+  liveBindings(userId: string): {
+    chat_id: string
+    host_device_id: string
+    epoch: number
+    arev: number
+    running: boolean
+  }[]
 }
 
 // ============================================================================================
@@ -155,6 +165,18 @@ interface User {
   blobs: Map<string, Buffer>
   receipts: Map<string, any>
   discards: { chat_id: string; device_id: string; base: number }[]
+  /** Vínculos ao vivo (§23.3) — só memória. */
+  live: Map<string, LiveBinding>
+}
+
+interface LiveBinding {
+  chat_id: string
+  host_device_id: string
+  epoch: number
+  arev: number
+  running: boolean
+  env: any
+  announced_at: string
 }
 
 interface Device {
@@ -188,6 +210,8 @@ interface Conn {
   /** Fechada por outra conexão do mesmo dispositivo (não conta como queda). */
   superseded: boolean
   closed: boolean
+  /** `hello.caps` aceitas (§10.3). */
+  caps: Set<string>
 }
 
 interface PendingCmd {
@@ -318,7 +342,22 @@ const COMMAND_KINDS = new Set([
   'branch.select',
   // desde 1.3.0: arquivos do host (só leitura, §8.6)
   'fs.list',
-  'fs.read'
+  'fs.read',
+  // desde 1.8.0: chats só ao vivo (§23.5, §23.7)
+  'history.list',
+  'history.changes',
+  'history.item',
+  'chat.update',
+  'attach.put',
+  'attach.get'
+])
+const LIVE_ONLY_KINDS = new Set([
+  'history.list',
+  'history.changes',
+  'history.item',
+  'chat.update',
+  'attach.put',
+  'attach.get'
 ])
 const ID_RE = /^[A-Za-z0-9._-]{1,128}$/
 const BLOB_RE = /^[0-9a-f]{64}$/
@@ -368,6 +407,7 @@ export async function startFakeSyncServer(opts: FakeSyncOptions = {}): Promise<F
     idleTimeoutMs: opts.idleTimeoutMs ?? 30_000,
     accessTtlS: opts.accessTtlS ?? 3600,
     push: !!opts.push,
+    liveChats: !!opts.liveChats,
     log: opts.log ?? ((): void => {})
   }
 
@@ -407,7 +447,8 @@ export async function startFakeSyncServer(opts: FakeSyncOptions = {}): Promise<F
       chats: new Map(),
       blobs: new Map(),
       receipts: new Map(),
-      discards: []
+      discards: [],
+      live: new Map()
     }
     users.set(u.id, u)
     usersByEmail.set(email, u.id)
@@ -529,6 +570,8 @@ export async function startFakeSyncServer(opts: FakeSyncOptions = {}): Promise<F
     const c = connOf(dev.id)
     if (c) closeConn(c, 4403, reason)
     if (dev.graceTimer) clearTimeout(dev.graceTimer)
+    const lu = users.get(dev.userId)
+    if (lu) liveRemove(lu, dev.id, liveOf(lu, dev.id), 'device_revoked')
     dev.inGrace = false
     failPendingForHost(dev.id)
     const u = users.get(dev.userId)
@@ -771,6 +814,9 @@ export async function startFakeSyncServer(opts: FakeSyncOptions = {}): Promise<F
     if (dev.graceTimer) clearTimeout(dev.graceTimer)
     dev.graceTimer = setTimeout(() => graceExpired(dev), o.hostDropGraceMs)
     for (const st of u.chats.values()) if (st.host_device_id === dev.id) emitState(u, st)
+    if (liveOf(u, dev.id).length)
+      for (const o2 of liveConns(u.id, dev.id))
+        send(o2, { t: 'live.host', host_device_id: dev.id, status: 'grace' })
   }
 
   function graceExpired(dev: Device): void {
@@ -786,6 +832,104 @@ export async function startFakeSyncServer(opts: FakeSyncOptions = {}): Promise<F
       emitState(u, st, { kind: 'host_dropped', device_id: dev.id })
       if (st.handover) grant(u, st, st.handover.to_device_id, 'takeover')
     }
+    liveRemove(u, dev.id, liveOf(u, dev.id), 'host_dropped')
+  }
+
+  // ---------------- chats só ao vivo (§23) ----------------
+
+  const liveConns = (userId: string, exceptDevice?: string): Conn[] =>
+    userConns(userId).filter((c) => c.caps.has('live_chats') && c.deviceId !== exceptDevice)
+
+  function toLiveChat(b: LiveBinding): any {
+    const host = devices.get(b.host_device_id)
+    return {
+      chat_id: b.chat_id,
+      epoch: b.epoch,
+      arev: b.arev,
+      running: b.running,
+      env: b.env,
+      host: {
+        device_id: b.host_device_id,
+        name: host?.name ?? '',
+        platform: host?.platform ?? '',
+        status: devStatus(b.host_device_id) === 'online' ? 'online' : 'grace'
+      },
+      announced_at: b.announced_at
+    }
+  }
+
+  function liveRemove(u: User, hostId: string, ids: string[], reason: string): void {
+    const gone = ids.filter((id) => u.live.get(id)?.host_device_id === hostId)
+    for (const id of gone) u.live.delete(id)
+    if (!gone.length) return
+    for (const c of liveConns(u.id, hostId))
+      send(c, { t: 'live.removed', host_device_id: hostId, chat_ids: gone, reason })
+  }
+
+  const liveOf = (u: User, hostId: string): string[] =>
+    [...u.live.values()].filter((b) => b.host_device_id === hostId).map((b) => b.chat_id)
+
+  function liveAnnounce(c: Conn, u: User, dev: Device, f: any): any {
+    const accepted: string[] = []
+    const rejected: any[] = []
+    const changed: LiveBinding[] = []
+    const items = Array.isArray(f.chats) ? f.chats : []
+    for (const it of items) {
+      const chatId = typeof it?.chat_id === 'string' ? it.chat_id : ''
+      if (
+        !chatId ||
+        !ID_RE.test(chatId) ||
+        !Number.isSafeInteger(it.epoch) ||
+        it.epoch < 1 ||
+        !Number.isSafeInteger(it.arev) ||
+        it.arev < 1 ||
+        !validEnvelope(it.env) ||
+        JSON.stringify(it.env).length > 2048
+      ) {
+        rejected.push({ chat_id: chatId, code: 'invalid_request' })
+        continue
+      }
+      const rec = u.records.get(recKey('chat', chatId))
+      if ((rec && !rec.deleted) || u.chats.has(chatId)) {
+        rejected.push({ chat_id: chatId, code: 'live_conflict', reason: 'exists_online' })
+        continue
+      }
+      const cur = u.live.get(chatId)
+      if (cur && cur.host_device_id !== dev.id) {
+        rejected.push({ chat_id: chatId, code: 'live_conflict', reason: 'other_host' })
+        continue
+      }
+      if (cur && cur.epoch === it.epoch && it.arev <= cur.arev) {
+        accepted.push(chatId)
+        continue
+      }
+      const b: LiveBinding = {
+        chat_id: chatId,
+        host_device_id: dev.id,
+        epoch: it.epoch,
+        arev: it.arev,
+        running: it.running === true,
+        env: it.env,
+        announced_at: nowIso()
+      }
+      u.live.set(chatId, b)
+      accepted.push(chatId)
+      changed.push(b)
+    }
+    if (f.full === true) {
+      const keep = new Set(accepted)
+      liveRemove(
+        u,
+        dev.id,
+        liveOf(u, dev.id).filter((id) => !keep.has(id)),
+        'withdrawn'
+      )
+    }
+    if (changed.length)
+      for (const o2 of liveConns(u.id, dev.id))
+        send(o2, { t: 'live.update', chats: changed.map(toLiveChat) })
+    void c
+    return { accepted, rejected }
   }
 
   // ---------------- registros ----------------
@@ -1057,11 +1201,21 @@ export async function startFakeSyncServer(opts: FakeSyncOptions = {}): Promise<F
       }
       if (he === undefined && !st.host_device_id && dev.can_host) becameHost.push(st)
     }
+    // §23.3: chat com vínculo ao vivo — de outro dispositivo, recusa o lote; do host, é a conversão
+    const liveTouched = new Set<string>()
+    for (const it of items) {
+      const cid = it.type === 'chat' ? it.id : CONTENT.has(it.type) ? it.scope : null
+      const b = cid ? u.live.get(cid) : undefined
+      if (!b) continue
+      if (b.host_device_id !== dev.id) throw err('live_conflict', { chat_id: cid, reason: 'live' })
+      if (it.type === 'chat' && !it.deleted) liveTouched.add(cid)
+    }
     // 4–6. revisões e escopos
     const conflicts = checkRevsAndScopes(u, items)
     if (conflicts.length) throw err('conflict', { conflicts })
     // 9. aplica
     const { results, changes, chatHeads } = applyItems(u, dev, items)
+    for (const cid of liveTouched) liveRemove(u, dev.id, [cid], 'saved_online')
     for (const st of becameHost) {
       if (!u.chats.has(st.chat_id)) continue
       st.host_device_id = dev.id
@@ -1231,7 +1385,8 @@ export async function startFakeSyncServer(opts: FakeSyncOptions = {}): Promise<F
           captcha: o.captcha ? { provider: 'turnstile', siteKey: 'fake' } : null,
           landing: true,
           gateway: false,
-          push: o.push ? { providers: ['fcm'] } : null
+          push: o.push ? { providers: ['fcm'] } : null,
+          liveChats: o.liveChats
         },
         links: {
           download: 'https://github.com/ezenere/ClearChatDesktop/releases',
@@ -1616,7 +1771,8 @@ export async function startFakeSyncServer(opts: FakeSyncOptions = {}): Promise<F
       subscriptions: new Set(),
       lastFrameAt: Date.now(),
       superseded: false,
-      closed: false
+      closed: false,
+      caps: new Set()
     }
     conns.add(c)
     c.helloTimer = setTimeout(() => {
@@ -1692,6 +1848,9 @@ export async function startFakeSyncServer(opts: FakeSyncOptions = {}): Promise<F
     if (c.helloTimer) clearTimeout(c.helloTimer)
     c.deviceId = dev.id
     c.userId = u.id
+    if (o.liveChats && Array.isArray(f.caps) && f.caps.includes('live_chats'))
+      c.caps.add('live_chats')
+    const liveBack = (dev.inGrace || dev.wentOffline) && liveOf(u, dev.id).length > 0
     for (const id of Array.isArray(f.subscriptions) ? f.subscriptions : [])
       if (typeof id === 'string') c.subscriptions.add(id)
     // backend real: `host_back` ao voltar da tolerância OU de offline (entrar na tolerância não tem evento)
@@ -1746,8 +1905,12 @@ export async function startFakeSyncServer(opts: FakeSyncOptions = {}): Promise<F
       state_cursor: u.ssq,
       resumed_windows: resumed,
       lost_windows: lost,
-      keys_rev: u.keys?.keys_rev ?? 0
+      keys_rev: u.keys?.keys_rev ?? 0,
+      caps: [...c.caps]
     })
+    if (liveBack)
+      for (const o2 of liveConns(u.id, dev.id))
+        send(o2, { t: 'live.host', host_device_id: dev.id, status: 'online' })
     // host.revoked guardados
     for (const r of dev.pendingRevoked.splice(0)) send(c, { t: 'host.revoked', ...r })
     // pedido de troca pendente (o host voltou da tolerância)
@@ -1769,6 +1932,16 @@ export async function startFakeSyncServer(opts: FakeSyncOptions = {}): Promise<F
   }
 
   function requestSnapshot(u: User, chatId: string, requester: string): void {
+    const b = u.live.get(chatId)
+    if (b) {
+      if (b.host_device_id !== requester)
+        sendDevice(b.host_device_id, {
+          t: 'stream.resync_request',
+          chat_id: chatId,
+          requester_device_id: requester
+        })
+      return
+    }
     const st = u.chats.get(chatId)
     if (!st?.host_device_id || st.host_device_id === requester) return
     sendDevice(st.host_device_id, {
@@ -1828,6 +2001,7 @@ export async function startFakeSyncServer(opts: FakeSyncOptions = {}): Promise<F
       }
       case 'host.begin': {
         if (!chatId) throw err('invalid_request', { field: 'chat_id' })
+        if (u.live.has(chatId)) throw err('live_conflict', { chat_id: chatId, reason: 'live' })
         const st = chatOf(u, chatId)!
         if (st.diverged)
           throw err('chat_diverged', { chat_id: chatId, diverged: toChatState(st).diverged })
@@ -1863,6 +2037,7 @@ export async function startFakeSyncServer(opts: FakeSyncOptions = {}): Promise<F
       }
       case 'host.takeover': {
         if (!chatId) throw err('invalid_request', { field: 'chat_id' })
+        if (u.live.has(chatId)) throw err('live_conflict', { chat_id: chatId, reason: 'live' })
         const mode: 'next_turn' | 'force' = f.mode === 'force' ? 'force' : 'next_turn'
         if (!dev.can_host) throw err('cannot_host', { chat_id: chatId })
         const st = chatOf(u, chatId)!
@@ -1931,6 +2106,7 @@ export async function startFakeSyncServer(opts: FakeSyncOptions = {}): Promise<F
         return
       }
       case 'host.pin': {
+        if (u.live.has(chatId)) throw err('live_conflict', { chat_id: chatId, reason: 'live' })
         const st = chatOf(u, chatId)!
         st.pinned = !!f.pinned
         emitState(u, st, { kind: st.pinned ? 'pinned' : 'unpinned', device_id: dev.id })
@@ -1941,6 +2117,23 @@ export async function startFakeSyncServer(opts: FakeSyncOptions = {}): Promise<F
           throw err('invalid_request', { reason: 'command' })
         if (!validEnvelope(f.env)) throw err('invalid_request', { reason: 'envelope' })
         if (JSON.stringify(f.env).length > COMMAND_MAX) throw err('payload_too_large')
+        const lb = u.live.get(chatId)
+        if (lb) {
+          if (lb.host_device_id === dev.id) throw err('invalid_request', { reason: 'self_host' })
+          if (devStatus(lb.host_device_id) !== 'online')
+            throw err('host_offline', { chat_id: chatId })
+          relayCommand(
+            u,
+            { chat_id: chatId } as ChatSt,
+            dev.id,
+            lb.host_device_id,
+            f.cmd_id,
+            f.kind,
+            f.env
+          )
+          return ack(c, f, { status: 'delivered' })
+        }
+        if (LIVE_ONLY_KINDS.has(f.kind)) throw err('invalid_request', { reason: 'not_live' })
         const st = u.chats.get(chatId)
         if (st?.diverged)
           throw err('chat_diverged', { chat_id: chatId, diverged: toChatState(st).diverged })
@@ -1987,8 +2180,11 @@ export async function startFakeSyncServer(opts: FakeSyncOptions = {}): Promise<F
         return ack(c, f, {})
       }
       case 'stream.event': {
+        const lb = u.live.get(chatId)
         const st = u.chats.get(chatId)
-        if (!st || st.host_device_id !== dev.id || f.epoch !== st.epoch) return
+        if (lb) {
+          if (lb.host_device_id !== dev.id || f.epoch !== lb.epoch) return
+        } else if (!st || st.host_device_id !== dev.id || f.epoch !== st.epoch) return
         if (!validEnvelope(f.env) || JSON.stringify(f.env).length > STREAM_MAX) return
         for (const o2 of userConns(u.id)) {
           if (o2 === c || !o2.subscriptions.has(chatId)) continue
@@ -2002,6 +2198,33 @@ export async function startFakeSyncServer(opts: FakeSyncOptions = {}): Promise<F
           })
         }
         return
+      }
+      case 'live.announce':
+      case 'live.withdraw':
+      case 'live.list':
+      case 'live.refresh': {
+        if (!c.caps.has('live_chats')) throw err('invalid_request', { reason: 'caps_required' })
+        if (f.t === 'live.announce') return ack(c, f, liveAnnounce(c, u, dev, f))
+        if (f.t === 'live.withdraw') {
+          const reason =
+            f.reason === 'deleted' ? 'deleted' : f.reason === 'quit' ? 'host_quit' : 'withdrawn'
+          const ids = Array.isArray(f.chat_ids)
+            ? f.chat_ids.filter((x: unknown) => typeof x === 'string')
+            : liveOf(u, dev.id)
+          liveRemove(u, dev.id, ids, reason)
+          return ack(c, f, {})
+        }
+        if (f.t === 'live.list')
+          return ack(c, f, {
+            chats: [...u.live.values()].filter((b) => b.host_device_id !== dev.id).map(toLiveChat),
+            settling_s: 0
+          })
+        const target = typeof f.host_device_id === 'string' ? f.host_device_id : null
+        const hosts = new Set([...u.live.values()].map((b) => b.host_device_id))
+        for (const h of hosts)
+          if (!target || h === target)
+            sendDevice(h, { t: 'live.refresh_request', requester_device_id: dev.id })
+        return ack(c, f, {})
       }
       default:
         throw err('invalid_request', { reason: 'unknown_frame', t: f.t })
@@ -2139,6 +2362,18 @@ export async function startFakeSyncServer(opts: FakeSyncOptions = {}): Promise<F
         deviceId: c.deviceId ?? '',
         subscriptions: [...c.subscriptions]
       }))
+    },
+    liveBindings(userId) {
+      const u = users.get(userId)
+      return u
+        ? [...u.live.values()].map((b) => ({
+            chat_id: b.chat_id,
+            host_device_id: b.host_device_id,
+            epoch: b.epoch,
+            arev: b.arev,
+            running: b.running
+          }))
+        : []
     }
   }
   return api

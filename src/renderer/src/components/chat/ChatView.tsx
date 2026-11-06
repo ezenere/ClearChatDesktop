@@ -45,6 +45,7 @@ import { MessageList } from './MessageList'
 import { ProcessesBadge } from './ProcessesBadge'
 import { SessionSwitcher, StatusDot } from './SessionSwitcher'
 import { DivergencePanel } from '../sync/ChatHost'
+import { LiveBadge, LiveChatMenu } from '../sync/LiveChats'
 import { useHostInfo } from '../sync/hooks'
 
 function EmptyChat({ chat }: { chat: Chat }): React.JSX.Element {
@@ -351,15 +352,18 @@ export function ChatHeader({
   return (
     <TopBar
       right={
-        <IconButton
-          label={panelOpen ? 'Fechar painel' : 'Abrir painel'}
-          side="bottom"
-          size="sm"
-          active={panelOpen}
-          onClick={() => setPanel(!panelOpen)}
-        >
-          <PanelRight />
-        </IconButton>
+        <>
+          <LiveChatMenu chat={chat} />
+          <IconButton
+            label={panelOpen ? 'Fechar painel' : 'Abrir painel'}
+            side="bottom"
+            size="sm"
+            active={panelOpen}
+            onClick={() => setPanel(!panelOpen)}
+          >
+            <PanelRight />
+          </IconButton>
+        </>
       }
     >
       <div className="flex min-w-0 shrink items-center gap-1.5">
@@ -384,6 +388,7 @@ export function ChatHeader({
           <ChatTitle key={chat.id} chat={chat} />
         )}
       </div>
+      <LiveBadge chat={chat} />
       <SessionSwitcher chatId={chat.id} currentId={session?.id ?? chat.mainSessionId} />
       <ProcessesBadge chatId={chat.id} />
       <AutoApproveBadge chat={chat} />

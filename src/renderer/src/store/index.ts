@@ -27,7 +27,13 @@ import type {
   VoiceCallTimelineEvent
 } from '@shared/ipc'
 import type { MemoryCollection } from '@shared/memory'
-import type { ChatHostInfo, SyncScope, SyncStatus } from '@shared/sync'
+import type {
+  ChatHostInfo,
+  LiveChatView,
+  NewChatStorage,
+  SyncScope,
+  SyncStatus
+} from '@shared/sync'
 import { api, errorMessage } from '../lib/api'
 import { ATTACHMENT_LIMITS } from '@shared/limits'
 import { contentText, formatSize } from '@shared/attachments'
@@ -254,6 +260,10 @@ interface State {
   sync: SyncStatus | null
   /** Sync: host de execução / divergência por chat. */
   chatHosts: Record<string, ChatHostInfo>
+  /** Chats só ao vivo de OUTROS dispositivos (§23 — só memória). */
+  liveChats: LiveChatView[]
+  /** Chat ao vivo sendo aberto (histórico vindo do host). */
+  liveOpening: Record<string, boolean>
   /** Mensagem indo para o host (controle remoto), por sessão: "enviando…". */
   remoteSending: Record<string, string | undefined>
   /** Avisos do sync por chat (ex.: "o dispositivo remoto caiu"). */
@@ -292,7 +302,17 @@ interface Actions {
   openChat(chatId: string, sessionId?: string): Promise<void>
   openSession(sessionId: string): Promise<void>
   loadMessages(sessionId: string, force?: boolean): Promise<void>
-  createChat(input: { title?: string; config: Partial<ChatConfig> }): Promise<Chat | null>
+  createChat(input: {
+    title?: string
+    config: Partial<ChatConfig>
+    storage?: NewChatStorage
+  }): Promise<Chat | null>
+  /** Abre um chat só ao vivo de outro dispositivo (carrega o histórico do host). */
+  openLiveChat(chatId: string): Promise<void>
+  /** "Salvar online" (§23.8). */
+  saveOnline(chatId: string): Promise<boolean>
+  /** "Tirar do servidor" (§23.8). */
+  takeOffServer(chatId: string): Promise<boolean>
   renameChat(chatId: string, title: string): Promise<void>
   /** "Gerar título" (modelo do título de Configurações → Novos chats). */
   generateTitle(chatId: string): Promise<void>
@@ -497,6 +517,8 @@ export const useStore = create<Store>()((set, get) => ({
   pendingSkills: {},
   sync: null,
   chatHosts: {},
+  liveChats: [],
+  liveOpening: {},
   remoteSending: {},
   chatNotices: {},
   update: null,
@@ -669,6 +691,7 @@ export const useStore = create<Store>()((set, get) => ({
       syncStatus,
       hostList,
       update,
+      liveList,
       ...values
     ] = await Promise.all([
       safe(() => api.providers.list(), [] as Provider[]),
@@ -683,6 +706,7 @@ export const useStore = create<Store>()((set, get) => ({
       safe(() => api.sync.status(), null as SyncStatus | null),
       safe(() => api.sync.chatStates(), [] as ChatHostInfo[]),
       safe(() => api.updates.status(), null as UpdateStatus | null),
+      safe(() => api.sync.liveChats(), [] as LiveChatView[]),
       ...SETTINGS_KEYS.map((k) => safe(() => api.settings.get<string>(k), null))
     ])
     const settings = Object.fromEntries(
@@ -705,6 +729,7 @@ export const useStore = create<Store>()((set, get) => ({
       settings,
       // um `update-status` pode ter chegado durante o boot: fica o mais recente
       update: get().update?.checkedAt ? get().update : (update as UpdateStatus | null),
+      liveChats: liveList as LiveChatView[],
       booted: true
     })
   },
@@ -851,6 +876,44 @@ export const useStore = create<Store>()((set, get) => ({
     set((s) => ({ chats: sortChats([chat, ...s.chats.filter((c) => c.id !== chat.id)]) }))
     await get().openChat(chat.id)
     return chat
+  },
+
+  async openLiveChat(chatId) {
+    if (get().liveOpening[chatId]) return
+    set((s) => ({ liveOpening: { ...s.liveOpening, [chatId]: true } }))
+    try {
+      // inscreve no stream antes de carregar (os `rec` do meio do carregamento ficam guardados)
+      await api.sync.setActiveChat(chatId).catch(() => undefined)
+      const chat = await get().run(
+        () => api.sync.liveOpen(chatId),
+        'Não foi possível abrir o chat ao vivo'
+      )
+      if (!chat) return
+      set((s) => ({ chats: sortChats([chat, ...s.chats.filter((c) => c.id !== chat.id)]) }))
+      await get().openChat(chat.id)
+      // reaberto: o espelho em memória pode ter mudado enquanto o chat estava fora da tela
+      await get().loadMessages(chat.mainSessionId, true)
+    } finally {
+      set((s) => ({ liveOpening: { ...s.liveOpening, [chatId]: false } }))
+    }
+  },
+
+  async saveOnline(chatId) {
+    const ok = await get().run(async () => {
+      await api.sync.saveOnline(chatId)
+      return true
+    }, 'Não foi possível salvar online')
+    if (ok) get().toast('Enviando o chat para o servidor…', 'info')
+    return !!ok
+  },
+
+  async takeOffServer(chatId) {
+    const ok = await get().run(async () => {
+      await api.sync.takeOffServer(chatId)
+      return true
+    }, 'Não foi possível tirar o chat do servidor')
+    if (ok) get().toast('Tirando o chat do servidor…', 'info')
+    return !!ok
   },
 
   async renameChat(chatId, title) {
@@ -1036,7 +1099,13 @@ export const useStore = create<Store>()((set, get) => ({
       setList((l) => [...l, { id, name: file.name, size: file.size, status: 'loading' }])
       try {
         const data = new Uint8Array(await file.arrayBuffer())
-        const info = await api.attachments.add({ name: file.name, mime: file.type, data })
+        // chat só ao vivo de outro dispositivo: o arquivo vai direto ao host (attach.put) — nada
+        // é gravado aqui (§23.7)
+        const chatId = get().sessions[sessionId]?.chatId
+        const viewer = !!chatId && !!get().chats.find((c) => c.id === chatId)?.liveViewer
+        const info = viewer
+          ? await api.sync.liveAttach(chatId!, file.name, file.type || undefined, data)
+          : await api.attachments.add({ name: file.name, mime: file.type, data })
         setList((l) => l.map((a) => (a.id === id ? { ...a, status: 'ready', info } : a)))
       } catch (err) {
         setList((l) => l.filter((a) => a.id !== id))
@@ -1046,6 +1115,19 @@ export const useStore = create<Store>()((set, get) => ({
   },
 
   async pickFiles(sessionId) {
+    const chatId = get().sessions[sessionId]?.chatId
+    if (chatId && get().chats.find((c) => c.id === chatId)?.liveViewer) {
+      // chat ao vivo de outro dispositivo: escolhe aqui e envia ao host (sem salvar no store local)
+      const input = document.createElement('input')
+      input.type = 'file'
+      input.multiple = true
+      input.onchange = () => {
+        const files = [...(input.files ?? [])]
+        if (files.length) void get().addFiles(sessionId, files)
+      }
+      input.click()
+      return
+    }
     const r = await get().run(() => api.attachments.pick(), 'Falha ao anexar')
     if (!r) return
     for (const e of r.errors) get().toast(e, 'error')
@@ -1493,6 +1575,9 @@ function applyEvent(e: AgentEvent): void {
       break
     case 'sync-chat-state':
       set((s) => ({ chatHosts: { ...s.chatHosts, [e.info.chatId]: e.info } }))
+      break
+    case 'sync-live-chats':
+      set({ liveChats: e.chats })
       break
     case 'sync-data-changed':
       scheduleScopes(e.scopes)

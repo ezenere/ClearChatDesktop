@@ -23,6 +23,10 @@ export interface PushPayload {
   text: string
   requestId?: string
   hostName: string
+  /** device_id do host (desde 1.8.0; escritores ≥ 1.8.0 enviam sempre). */
+  hostDeviceId?: string
+  /** Chat só ao vivo (§23): tocar abre o visualizador ao vivo (desde 1.8.0). */
+  live?: true
   ts: number
 }
 

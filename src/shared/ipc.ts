@@ -16,6 +16,8 @@ import type {
   ChatHostInfo,
   CloudSkill,
   DivergenceDetails,
+  LiveChatView,
+  NewChatStorage,
   SyncDevice,
   SyncServerInfo,
   SyncServerKind,
@@ -223,7 +225,13 @@ export const IPC = {
     stopTrackingSkill: 'sync:stopTrackingSkill',
     hostSkills: 'sync:hostSkills',
     remoteListDir: 'sync:remoteListDir',
-    remoteReadFile: 'sync:remoteReadFile'
+    remoteReadFile: 'sync:remoteReadFile',
+    liveChats: 'sync:liveChats',
+    liveOpen: 'sync:liveOpen',
+    liveAttach: 'sync:liveAttach',
+    liveStats: 'sync:liveStats',
+    saveOnline: 'sync:saveOnline',
+    takeOffServer: 'sync:takeOffServer'
   },
   webSearch: {
     getSettings: 'webSearch:getSettings',
@@ -332,6 +340,11 @@ export interface ProviderTestResult {
 export interface ChatCreateInput {
   title?: string
   config?: Partial<ChatConfig>
+  /**
+   * "Salvar online" / "Só ao vivo" (sync §23.1). Ausente = o padrão do dispositivo (ou online,
+   * se o servidor não suporta chats ao vivo). Escolhido no seletor → vira o novo padrão.
+   */
+  storage?: NewChatStorage
 }
 export interface ChatUpdateInput {
   title?: string
@@ -1330,6 +1343,23 @@ export interface ClearApi {
       offset: number,
       length: number
     ): Promise<RemoteReadResult>
+    /** Chats só ao vivo de OUTROS dispositivos (§23.4 — só memória). */
+    liveChats(): Promise<LiveChatView[]>
+    /** Abre um chat ao vivo de outro dispositivo (histórico vindo do host, §23.5). */
+    liveOpen(chatId: string): Promise<Chat>
+    /** Envia um anexo ao HOST de um chat ao vivo (attach.put, §23.7) → referência do store dele. */
+    liveAttach(
+      chatId: string,
+      name: string,
+      mime: string | undefined,
+      data: Uint8Array
+    ): Promise<AttachmentInfo>
+    /** Números para a confirmação de "Salvar online" (§23.8). */
+    liveStats(chatId: string): Promise<{ messages: number; attachments: number; bytes: number }>
+    /** "Salvar online": chat só ao vivo → chat comum sincronizado (§23.8). */
+    saveOnline(chatId: string): Promise<void>
+    /** "Tirar do servidor": chat online → só ao vivo neste dispositivo (§23.8). */
+    takeOffServer(chatId: string): Promise<void>
   }
   /**
    * Menu de contexto (SPEC → "Menu de contexto"): ponte do menu nativo com as ações do app.

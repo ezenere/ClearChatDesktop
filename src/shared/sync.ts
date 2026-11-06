@@ -23,6 +23,8 @@ export interface SyncServerInfo {
   insecure: boolean
   /** Instância com notificações push (`features.push` não nulo, desde 1.7.0). */
   push?: boolean
+  /** Instância com chats só ao vivo (`features.liveChats`, desde 1.8.0, §23). */
+  liveChats?: boolean
 }
 
 export type SyncConnection = 'disabled' | 'offline' | 'connecting' | 'online' | 'error'
@@ -42,6 +44,8 @@ export interface SyncMergeInfo {
   online: { providers: number; chats: number; presets: number; memories: number }
   /** Chats que existem nos dois lados com histórias diferentes (a versão não priorizada é apagada). */
   conflictingChats: number
+  /** Chats locais só ao vivo (§23): ficam fora do merge e continuam só neste dispositivo (§12). */
+  liveChats?: number
 }
 
 /** Pergunta pendente do sync (diálogo). */
@@ -81,6 +85,43 @@ export interface SyncStatus {
    * computador ("Avisar no celular…", padrão ligado; local, §4.4).
    */
   push: { available: boolean; enabled: boolean }
+  /**
+   * Chats só ao vivo (§23): `supported` = servidor com `features.liveChats` e `welcome.caps` com
+   * `live_chats` (a escolha "Salvar online"/"Só ao vivo" só aparece assim); `newChatStorage` = o
+   * padrão deste dispositivo (a última escolha, §23.1).
+   */
+  live: { supported: boolean; newChatStorage: NewChatStorage }
+}
+
+/** Modo de um chat no host (§23.2; coluna local `chats.storage`, NULL = online). */
+export type ChatStorage = 'online' | 'live' | 'live_pending'
+/** Escolha ao criar um chat (§23.1). */
+export type NewChatStorage = 'online' | 'live'
+
+/** Status de um chat ao vivo no anúncio (§23.4). */
+export type LiveChatStatus = 'idle' | 'running' | 'waiting'
+
+/**
+ * Chat só ao vivo de OUTRO dispositivo, como o visualizador o mostra (§23.4 — anúncio decifrado).
+ * Nada disso é gravado (§23.5).
+ */
+export interface LiveChatView {
+  chatId: string
+  epoch: number
+  title: string
+  persona: { id: string; name: string; icon: string } | null
+  model: { providerId: string | null; providerName: string | null; model: string | null }
+  status: LiveChatStatus
+  pending: { approvals: number; questions: number; retries: number }
+  usesLocalTools: boolean
+  hostCwd: string | null
+  createdAt: number
+  updatedAt: number
+  messageCount: number | null
+  running: boolean
+  host: { deviceId: string; name: string; platform: string; status: 'online' | 'grace' }
+  /** Sumiu da lista depois de uma reconexão e ainda está no prazo `settling_s` ("reconectando…"). */
+  settling: boolean
 }
 
 export interface SyncDevice {
@@ -138,6 +179,20 @@ export interface ChatHostInfo {
   hostCwd: { deviceId: string; path: string } | null
   /** Este dispositivo ainda não escolheu a raiz local do chat (pedir ao virar host). */
   needsCwd: boolean
+  /** Modo do chat NESTE dispositivo (§23.2): só ao vivo no host. Ausente = online. */
+  storage?: ChatStorage
+  /**
+   * Chat só ao vivo (§23): `role` = 'host' (guardado aqui) ou 'viewer' (de outro dispositivo, só em
+   * memória). `announced` = visível nos outros agora (host); `unsupported` = o servidor não suporta
+   * chats ao vivo (fica "Só neste dispositivo").
+   */
+  live?: {
+    role: 'host' | 'viewer'
+    announced: boolean
+    unsupported: boolean
+    hostName: string
+    status: 'online' | 'grace' | 'offline'
+  }
 }
 
 export interface CloudSkill {

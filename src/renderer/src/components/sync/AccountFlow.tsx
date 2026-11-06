@@ -2,6 +2,7 @@
 // desbloqueio (senha de criptografia ou chave de recuperação) → merge do primeiro login.
 // Usado no Onboarding e em Configurações → Conta. Ver docs/SYNC_PROTOCOL.md §5, §12, §20.
 import {
+  Radio,
   ArrowLeft,
   ArrowRight,
   CircleAlert,
@@ -575,6 +576,17 @@ function MergeChoice({ status }: { status: SyncStatus }): React.JSX.Element {
           {m.conflictingChats === 1
             ? '1 chat existe nos dois lados com histórias diferentes; a versão não priorizada será apagada.'
             : `${m.conflictingChats} chats existem nos dois lados com histórias diferentes; a versão não priorizada será apagada.`}
+        </p>
+      )}
+      {!!m?.liveChats && (
+        <p
+          data-testid="merge-live-chats"
+          className="flex items-start gap-2 rounded-lg border border-border bg-elevated/60 px-2.5 py-2 text-[12px] text-muted"
+        >
+          <Radio className="mt-px size-3.5 shrink-0 text-accent-strong" />
+          {m.liveChats === 1
+            ? '1 chat só ao vivo continua só neste dispositivo (fica fora do merge). Para enviá-lo, use “Salvar online” no menu do chat.'
+            : `${m.liveChats} chats só ao vivo continuam só neste dispositivo (ficam fora do merge). Para enviá-los, use “Salvar online” no menu de cada chat.`}
         </p>
       )}
       <ErrorLine text={error} />

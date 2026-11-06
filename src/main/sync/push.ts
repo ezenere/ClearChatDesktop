@@ -317,6 +317,9 @@ export class PushNotifier {
         text: p.text,
         ...(p.requestId ? { requestId: p.requestId } : {}),
         hostName: this.engine.deviceName,
+        // §22.4 (1.8.0): o celular sabe de que host é o aviso; chat só ao vivo abre o visualizador
+        hostDeviceId: this.engine.deviceId,
+        ...(this.engine.live.isLive(p.chatId) ? { live: true as const } : {}),
         ts: Date.now()
       }
       env = this.seal(kind, tag, payload)

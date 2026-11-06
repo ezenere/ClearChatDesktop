@@ -4,10 +4,16 @@
 // executado no host e mensagem enviada do outro app como controle remoto (executada no host, com
 // o modelo falso local). Sai com 0 (pulado) sem CLEARCHAT_SYNC_TEST_URL.
 //
+// Chats só ao vivo (§23, servidor ≥ 1.8.0): chat ao vivo em A aparece em B, B abre (histórico de A),
+// envia com anexo (attach.put), A executa, B recebe; conversões ao vivo ⇄ online; A fecha → some.
+// Com CLEARCHAT_SYNC_TEST_PSQL (comando que roda SQL no banco do servidor, ex.
+// `docker --context desktop-linux exec -i clearchat-backend-pytest psql -U postgres -d clearchat_dev -tA`)
+// confere que o banco não tem nenhuma linha do chat ao vivo.
+//
 // Uso:
 //   unset ELECTRON_RUN_AS_NODE; npm run build
 //   CLEARCHAT_SYNC_TEST_URL=http://127.0.0.1:8100 CLEARCHAT_SYNC_TEST_MAIL_LOG=/caminho/api.log \
-//     CLEARCHAT_E2E_DIR=/tmp/x node e2e/sync-real.spec.ts
+//     [CLEARCHAT_SYNC_TEST_PSQL="docker … psql … -tA"] CLEARCHAT_E2E_DIR=/tmp/x node e2e/sync-real.spec.ts
 import { _electron as electron, type ElectronApplication, type Page } from 'playwright'
 import { createWriteStream, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
@@ -24,6 +30,7 @@ import {
   wrapDek
 } from '../docs/test-vectors/generate.ts'
 import { randomBytes } from 'node:crypto'
+import { execSync } from 'node:child_process'
 
 const URL_ = process.env.CLEARCHAT_SYNC_TEST_URL
 const MAIL_LOG = process.env.CLEARCHAT_SYNC_TEST_MAIL_LOG
@@ -223,6 +230,7 @@ async function main(): Promise<void> {
     })
     const chat = await api(A, 'chats.create', {
       title: 'Chat no servidor real',
+      storage: 'online',
       config: { providerId: provider.id, model: 'fake/agent', cwd: BASE, enabledTools: [] }
     })
     await api(A, 'agent.send', chat.mainSessionId, 'olá do PC')
@@ -263,7 +271,95 @@ async function main(): Promise<void> {
       'B recebeu a resposta'
     )
     console.log('✔ envio remoto de B executado no host A e resposta sincronizada')
-    console.log('\n3/3 ok')
+    // ---------------- chats só ao vivo (§23) ----------------
+    const PSQL = process.env.CLEARCHAT_SYNC_TEST_PSQL
+    const dbRows = (chatId: string): number | null => {
+      if (!PSQL) return null
+      if (!/^[0-9a-f-]{36}$/.test(chatId)) throw new Error('id inválido')
+      const sql =
+        `SELECT (SELECT count(*) FROM records WHERE id = '${chatId}' OR scope_id = '${chatId}') + ` +
+        `(SELECT count(*) FROM chat_states WHERE chat_id = '${chatId}');`
+      return Number(execSync(PSQL, { input: sql, encoding: 'utf8' }).trim())
+    }
+    const tombOnly = (chatId: string): boolean | null => {
+      if (!PSQL) return null
+      const sql =
+        `SELECT string_agg(type || ':' || deleted::text, ',') FROM records ` +
+        `WHERE id = '${chatId}' OR scope_id = '${chatId}';`
+      const out = execSync(PSQL, { input: sql, encoding: 'utf8' }).trim()
+      return out === 'chat:true' || out === 'chat:t'
+    }
+    if ((await api(A, 'sync.status')).live?.supported !== true)
+      throw new Error('servidor sem chats ao vivo (features.liveChats / welcome.caps)')
+    const live = await api(A, 'chats.create', {
+      title: 'Chat só ao vivo real',
+      storage: 'live',
+      config: { providerId: provider.id, model: 'fake/agent', cwd: BASE, enabledTools: [] }
+    })
+    await api(A, 'agent.send', live.mainSessionId, 'oi ao vivo')
+    await waitFor(
+      async () => (await texts(A, live.mainSessionId)).includes('ok: oi ao vivo'),
+      15_000,
+      'A respondeu no chat ao vivo'
+    )
+    await waitFor(
+      async () => (await api<any[]>(B, 'sync.liveChats')).some((c) => c.chatId === live.id),
+      15_000,
+      'B vê o chat ao vivo'
+    )
+    await api(B, 'sync.setActiveChat', live.id)
+    const opened = await api(B, 'sync.liveOpen', live.id)
+    if (opened.title !== 'Chat só ao vivo real') throw new Error('título do chat ao vivo')
+    if (!(await texts(B, live.mainSessionId)).includes('ok: oi ao vivo'))
+      throw new Error('B não carregou o histórico do host')
+    const att = await B.page.evaluate(
+      ([cid]) =>
+        (window as any).api.sync.liveAttach(
+          cid,
+          'real.txt',
+          'text/plain',
+          new TextEncoder().encode('ANEXO-REAL-AO-VIVO\n')
+        ),
+      [live.id] as const
+    )
+    await api(B, 'agent.send', live.mainSessionId, 'leia', [att])
+    await waitFor(
+      async () => (await texts(B, live.mainSessionId)).some((t) => t.startsWith('ok: <file')),
+      20_000,
+      'B recebeu a resposta ao vivo'
+    )
+    const rows = dbRows(live.id)
+    if (rows !== null && rows !== 0)
+      throw new Error(`banco do servidor com ${rows} linha(s) do chat ao vivo`)
+    console.log(
+      `✔ chat ao vivo: A → B, histórico, anexo, resposta${rows === 0 ? ' · 0 linhas no banco' : ''}`
+    )
+    await api(A, 'sync.saveOnline', live.id)
+    await waitFor(
+      async () =>
+        (await texts(B, live.mainSessionId)).length >= 4 &&
+        !(await api<any[]>(B, 'sync.liveChats')).some((c) => c.chatId === live.id),
+      20_000,
+      'B recebeu o chat salvo online'
+    )
+    await ready(A)
+    await api(A, 'sync.takeOffServer', live.id)
+    await waitFor(
+      async () => (await api<any[]>(B, 'sync.liveChats')).some((c) => c.chatId === live.id),
+      20_000,
+      'de volta ao vivo em B'
+    )
+    const t = tombOnly(live.id)
+    if (t === false) throw new Error('o banco deveria ter só o tombstone do chat')
+    console.log(`✔ conversões ao vivo → online → ao vivo${t ? ' · só o tombstone no banco' : ''}`)
+    await A.app.close()
+    await waitFor(
+      async () => !(await api<any[]>(B, 'sync.liveChats')).some((c) => c.chatId === live.id),
+      15_000,
+      'sumiu de B ao fechar A'
+    )
+    console.log('✔ A fechou → o chat ao vivo sumiu de B')
+    console.log('\n6/6 ok')
   } finally {
     await A.app.close().catch(() => {})
     await B.app.close().catch(() => {})

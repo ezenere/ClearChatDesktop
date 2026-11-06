@@ -167,7 +167,11 @@ app.whenReady().then(() => {
   // read_file: imagens grandes são reduzidas antes de ir ao modelo
   setImageProcessor(nativeImageProcessor(nativeImage))
   try {
-    const gc = gcAttachments(attachmentsDir(), referencedFilesInDb(getDb()))
+    // carência de 24 h: anexos recebidos por attach.put (chat ao vivo, sync §23.7) e ainda não
+    // usados num envio ficam (ATTACH_UNUSED_GRACE_H)
+    const gc = gcAttachments(attachmentsDir(), referencedFilesInDb(getDb()), {
+      graceMs: 24 * 3600_000
+    })
     if (gc.deleted.length) console.log(`[clearchat] anexos órfãos apagados: ${gc.deleted.length}`)
   } catch (e) {
     console.error('[clearchat] gc de anexos', e)
@@ -182,6 +186,17 @@ app.whenReady().then(() => {
     try {
       return serve()
     } catch {
+      // chat só ao vivo de outro dispositivo: bytes vindos do host (attach.get), só em memória —
+      // nada vai ao disco nem ao cache HTTP (sync §23.7)
+      const viewer = syncEngine()?.liveViewer
+      if (viewer?.ownsFile(file)) {
+        const buf = viewer.cachedAttachment(file) ?? (await viewer.attachment(file))
+        if (buf)
+          return new Response(new Uint8Array(buf), {
+            headers: { 'content-type': mimeForFile(file), 'cache-control': 'no-store' }
+          })
+        return new Response('not found', { status: 404 })
+      }
       // ausente localmente: baixa do sync (anexo enviado por outro dispositivo)
       try {
         if (await syncEngine()?.ensureAttachment(file)) return serve()

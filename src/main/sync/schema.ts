@@ -164,8 +164,22 @@ const TRIGGER_TABLES = [
   'settings'
 ]
 
+/**
+ * Colunas locais de `chats` para os chats só ao vivo (§23.2, §4.4 — nunca enviadas): `storage`
+ * (NULL/'online' | 'live' | 'live_pending') e `live_epoch` (último epoch ao vivo usado). Idempotente.
+ */
+export function ensureChatStorageColumns(conn: Database.Database): void {
+  const cols = (conn.prepare('PRAGMA table_info(chats)').all() as { name: string }[]).map(
+    (c) => c.name
+  )
+  if (!cols.length) return
+  if (!cols.includes('storage')) conn.exec('ALTER TABLE chats ADD COLUMN storage TEXT')
+  if (!cols.includes('live_epoch')) conn.exec('ALTER TABLE chats ADD COLUMN live_epoch INTEGER')
+}
+
 /** Cria as tabelas sync_* e os triggers (idempotente). Precisa das tabelas do app já criadas. */
 export function ensureSyncSchema(conn: Database.Database): void {
+  ensureChatStorageColumns(conn)
   conn.exec(TABLES)
   const v = conn.prepare("SELECT value FROM sync_state WHERE key = 'triggers'").get() as
     { value: string } | undefined

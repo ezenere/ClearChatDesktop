@@ -666,15 +666,40 @@ export function registerIpc(): void {
     },
 
     // ---- chats ----
-    [IPC.chats.list]: () => chatsRepo.list(),
-    [IPC.chats.get]: (id: string) => chatsRepo.get(id),
+    // chats só ao vivo de outros dispositivos abertos aqui (só memória, §23.5) entram na lista
+    [IPC.chats.list]: () => [...chatsRepo.list(), ...(syncEngine()?.liveViewer.openChats() ?? [])],
+    [IPC.chats.get]: (id: string) => chatsRepo.get(id) ?? syncEngine()?.liveViewer.chat(id) ?? null,
     [IPC.chats.create]: (input: ChatCreateInput) => {
-      const { chat, session } = chatsRepo.create(input ?? {})
+      const e = syncEngine()
+      const requested =
+        input?.storage === 'live' || input?.storage === 'online' ? input.storage : null
+      // §23.1: o modo é gravado em todo chat novo (sem login também); a escolha vira o padrão
+      const storage = e ? e.live.resolveNew(requested) : 'online'
+      if (e && requested && e.live.supported()) e.live.rememberChoice(requested)
+      const { chat, session } = chatsRepo.create({ title: input?.title, config: input?.config })
+      if (e && storage !== 'online') {
+        e.live.setStorage(chat.id, storage)
+        e.live.schedule(chat.id, true)
+      }
       emit({ type: 'session-created', session })
       emit({ type: 'chat-updated', chat })
+      if (e) emit({ type: 'sync-chat-state', info: e.chatInfo(chat.id) })
       return chat
     },
-    [IPC.chats.update]: (id: string, patch: ChatUpdateInput): Chat => {
+    [IPC.chats.update]: async (id: string, patch: ChatUpdateInput): Promise<Chat> => {
+      const e = syncEngine()
+      // chat ao vivo de outro dispositivo: o host aplica (chat.update, §23.7)
+      if (e?.host.isViewerChat(id)) {
+        if (e.host.mode(id) !== 'remote') throw new Error(`Reconectando a ${e.host.hostName(id)}…`)
+        await e.liveViewer.updateChat(id, patch ?? {})
+        const cur = e.liveViewer.chat(id)
+        if (!cur) throw new Error('Chat ao vivo indisponível.')
+        return {
+          ...cur,
+          ...(patch?.title !== undefined ? { title: patch.title } : {}),
+          config: { ...cur.config, ...(patch?.config ?? {}) }
+        }
+      }
       const { chat, modelChanged } = chatsRepo.update(id, patch ?? {})
       // raiz escolhida neste dispositivo (chat vindo de outro): não pergunta mais ao virar host
       if (patch?.config?.cwd) syncEngine()?.setChatRow(id, { cwd_confirmed: 1 })
@@ -687,6 +712,13 @@ export function registerIpc(): void {
     },
     [IPC.chats.delete]: async (id: string) => {
       const e = syncEngine()
+      if (e?.host.isViewerChat(id))
+        throw new Error('Um chat só ao vivo só pode ser apagado no dispositivo que o guarda.')
+      // chat só ao vivo deste dispositivo: some dos outros na hora (§23.9)
+      if (e?.live.isLive(id)) {
+        e.live.withdraw([id], 'deleted')
+        e.live.forget(id)
+      }
       if (e?.active && e.host.mode(id) === 'remote' && e.chatInfo(id).running)
         throw new Error(
           `O chat está rodando em ${e.host.hostName(id)} — pare o turno antes de apagá-lo.`
@@ -697,17 +729,28 @@ export function registerIpc(): void {
       removeChatToolOutputs(id)
     },
     // título automático: local (usa a config e o provedor deste dispositivo); o título sincroniza
-    [IPC.chats.generateTitle]: (id: string) => generateTitleNow(id),
+    [IPC.chats.generateTitle]: (id: string) => {
+      if (syncEngine()?.host.isViewerChat(id))
+        throw new Error('Gere o título no dispositivo que guarda este chat ao vivo.')
+      return generateTitleNow(id)
+    },
 
     // ---- sessions ----
     // chat executado em outro dispositivo: o status ao vivo (o banco guarda `running` como
     // interrupted — §4.3.7); sem isso, abrir/voltar ao chat no meio do turno o mostrava parado
     [IPC.sessions.list]: (chatId: string) => {
-      const list = sessionsRepo.list(chatId)
-      const host = syncEngine()?.host
+      const e = syncEngine()
+      const list = e?.host.isViewerChat(chatId)
+        ? e.liveViewer.sessions(chatId)
+        : sessionsRepo.list(chatId)
+      const host = e?.host
       return host ? list.map((s) => host.displaySession(s)) : list
     },
-    [IPC.sessions.messages]: (sessionId: string) => messagesRepo.listAll(sessionId),
+    [IPC.sessions.messages]: (sessionId: string) => {
+      const v = syncEngine()?.liveViewer
+      if (v?.chatOfSession(sessionId) && !sessionsRepo.get(sessionId)) return v.messages(sessionId)
+      return messagesRepo.listAll(sessionId)
+    },
 
     // ---- messages ----
     [IPC.messages.update]: (id: string, message: ApiMessage) => {
@@ -726,7 +769,10 @@ export function registerIpc(): void {
       }
       return gateChat(chatOfMessage(id), 'message.edit', { messageId: id, message: msg }, local, {
         purpose: 'edit',
-        remote: () => ({ ...messagesRepo.get(id)!, message: msg })
+        remote: () => ({
+          ...(messagesRepo.get(id) ?? syncEngine()?.liveViewer.message(id))!,
+          message: msg
+        })
       })
     },
     [IPC.messages.delete]: (id: string) =>
@@ -802,10 +848,19 @@ export function registerIpc(): void {
           purpose: 'edit',
           // controle remoto: quem grava é o host; devolve a seleção esperada (o sync traz a real)
           remote: () => {
-            const m = messagesRepo.get(messageId)
-            const s = m && sessionsRepo.get(m.sessionId)
+            const v = syncEngine()?.liveViewer
+            const m = messagesRepo.get(messageId) ?? v?.message(messageId) ?? null
+            const s =
+              (m && sessionsRepo.get(m.sessionId)) ||
+              (m && v
+                ? (v
+                    .sessions(v.chatOfSession(m.sessionId) ?? '')
+                    .find((x) => x.id === m.sessionId) ?? null)
+                : null)
             if (!m || !s) throw new Error('Mensagem não encontrada.')
-            const all = messagesRepo.listAll(s.id)
+            const all = sessionsRepo.get(s.id)
+              ? messagesRepo.listAll(s.id)
+              : (v?.sessionMessages(s.id) ?? [])
             return { ...s, branchSel: pruneSel(all, selectionToReach(all, s.branchSel, m.id)) }
           }
         }

@@ -3,7 +3,9 @@ import {
   ArrowRight,
   BookmarkPlus,
   FolderOpen,
+  Cloud,
   FolderPlus,
+  Radio,
   RotateCcw
 } from 'lucide-react'
 import { useMemo, useState } from 'react'
@@ -12,6 +14,7 @@ import { supportsCacheControl } from '@shared/defaults'
 import { isChatProvider, providerKind } from '@shared/providerKinds'
 import { sameValue, sanitizePresetConfig, withoutCwd, type PresetConfig } from '@shared/presets'
 import type { ChatConfig, Preset } from '@shared/types'
+import type { NewChatStorage } from '@shared/sync'
 import { AppSignatureField, AppSignatureInfo } from './AppSignatureField'
 import { api } from '../lib/api'
 import { compactPath, isMac } from '../lib/format'
@@ -76,6 +79,11 @@ export function NewChat(): React.JSX.Element {
   const presets = useStore((s) => s.presets)
   const createChat = useStore((s) => s.createChat)
   const run = useStore((s) => s.run)
+  const sync = useStore((s) => s.sync)
+  // §23.1: a escolha só aparece com o sync pronto e o servidor com chats ao vivo
+  const showStorage = sync?.phase === 'ready' && !!sync.live?.supported
+  const [storage, setStorage] = useState<NewChatStorage | null>(null)
+  const chosenStorage: NewChatStorage = storage ?? sync?.live?.newChatStorage ?? 'live'
 
   const base = useMemo(
     () => newChatBase(settings, providers, homeDir),
@@ -134,7 +142,8 @@ export function NewChat(): React.JSX.Element {
         cwd: form.cwd,
         cacheEnabled,
         ...(preset ? { presetId: preset.id } : {})
-      }
+      },
+      ...(showStorage ? { storage: chosenStorage } : {})
     })
     setCreating(false)
   }
@@ -336,6 +345,57 @@ export function NewChat(): React.JSX.Element {
             </div>
           </div>
         </div>
+
+        {showStorage && (
+          <div className="mt-6" data-testid="new-chat-storage">
+            <Label>Onde guardar</Label>
+            <div className="grid grid-cols-2 gap-2">
+              {(
+                [
+                  {
+                    v: 'online',
+                    icon: <Cloud className="size-4" />,
+                    title: 'Salvar online',
+                    text: 'Cifrado no servidor; sincroniza com os seus dispositivos.'
+                  },
+                  {
+                    v: 'live',
+                    icon: <Radio className="size-4" />,
+                    title: 'Só ao vivo',
+                    text: 'Fica só neste dispositivo; os outros o veem enquanto este app estiver aberto.'
+                  }
+                ] as const
+              ).map((o) => (
+                <button
+                  key={o.v}
+                  type="button"
+                  data-testid={`new-chat-storage-${o.v}`}
+                  aria-pressed={chosenStorage === o.v}
+                  onClick={() => setStorage(o.v)}
+                  className={
+                    'field flex items-start gap-2.5 text-left ' +
+                    (chosenStorage === o.v
+                      ? 'border-accent/60 bg-accent-soft/40 ring-1 ring-accent/40'
+                      : 'text-muted hover:text-fg')
+                  }
+                >
+                  <span
+                    className={
+                      'mt-0.5 shrink-0 ' +
+                      (chosenStorage === o.v ? 'text-accent-strong' : 'text-subtle')
+                    }
+                  >
+                    {o.icon}
+                  </span>
+                  <span className="min-w-0">
+                    <span className="block text-[13px] font-medium text-fg">{o.title}</span>
+                    <span className="block text-[11.5px] leading-snug text-subtle">{o.text}</span>
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         <div className="mt-8 flex items-center justify-end gap-3">
           <span className="flex items-center gap-1 text-[11px] text-subtle">

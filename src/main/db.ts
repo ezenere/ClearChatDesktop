@@ -9,6 +9,7 @@ import { SCHEMA } from './dbSchema'
 import { ensureSearchIndex } from './searchIndex'
 import { ensureMemorySchema } from './memory/schema'
 import { ensureMessageTree } from './migrateBranches'
+import { ensureChatStorageColumns } from './sync/schema'
 
 let db: Database.Database | null = null
 
@@ -90,6 +91,12 @@ function migrate(conn: Database.Database): void {
     if (!r.skipped) console.log(`[clearchat] árvore de mensagens: ${r.filled} mensagens`)
   } catch (e) {
     console.error('[clearchat] árvore de mensagens', e)
+  }
+  // chats só ao vivo (sync 1.8.0, §23): modo local do chat + último epoch ao vivo (nunca sincronizados)
+  try {
+    ensureChatStorageColumns(conn)
+  } catch (e) {
+    console.error('[clearchat] colunas de chats ao vivo', e)
   }
   // índice FTS5 das mensagens (read_history em outros chats) — cria/popula uma vez; depois o repo mantém
   try {

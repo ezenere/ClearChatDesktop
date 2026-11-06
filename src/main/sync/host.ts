@@ -49,6 +49,8 @@ import {
 } from './stream'
 import type { SyncEngine } from './engine'
 import { TURN_COMMANDS, type TurnEndInfo } from './push'
+import { LiveCommandError } from './live'
+import { LIVE_COMMANDS, LIVE_LIMITS, LIVE_READ_COMMANDS } from '@shared/live'
 import {
   chatRootFrom,
   hostListDir,
@@ -101,6 +103,11 @@ export interface RunnerAdapter {
   skillsFor(chatId: string): Promise<{ name: string; description: string }[]>
   /** Fim de cada turno do runner (avisos push, §22.5). Opcional (stubs de teste). */
   onTurnEnd?(fn: (info: TurnEndInfo) => void): () => void
+  /** Renomear / editar a config de um chat (comando `chat.update` de um chat ao vivo, §23.7). */
+  updateChat?(
+    chatId: string,
+    patch: { title?: string; config?: Record<string, unknown> }
+  ): void | Promise<void>
 }
 
 interface ServerChatState {
@@ -339,6 +346,8 @@ export class HostController {
   private chatOfSession(sessionId: string): string | null {
     const hit = this.sessionChat.get(sessionId)
     if (hit) return hit
+    const viewer = this.engine.liveViewer.chatOfSession(sessionId)
+    if (viewer) return viewer
     const r = this.engine.conn
       .prepare('SELECT chat_id FROM sessions WHERE id = ?')
       .get(sessionId) as { chat_id: string } | undefined
@@ -352,6 +361,13 @@ export class HostController {
 
   mode(chatId: string): ChatHostMode {
     if (!this.engine.active) return 'off'
+    // chat só ao vivo de OUTRO dispositivo (§23): o host do vínculo; sem "executar aqui"
+    if (this.isViewerChat(chatId)) {
+      if (!this.connected) return 'offline'
+      return this.engine.liveViewer.hostOnline(chatId) ? 'remote' : 'host-offline'
+    }
+    // chat só ao vivo deste dispositivo: sempre local (sem chat_states, §23.2)
+    if (this.engine.live.isLive(chatId)) return this.connected ? 'local' : 'offline'
     const st = this.states.get(chatId)
     if (st?.diverged) return 'diverged'
     if (!this.connected) return 'offline'
@@ -376,8 +392,14 @@ export class HostController {
     return !!this.states.get(chatId)?.window
   }
 
+  /** Chat só ao vivo de outro dispositivo (visualizador, só em memória — §23.5). */
+  isViewerChat(chatId: string): boolean {
+    return this.engine.liveViewer.isViewer(chatId) && !this.engine.live.storage(chatId)
+  }
+
   /** O chat é executado em OUTRO dispositivo (o banco local não tem o status ao vivo). */
   hostedElsewhere(chatId: string): boolean {
+    if (this.isViewerChat(chatId)) return true
     const h = this.states.get(chatId)?.host
     return !!h && h.device_id !== this.me
   }
@@ -398,6 +420,7 @@ export class HostController {
     if (!this.engine.active || !this.hostedElsewhere(s.chatId)) return s
     const live = this.mirrors.get(s.chatId)?.sessions.get(s.id)
     if (live) return live === s.status ? s : { ...s, status: live as Session['status'] }
+    if (this.isViewerChat(s.chatId)) return s
     if (!this.windowOpen(s.chatId)) return s
     const rec = this.recordStatus(s.id)
     if (rec && TRANSIENT_STATUS.has(rec) && rec !== s.status)
@@ -406,10 +429,78 @@ export class HostController {
   }
 
   hostName(chatId: string): string {
+    if (this.isViewerChat(chatId)) return this.engine.liveViewer.hostName(chatId)
     return this.states.get(chatId)?.host?.name ?? 'outro dispositivo'
   }
 
+  /** Info de um chat só ao vivo de outro dispositivo (visualizador). */
+  private viewerInfo(chatId: string): ChatHostInfo {
+    const v = this.engine.liveViewer
+    const e = v.entry(chatId)
+    const status = !e
+      ? 'offline'
+      : e.host.status === 'grace' || e.settlingUntil != null
+        ? 'grace'
+        : 'online'
+    return {
+      chatId,
+      mode: this.mode(chatId),
+      host: e ? { deviceId: e.host.deviceId, name: e.host.name, status, self: false } : null,
+      running: e ? e.running : false,
+      pinned: false,
+      epoch: e?.epoch ?? 0,
+      handover: null,
+      diverged: null,
+      usesLocalTools: e?.info.usesLocalTools ?? false,
+      hostCwd: e?.info.hostCwd ? { deviceId: e.host.deviceId, path: e.info.hostCwd } : null,
+      needsCwd: false,
+      live: {
+        role: 'viewer',
+        announced: !!e,
+        unsupported: false,
+        hostName: e?.host.name ?? v.hostName(chatId),
+        status
+      }
+    }
+  }
+
   info(chatId: string): ChatHostInfo {
+    if (this.isViewerChat(chatId)) return this.viewerInfo(chatId)
+    const storage = this.engine.live.storage(chatId)
+    if (storage && storage !== 'online') {
+      const live = this.engine.live
+      let cfg: Plain = {}
+      try {
+        const r = this.engine.conn
+          .prepare('SELECT config_json FROM chats WHERE id = ?')
+          .get(chatId) as { config_json: string } | undefined
+        cfg = r ? (JSON.parse(r.config_json) as Plain) : {}
+      } catch {
+        /* */
+      }
+      const supported = live.supported()
+      return {
+        chatId,
+        mode: this.mode(chatId),
+        host: { deviceId: this.me, name: this.engine.deviceName, status: 'online', self: true },
+        running: this.runner?.busyChats().has(chatId) ?? false,
+        pinned: false,
+        epoch: 0,
+        handover: null,
+        diverged: null,
+        usesLocalTools: usesLocalTools(cfg),
+        hostCwd: null,
+        needsCwd: false,
+        storage,
+        live: {
+          role: 'host',
+          announced: live.isAnnounced(chatId),
+          unsupported: this.engine.active && !supported,
+          hostName: this.engine.deviceName,
+          status: 'online'
+        }
+      }
+    }
     const st = this.states.get(chatId)
     const row = this.engine.chatRow(chatId)
     let cfg: Plain = {}
@@ -468,7 +559,16 @@ export class HostController {
     const ids = (this.engine.conn.prepare('SELECT id FROM chats').all() as { id: string }[]).map(
       (r) => r.id
     )
-    return ids.map((id) => this.info(id))
+    const out = ids.map((id) => this.info(id))
+    const seen = new Set(ids)
+    for (const v of this.engine.liveViewer.views())
+      if (!seen.has(v.chatId)) out.push(this.viewerInfo(v.chatId))
+    return out
+  }
+
+  /** Emite o estado do chat para a tela (também usado pelos módulos ao vivo). */
+  emitInfoOf(chatId: string): void {
+    this.emitInfo(chatId)
   }
 
   private emitInfo(chatId: string): void {
@@ -680,6 +780,8 @@ export class HostController {
    */
   async ensureWindow(chatId: string, purpose: 'run' | 'edit' | 'replay' = 'run'): Promise<void> {
     if (!this.engine.active || !this.connected) return
+    // chats só ao vivo: sem janela de escrita nem chat_states (§23.2, §23.7)
+    if (this.engine.live.isLive(chatId) || this.isViewerChat(chatId)) return
     if (this.windows.has(chatId)) return
     const cur = this.beginning.get(chatId)
     if (cur) return cur
@@ -1015,6 +1117,14 @@ export class HostController {
       case 'stream.resync_request':
         void this.sendSnapshot(String(f.chat_id))
         return
+      case 'live.update':
+      case 'live.removed':
+      case 'live.host':
+        this.engine.liveViewer.onEvent(f)
+        return
+      case 'live.refresh_request':
+        this.engine.live.onRefreshRequest()
+        return
     }
   }
 
@@ -1058,6 +1168,17 @@ export class HostController {
     return result
   }
 
+  /** Comando cru (resultado decifrado, sem tratar recusas) — usado pelo visualizador ao vivo. */
+  rawCommand(
+    chatId: string,
+    kind: string,
+    payload: Record<string, unknown>,
+    timeoutMs: number,
+    timeoutText: string
+  ): Promise<Record<string, unknown>> {
+    return this.commandResult(chatId, kind, payload, timeoutMs, timeoutText)
+  }
+
   /** Envia um comando ao host do chat e espera o resultado (accepted / rejected / falha). */
   async sendCommand(
     chatId: string,
@@ -1078,7 +1199,16 @@ export class HostController {
     } catch (e) {
       if (e instanceof WsRequestError) {
         if (e.code === 'host_offline')
-          throw new Error(`O host (${name}) está offline.`, { cause: e })
+          throw new Error(
+            this.isViewerChat(chatId)
+              ? `Reconectando a ${name}…`
+              : `O host (${name}) está offline.`,
+            { cause: e }
+          )
+        if (e.code === 'no_host' && this.isViewerChat(chatId))
+          throw new Error(`${name} não está conectado — o chat ao vivo não está disponível.`, {
+            cause: e
+          })
         if (e.code === 'no_host') throw new NoHostError('Este chat não tem host.')
         if (e.code === 'chat_diverged') {
           this.markDiverged(chatId, (e.details.diverged as Record<string, unknown>) ?? null)
@@ -1321,8 +1451,10 @@ export class HostController {
     }
     const conn = this.engine.conn
     const isFs = FS_CMDS.has(kind)
-    // fs.* são leituras: sem dedupe (repetir é inofensivo; um arquivo grande são centenas de pedaços)
-    if (!isFs) {
+    const isLiveRead = LIVE_READ_COMMANDS.has(kind)
+    // fs.* / history.* / attach.* são leituras/transferências: sem dedupe (repetir é inofensivo;
+    // a idempotência do attach.put vem do offset)
+    if (!isFs && !isLiveRead) {
       const seen = conn
         .prepare('SELECT result FROM sync_commands_seen WHERE cmd_id = ?')
         .get(cmdId) as { result: string | null } | undefined
@@ -1342,9 +1474,25 @@ export class HostController {
     } catch (e) {
       return reply({ status: 'rejected', error: `comando ilegível: ${errMsg(e)}` })
     }
+    const live = this.engine.live.isLive(chatId)
     const st = this.states.get(chatId)
-    if (st?.host && st.host.device_id !== this.me)
+    if (!live && st?.host && st.host.device_id !== this.me)
       return reply({ status: 'rejected', error: 'not_host' })
+    if (LIVE_COMMANDS.has(kind)) {
+      try {
+        await reply({
+          status: 'accepted',
+          ...(await this.engine.live.execute(chatId, kind, payload))
+        })
+      } catch (e) {
+        await reply({
+          status: 'rejected',
+          error: errMsg(e),
+          ...(e instanceof LiveCommandError ? { code: e.code, ...e.extra } : { code: 'invalid' })
+        })
+      }
+      return
+    }
     if (isFs) {
       try {
         await reply({ status: 'accepted', ...(await this.executeFs(chatId, kind, payload)) })
@@ -1470,9 +1618,20 @@ export class HostController {
       case 'force': {
         const sid = this.sessionInChat(p.sessionId, chatId)
         const atts = (Array.isArray(p.attachments) ? p.attachments : []) as AttachmentInfo[]
-        for (const a of atts) {
-          if (!(await this.engine.ensureAttachment(a.file))) throw new Error('attachment_missing')
-        }
+        if (this.engine.live.isLive(chatId)) {
+          // chat ao vivo: referências ao store DESTE dispositivo (attach.put), nunca blobs (§23.7)
+          if (atts.length > LIVE_LIMITS.attachMaxFiles)
+            throw new Error(`No máximo ${LIVE_LIMITS.attachMaxFiles} anexos por mensagem.`)
+          if (
+            atts.reduce((n, a) => n + (Number(a.size) || 0), 0) > LIVE_LIMITS.attachMaxMessageBytes
+          )
+            throw new Error('Os anexos passam do limite de 50 MB por mensagem.')
+          for (const a of atts)
+            if (!this.engine.live.hasStoreFile(a)) throw new Error('attachment_missing')
+        } else
+          for (const a of atts) {
+            if (!(await this.engine.ensureAttachment(a.file))) throw new Error('attachment_missing')
+          }
         const skills = Array.isArray(p.skills) ? (p.skills as string[]) : []
         const r = await runner.send(
           sid,
@@ -1613,6 +1772,8 @@ export class HostController {
 
   private isHostHere(chatId: string): boolean {
     if (!this.engine.active || !this.connected) return false
+    // chat ao vivo: só depois do anúncio aceito (§23.4: antes de qualquer stream.event)
+    if (this.engine.live.isLive(chatId)) return this.engine.live.isAnnounced(chatId)
     const st = this.states.get(chatId)
     return st?.host?.device_id === this.me || this.windows.has(chatId)
   }
@@ -1628,6 +1789,7 @@ export class HostController {
     } catch (err) {
       this.engine.log('push', errMsg(err))
     }
+    if (this.engine.live.isLive(chatId)) this.engine.live.onActivity(chatId)
     const pub = this.publisher(chatId)
     // estado local para snapshots
     switch (e.type) {
@@ -1737,11 +1899,20 @@ export class HostController {
     pub.pendingDraft.clear()
   }
 
+  /** `rec` de um chat ao vivo (live.ts): só com o anúncio aceito. */
+  publishLive(chatId: string, payload: Record<string, unknown>): void {
+    if (this.isHostHere(chatId)) this.publish(chatId, payload)
+  }
+
   private publish(chatId: string, payload: Record<string, unknown>): void {
     const sk = this.engine.sk
+    const live = this.engine.live.isLive(chatId)
     const st = this.states.get(chatId)
-    if (!sk || !st) return
-    const epoch = this.windows.get(chatId)?.epoch ?? st.epoch
+    if (!sk || (!st && !live)) return
+    // chat ao vivo: o epoch ao vivo escolhido pelo host (§23.3)
+    const epoch = live
+      ? this.engine.live.epochOf(chatId)
+      : (this.windows.get(chatId)?.epoch ?? st!.epoch)
     const ck = `${chatId}:${epoch}`
     const n = (this.counters.get(ck) ?? 0) + 1
     const env = sealJson(sk.stream, aadStream(this.engine.userId, chatId, epoch, n), {
@@ -1756,7 +1927,10 @@ export class HostController {
   }
 
   private periodicSnapshots(): void {
-    for (const chatId of this.windows.keys()) {
+    const ids = new Set(this.windows.keys())
+    // chats ao vivo rodando: o snapshot periódico deixa o visualizador ver `rec` perdidos (§23.6)
+    for (const id of this.runner?.busyChats() ?? []) if (this.engine.live.isLive(id)) ids.add(id)
+    for (const chatId of ids) {
       const pub = this.publisher(chatId)
       if (Date.now() - pub.lastSnapshot >= 9_500) void this.sendSnapshot(chatId)
     }
@@ -1803,7 +1977,10 @@ export class HostController {
       questions: runner.questions().filter((q) => q.chatId === chatId),
       retries: runner.retries().filter((r) => r.chatId === chatId),
       processes: runner.processes(chatId),
-      skills: skills.list
+      skills: skills.list,
+      ...(this.engine.live.isLive(chatId)
+        ? { live: { lseq: this.engine.live.lseqOf(chatId) } }
+        : {})
     })
   }
 
@@ -1867,9 +2044,12 @@ export class HostController {
   }
 
   private sessionWithStatus(sessionId: string, status: string): Session | null {
-    const s = this.engine
-      .sessionsOf(this.chatOfSession(sessionId) ?? '')
-      .find((x) => x.id === sessionId)
+    const viewerChat = this.engine.liveViewer.chatOfSession(sessionId)
+    const s = (
+      viewerChat
+        ? this.engine.liveViewer.sessions(viewerChat)
+        : this.engine.sessionsOf(this.chatOfSession(sessionId) ?? '')
+    ).find((x) => x.id === sessionId)
     return s ? { ...s, status: status as Session['status'] } : null
   }
 
@@ -1889,6 +2069,8 @@ export class HostController {
     }
     const m = this.mirror(chatId, epoch)
     const kind = String(p.kind)
+    // `rec` só vale em chats ao vivo (receptores ignoram nos online, §23.6)
+    if (kind === 'rec' && !this.isViewerChat(chatId)) return
     if (kind !== 'snapshot' && n !== m.lastN + 1) {
       if (n > m.lastN) this.resync(chatId)
       if (n <= m.lastN) return
@@ -1905,6 +2087,15 @@ export class HostController {
     switch (kind) {
       case 'snapshot':
         this.applySnapshot(chatId, m, p)
+        if (this.isViewerChat(chatId) && p.live && typeof p.live === 'object')
+          this.engine.liveViewer.onSnapshot(
+            chatId,
+            m.epoch,
+            Number((p.live as { lseq?: unknown }).lseq ?? 0)
+          )
+        return
+      case 'rec':
+        this.engine.liveViewer.onRec(chatId, m.epoch, p)
         return
       case 'draft.delta': {
         const d = p as unknown as DraftDelta

@@ -2009,6 +2009,33 @@ Contrato do protocolo: `docs/SYNC_PROTOCOL.md` (compartilhado com o servidor). A
   (`sync_kv.push_notify`, padrão ligada, mantida no logout): Configurações → Conta → **Notificações no celular**
   ("Avisar no celular quando eu estiver ausente ou quando o pedido vier do celular"; IPC `sync.setPushNotify`;
   `SyncStatus.push = { available, enabled }`). `SyncDevice.push` vem do `GET /devices`.
+- **Chats só ao vivo** (protocolo 1.8.0, §23 — `live.ts` = host, `liveViewer.ts` = visualizador,
+  `@shared/live`, `components/sync/LiveChats.tsx`): coluna local `chats.storage` (`NULL`/online · `live` ·
+  `live_pending`) + `chats.live_epoch` (nunca sincronizadas). **Novo chat**: com a conta pronta e o servidor com
+  `features.liveChats` + `welcome.caps`, seletor "Onde guardar" (`new-chat-storage`: **Salvar online** / **Só ao
+  vivo**); a escolha vira o padrão do dispositivo (setting local `newChatStorage`, gravado na 1ª execução da
+  1.8.0: `online` se a instalação já sincronizava, senão `live`). Sem login o chat grava o padrão; servidor sem
+  suporte → online. **Host**: os triggers do sync seguem marcando `sync_dirty`, mas `drainDirty` (a cada poll)
+  tira os itens de chats ao vivo da outbox e os emite como `rec` (lseq por epoch; coalescido ~250 ms); anúncio
+  cifrado (`live.announce`, completo a cada `welcome`, coalescido a 2 s por chat, status/rodando na hora),
+  `live.withdraw` ao apagar (`deleted`) e ao fechar/bloquear/sair (`quit`); comandos `history.*`, `chat.update`,
+  `attach.put` (temporário `.tmp-<uuid>` no store → `saveAttachment`) e `attach.get` (só arquivos citados no chat
+  ou recebidos por `attach.put`); `send` num chat ao vivo só aceita referências ao store local (`hasStoreFile`);
+  sem `host.begin`/`host.end`; snapshot com `live.lseq`. GC de anexos órfãos com carência de 24 h. **Visualizador**
+  (desktop vê chats ao vivo de OUTROS desktops): lista decifrada em memória (seção "Ao vivo em <host>" na sidebar,
+  `live-chat-item`; `sync.liveChats` + evento `sync-live-chats`), abrir = `sync.liveOpen` (inscreve no stream,
+  carrega chat/sessões/mensagens da principal; subsessões sob demanda; itens grandes em pedaços; `rec` e
+  `history.changes` pela regra "maior lseq vence"); os handlers `chats.*`/`sessions.*`/`messages.*` servem o chat
+  da memória (`Chat.liveViewer`), as ações viram comandos ao host (`gateChat`; nunca rodam aqui), anexos do
+  composer vão por `sync.liveAttach` (sem gravar no store) e os do histórico por `attach.get` servidos pelo
+  protocolo `clearchat-attachment://` direto da memória (`no-store`). Nada do chat é gravado (banco, store,
+  arquivos). Host em tolerância → cartão "Reconectando a <host>…" no lugar do composer. **Selo** no cabeçalho
+  (`live-badge`: "Só ao vivo" / "Só neste dispositivo" / "Ao vivo em <host>"), ícone na sidebar (`chat-live`) e no
+  lugar do ícone do host. **Menu do chat** (`chat-menu`, só no host): "Salvar online" (`saveOnline`: vira chat
+  comum criado offline, tudo pela outbox; recriação sobre o tombstone) e "Tirar do servidor" (`takeOffServer`:
+  confere host/ocioso/sem pendências, baixa anexos que faltam, `live_pending` → tombstone comum → no ack vira `live`
+  com epoch novo; o host ignora o tombstone do próprio chat no pull). Merge do primeiro login pula chats ao vivo e
+  avisa quantos ficaram locais. Push: `hostDeviceId` sempre e `live: true` nos chats ao vivo.
 - **Env**: `CLEARCHAT_SYNC_URL` (servidor fixo), `CLEARCHAT_DEVICE_NAME` (nome do dispositivo),
   `CLEARCHAT_SYNC_FAST=1` (backoff/heartbeat curtos — testes), `CLEARCHAT_FORCE_AWAY=1|0` (força ausente/presente
   nos avisos push — testes/depuração), `CLEARCHAT_PUSH_GRACE_MS` (espera das pendências, padrão 60 s — testes).

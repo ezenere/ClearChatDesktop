@@ -472,6 +472,11 @@ export interface Chat {
   mainSessionId: string
   createdAt: number
   updatedAt: number
+  /**
+   * Chat só ao vivo de OUTRO dispositivo aberto como visualizador (sync §23.5): vem da memória do
+   * main (nada no banco); o host é `hostName`.
+   */
+  liveViewer?: { hostDeviceId: string; hostName: string }
 }
 
 export type SessionStatus =
@@ -1013,6 +1018,8 @@ export type AgentEvent =
   | { type: 'sync-chat-state'; info: import('./sync').ChatHostInfo }
   /** Sync: tabelas locais mudaram por mudanças remotas (o renderer recarrega esses domínios). */
   | { type: 'sync-data-changed'; scopes: import('./sync').SyncScope[] }
+  /** Sync: lista dos chats só ao vivo de outros dispositivos mudou (§23.4; só memória). */
+  | { type: 'sync-live-chats'; chats: import('./sync').LiveChatView[] }
   /** Sync: aviso para o usuário (toast; `chatId` = aviso também no chat). */
   | { type: 'sync-notice'; kind: 'info' | 'error' | 'success'; text: string; chatId?: string }
   /** Atualizações: resultado de uma checagem da última release (aviso discreto; nunca toast). */
