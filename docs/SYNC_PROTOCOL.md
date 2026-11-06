@@ -1,6 +1,6 @@
 # ClearChat Sync — Protocolo v1 (contrato)
 
-> **Versão do protocolo: 1.6.0** · status: contrato inicial (ainda sem implementação) · data: 2026-11-02
+> **Versão do protocolo: 1.7.0** · status: contrato inicial (ainda sem implementação) · data: 2026-11-06
 >
 > ⚠️ **AVISO — CONTRATO COMPARTILHADO ENTRE OS REPOSITÓRIOS**
 > Fonte única: `docs/SYNC_PROTOCOL.md` e `docs/test-vectors/` do repositório pai `ezenere/ClearChat`.
@@ -42,6 +42,7 @@ app (`createdAt` etc. dentro dos registros cifrados) em ms Unix, como no app hoj
 19. [Notas de implementação do cliente (não normativo)](#19-notas-de-implementação-do-cliente-não-normativo)
 20. [Instância, configurações da instância e self-host](#20-instância-configurações-da-instância-e-self-host)
 21. [Fase futura (opcional): servidor como gateway de execução](#21-fase-futura-opcional-servidor-como-gateway-de-execução)
+22. [Notificações push](#22-notificações-push-desde-170)
 
 ---
 
@@ -96,6 +97,7 @@ app (`createdAt` etc. dentro dos registros cifrados) em ms Unix, como no app hoj
 | estado de host por chat (dispositivo host, epoch, rodando/ocioso, fixado, troca pendente, divergente) | coordenação de execução |
 | tipo de cada comando remoto (`send`, `stop`, `fs.read`…), quem enviou e o tamanho do envelope | roteamento ao host e logs de uso |
 | parâmetros do KDF, salts, DEK embrulhada, `verifier` (SHA-256 de uma subchave) | desbloqueio; prova de posse |
+| notificações push (desde 1.7.0): token de push de cada celular, tipo do aviso, tag aleatória, destinos, horário e tamanho; no aviso "host caiu", o chat e o nome do dispositivo | entrega pelo FCM (§22) — o conteúdo vai cifrado |
 
 Tudo o mais — conteúdo de mensagens, títulos, configs, chaves de API, nomes de skills, nomes de arquivos,
 memórias — é cifrado. Ids de registros são UUIDs aleatórios gerados pelo app (não revelam nada), exceto
@@ -194,6 +196,7 @@ AAD_wrap = UTF-8("clearchat|v1|dek-wrap|" + user_id + "|" + slot + "|" + key_ver
 | `K_stream` | `clearchat/v1/stream` | eventos ao vivo, comandos remotos e resultados |
 | `K_record_id` | `clearchat/v1/record-id` | ids derivados (skills) |
 | `K_verify` | `clearchat/v1/key-verify` | prova de posse da DEK |
+| `K_push` | `clearchat/v1/push` | notificações push (§22, desde 1.7.0) |
 
 ### 3.8 Prova de posse da DEK
 
@@ -231,6 +234,7 @@ zeros à esquerda.
 | evento ao vivo | `K_stream` | `clearchat\|v1\|stream\|<user_id>\|<chat_id>\|<epoch>\|<n>` |
 | comando remoto | `K_stream` | `clearchat\|v1\|command\|<user_id>\|<chat_id>\|<cmd_id>` |
 | resultado de comando | `K_stream` | `clearchat\|v1\|command-result\|<user_id>\|<chat_id>\|<cmd_id>` |
+| notificação push | `K_push` | `clearchat\|v1\|push\|<user_id>\|<kind>\|<tag>` |
 | blob (cada chunk) | chave do arquivo | `UTF-8("clearchat\|v1\|blob\|<user_id>\|<blob_id>\|") ‖ header (21 bytes)` |
 
 A AAD do registro amarra usuário + tipo + id + escopo + revisão: o servidor não consegue trocar
@@ -295,6 +299,7 @@ Não existe em v1. Espaço deixado: `k` no envelope, `key_version` na AAD da wra
 | `records.json` | envelopes de registro (cru e deflate), casos que DEVEM falhar (AAD/bit trocado) |
 | `blobs.json` | blobs CCB1 (3 chunks, chunks exatos, vazio), `blob_id` |
 | `realtime.json` | envelopes de evento ao vivo, comando remoto e resultado |
+| `push.json` | `K_push` e envelopes de notificação push com AAD (§22) |
 | `ids.json` | ids derivados de skill e de blob |
 | `branches.json` | árvore de versões das mensagens (§4.3.8): mãe efetiva, caminho ativo e irmãos — **escrito à mão** (dados de teste compartilhados, não é cripto nem saída do `generate.ts`) |
 
@@ -677,6 +682,7 @@ Ver §13 (formato do bundle).
 | vozes do usuário para clonagem (áudios de referência) | `userData/gpu-voices` | arquivos de áudio locais (a voz escolhida é só um id, local junto com o bloco `gpu`) |
 | cache de clipes de interjeição/preâmbulo por voz | `userData/voice-clips` | derivado; regerado em cada dispositivo |
 | logs do modo sombra da chamada (`voice-eval/*.jsonl`) e o estado da chamada em andamento | `userData` / memória do main | diagnóstico e execução locais |
+| token de push, preferências de notificação (tipos, "mostrar trecho") e tags dos avisos mostrados (desde 1.7.0, §22) | celular | por aparelho |
 
 Tudo que não está nesta tabela e corresponde às tabelas `providers`, `presets`, `chats`, `sessions`,
 `messages`, `memory_collections`, `memories` e às chaves de `settings` da §4.3.2 é sincronizado.
@@ -795,12 +801,14 @@ Clientes chamam antes de login (validação do servidor escolhido) e a cada cone
     "signupOpen": true,
     "captcha": { "provider": "turnstile", "siteKey": "0x4AAAA…" },
     "landing": true,
-    "gateway": false
+    "gateway": false,
+    "push": { "providers": ["fcm"] }
   },
   "links": { "download": "https://github.com/ezenere/ClearChat/releases", "signup": "https://clear.ezenere.com/signup" } }
 ```
 - `captcha: null` = a instância não usa captcha (sem chaves configuradas ou desligado no painel): os
   clientes não abrem a janela de captcha e omitem `turnstile_token`; os limites de taxa continuam.
+- `push` (desde 1.7.0): `null` quando a instância não tem push configurado (§22.1).
 - `links.signup` ausente quando `signupOpen` é falso. `gateway` é reservado (§21; sempre `false` em v1).
 - Cliente com protocolo fora de `[protocol.min, protocol.max]` → "Este servidor usa uma versão
   incompatível do protocolo (servidor X–Y, app Z) — atualize o app/servidor" e não sincroniza.
@@ -860,7 +868,8 @@ O servidor valida formato (salt 16 bytes, `n` 12, `c` 48, `kdf` dentro dos limit
 
 | | |
 |---|---|
-| `GET /devices` | `[{ id, name, platform, client, app_version, can_host, created_at, last_seen_at, last_ip, online, current }]` |
+| `GET /devices` | `[{ id, name, platform, client, app_version, can_host, created_at, last_seen_at, last_ip, online, current, push }]` (`push` desde 1.7.0) |
+| `PUT`/`DELETE /devices/current/push` | token de push deste dispositivo (§22.2) |
 | `PATCH /devices/{id}` | `{ name }` |
 | `DELETE /devices/{id}` | `204` (revoga; pode ser o atual = logout) |
 
@@ -2012,6 +2021,8 @@ sequenceDiagram
 | `sync.changes` payload inline por mensagem | 256 KiB |
 | `stream.event` máx. / taxa do host | 256 KiB / ~20 eventos/s por chat (o servidor PODE descartar acima de 50/s) |
 | Blob máx. por `PUT` | 300 MiB (Nginx `client_max_body_size`) — sem limite de cota por padrão |
+| `PUSH_MAX_ENV_BYTES` / `PUSH_TEXT_MAX_CHARS` | 2048 (JSON do envelope) / 200 |
+| `PUSH_PENDING_GRACE_S` / `AWAY_IDLE_S` / `PUSH_MAX_AGE_S` | 60 / 300 / 86400 |
 
 ### 17.2 Cotas
 
@@ -2033,6 +2044,8 @@ usuário vale para a instância toda (`kind: 'chat_states'`, §7.10).
 | conexões WS por usuário | 30/min |
 | `reauth/request` por conta | 5/h |
 | troca de wrap (`PUT /keys/password` + `PUT /keys/recovery`) por conta | 10/h |
+| `POST /push` por dispositivo / por conta | 120/h / 300/h |
+| `PUT /devices/current/push` por dispositivo | 30/h |
 
 Contadores por e-mail usam `HMAC(SERVER_SECRET, email)` e valem também para e-mails inexistentes —
 responder `429` não revela se a conta existe. Por isso, quando nenhum código é enviado (login sem conta ou
@@ -2076,6 +2089,7 @@ gastem o limite do dono do e-mail ou o bloqueiem.
 | `protocol_unsupported` | 426 | versão do protocolo fora da faixa |
 | `rate_limited` | 429 | limites (`Retry-After`) |
 | `internal` | 500 | erro inesperado |
+| `push_unavailable` | 503 | `POST /push` numa instância sem push configurado (§22.1) |
 
 ---
 
@@ -2106,6 +2120,7 @@ gastem o limite do dono do e-mail ou o bloqueiem.
 | 1.4.1 | 2026-10-21 | Adições compatíveis (só campos opcionais em objetos que já sincronizam): "Tokens de pensamento" das chamadas laterais com raciocínio obrigatório — `SmartApproveConfig.thinkingTokens` (juiz; na config do chat/persona), `ContextCaptureConfig.thinkingTokens` (resumidor; em `smartApprove.capture` e `smartApproveDefaults.capture`) e `AutoTitleSettings.thinkingTokens` (título), cada um `number \| null`, ausente/`null` = o padrão do app; e o liga/desliga do "Cache do prompt" — `SmartApproveConfig.cache` (juiz) e `ContextCaptureConfig.cache` (resumidor; em `smartApprove.capture` e `smartApproveDefaults.capture`), `boolean`, ausente = ligado (o app só grava `false`) (§4.3, §4.3.2). Nenhum id de `setting` novo (sem envio único). Servidor: nenhuma mudança de comportamento — só a versão informada em `/api/info`/`welcome`. |
 | 1.5.0 | 2026-10-23 | Adições compatíveis — áudio (ditado e chamada de voz): ids de `setting` novos `audioInput`, `sttSettings`, `ttsSettings` e `voiceCallDefaults` com as **partes do dispositivo** fora do registro e preservadas ao aplicar (`audioInput.deviceId`, `local.installed`, bloco `gpu` e modo/backend `'gpu'` — escritores nunca enviam `'gpu'`, um dispositivo em GPU continua em GPU), sem segredos (chaves só nos provedores), `providerId` resolvido pelo id e "sem provedor" quando não existe localmente (§4.3.2); envio único dos ids novos e da `voice` local de chats/personas depois do primeiro pull (§4.3.2); `ChatConfig.voice`/`PresetConfig.voice` (`VoiceCallConfig`, inclusive `promptMode`/`endCall`) passam a sincronizar — antes eram locais (§4.3.3, §4.3.6); `MessageMeta.voice` (fala/ditado), `MessageMeta.voiceCall` e os marcadores de início/fim da chamada (só de exibição; no registro com `kind: 'memory-extraction'` + `voiceCall` para que apps ≤ 0.9.0 — que mandariam um `kind` desconhecido ao modelo — os descartem; leitores ≥ 1.5.0 voltam a `voice-call`) e a tool `end_call` no histórico (§4.3.8); `provider.kind: 'elevenlabs'` (só voz, fora de tudo que é chat), capacidades por tipo, inferência pela URL e reparo do `openai` gravado por apps antigos (§4.3.1); remapeamento no merge do `providerId` de stt/tts, do modelo padrão da chamada e de `voice.model` (§12); tools da chamada em `usesLocalTools` (§8.9); itens locais do áudio (microfone, modelos baixados, runtime da GPU, vozes do usuário, clipes, medições, logs do modo sombra) (§4.4); tipos de referência do app com o áudio, depois do 0.9.0 (§4.3); campo opcional `voiceCallDefaults.delayPhrases` (frases de demora da chamada — aditivo dentro do mesmo setting, sem mudança de versão; leitores que não o conhecem o ignoram e os que o conhecem completam a ausência com os padrões) (§4.3.2); campo opcional `api.params` em `sttSettings`/`ttsSettings` (parâmetros dos modelos remotos por família de API — ElevenLabs: formato de saída, `voice_settings`, normalização, `auto_mode`; OpenRouter/OpenAI-compatível: `speed`, `instructions`, `temperature`, `prompt` — preferências que sincronizam, ao contrário dos parâmetros da GPU; aditivo dentro do mesmo setting, sem mudança de versão) (§4.3.2). Clientes < 1.5.0 (app ≤ 0.9.0): ignoram os ids novos; não mostram os marcadores (e nunca os mandam ao modelo); guardam `voice`/meta de voz como desconhecidos (editar uma persona num app antigo apaga a `voice` dela); mostram o provedor ElevenLabs como OpenAI-compatível. Servidor: nenhuma mudança de comportamento (ids de `setting` não são filtrados, meta e config vão cifrados) — só a versão informada em `/api/info`/`welcome`; o site passa a mostrar falas, marcadores de chamada e o provedor de voz. |
 | 1.6.0 | 2026-11-02 | Adição compatível — origem entre chats no comando remoto: `send` ganha `meta?: InterChatSendMeta` (`kind: 'inter-chat'`, `fromChatId`, `fromSessionId?`, `fromChatTitle`, `interChatHops`) para o `send_to_chat` de um agente cujo chat de destino roda em outro dispositivo; o host ≥ 1.6.0 grava a mensagem com esse meta, conta os saltos e recusa acima de `interChatMaxHops`; meta inválido é ignorado; o remetente nunca entrega localmente um chat executado em outro dispositivo (host offline/divergente/sem conexão → a tool recusa) (§8.6). Hosts < 1.6.0 ignoram o meta (a mensagem chega como digitada, com o cabeçalho de origem no texto). Servidor: nenhuma mudança de comportamento (o payload é cifrado) — só a versão informada em `/api/info`/`welcome`. Texto: o aviso do topo aponta para o repositório pai como fonte única. |
+| 1.7.0 | 2026-11-06 | Adições compatíveis — notificações push (§22): token FCM por dispositivo (`PUT`/`DELETE /devices/current/push`, `push` em `GET /devices`), `POST /push` com conteúdo cifrado por `K_push` (subchave nova, AAD `clearchat\|v1\|push\|…`, vetores em `push.json`), kinds `approval`/`question`/`retry`/`reply`/`error`/`dismiss`, regras de quando o host avisa (turno iniciado por um celular ou host ausente; pendências também depois de 60 s), aviso `host_offline` gerado pelo servidor, recebimento no celular com texto genérico sem a DEK; `features.push` em `/api/info` (§6.2), linha nova em §2, itens locais (§4.4), constantes e limites (§17.1, §17.3), erro `push_unavailable` (§17.4). Clientes < 1.7.0 não registram token nem enviam: nada muda para eles. Servidor ≥ 1.7.0 precisa da conta de serviço do Firebase para ligar o push. |
 
 ---
 
@@ -2201,3 +2216,116 @@ chat quando nenhum dispositivo host estiver online (ex.: conversar do celular co
 - **Espaço reservado em v1**: `device.client = 'gateway'`, `features.gateway` no `/api/info`, configuração
   `gateway_enabled`, tipo de registro `key_grant`. Servidores e clientes v1 tratam tudo isso como
   desligado/desconhecido.
+
+---
+
+## 22. Notificações push (desde 1.7.0)
+
+Avisos no celular quando um chat precisa do usuário ou termina algo que ele pediu, mesmo com o app
+fechado. O conteúdo vai **cifrado de ponta a ponta** (`K_push`); o servidor só repassa ao provedor de push
+e vê o tipo do aviso, a tag aleatória, os destinos e o horário (§2).
+
+### 22.1 Quem participa
+
+- **Recebem**: só apps móveis, com provedor `fcm` (Firebase Cloud Messaging; Android em v1 — iOS via APNs
+  pelo FCM fica para depois, e `provider: 'apns'` está reservado). Desktop e site não registram token.
+- **Enviam**: o **host** do chat (§8) — é ele quem sabe que uma aprovação está pendente ou que o turno
+  acabou. Chats hospedados no próprio celular não passam pelo servidor: o app mostra notificações locais
+  quando está em segundo plano (não normativo).
+- **Servidor**: guarda o token de cada dispositivo, valida e repassa ao FCM (HTTP v1, conta de serviço da
+  instância). Sem push configurado na instância, `features.push` é `null` (§6.2): clientes não registram
+  token nem enviam, e `POST /push` responde `503 push_unavailable`.
+
+### 22.2 Token do dispositivo
+
+| | |
+|---|---|
+| `PUT /devices/current/push` | `{ provider: 'fcm', token: string }` (token ≤ 4096 chars) → `204`. Um token por dispositivo (substitui o anterior). |
+| `DELETE /devices/current/push` | `204` (idempotente) |
+
+- O app registra depois do login/desbloqueio, a cada abertura (idempotente) e quando o FCM troca o token;
+  remove quando o usuário desliga as notificações neste aparelho.
+- O servidor apaga o token ao revogar o dispositivo/logout e quando o FCM responde que ele não vale mais
+  (`UNREGISTERED`, `404`, ou `INVALID_ARGUMENT` apontando o token).
+- `GET /devices` ganha `push: boolean` (o dispositivo tem token válido) — é por ele que o host sabe se a
+  origem de um turno é um celular (§22.5).
+
+### 22.3 Envio — `POST /push`
+
+```json
+{ "kind": "approval", "tag": "5f0c1e2d3a4b5c6d7e8f901a2b3c4d5e",
+  "to": "all", "env": { "v": 1, "k": 1, "n": "…", "c": "…" } }
+```
+
+- `kind`: `approval` (aprovação pendente), `question` (pergunta do agente), `retry` (esperando para tentar
+  de novo), `reply` (resposta pronta), `error` (turno parou com erro) ou `dismiss` (apagar o aviso da
+  mesma `tag`). Desconhecido → `400 invalid_request`.
+- `tag`: 32 hex minúsculos, aleatória, escolhida pelo remetente. Identifica o aviso no aparelho: um aviso
+  novo com a mesma tag substitui o anterior; `dismiss` apaga.
+- `to`: `"all"` (todos os dispositivos do usuário com token, menos o remetente) ou lista de `device_id`
+  (≤ 20; ids de outros usuários ou sem token são ignorados).
+- `env`: envelope (§3.9) com `K_push` e AAD `clearchat|v1|push|<user_id>|<kind>|<tag>` (§3.10).
+  Obrigatório exceto em `dismiss` (`null`). O JSON do envelope DEVE ter ≤ `PUSH_MAX_ENV_BYTES`.
+- Resposta `200 { "sent": n }` (destinos com token; `0` não é erro). `429 rate_limited` (§17.3) — o host
+  descarta o aviso, sem fila.
+- Mensagem ao FCM: **só dados** (o app monta a notificação), `android.collapse_key = tag`,
+  `android.priority = high` exceto `dismiss` (`normal`), `android.ttl`: `approval`/`question`/`retry`/
+  `dismiss` 3600 s, `reply`/`error` 86400 s. Campos (strings): `v: "1"`, `kind`, `tag`, `env` (JSON do
+  envelope ou `""`), `sent_at` (ISO do servidor).
+
+### 22.4 Conteúdo cifrado
+
+`K_push = HKDF(DEK, info "clearchat/v1/push")` (§3.7). Plaintext (moldura §3.9):
+
+```ts
+PushPayload = {
+  sv: 1,
+  kind: 'approval' | 'question' | 'retry' | 'reply' | 'error',  // DEVE ser igual ao kind de fora
+  chatId: string, sessionId?: string,
+  chatTitle: string,       // ≤ 120 chars
+  text: string,            // trecho, ≤ PUSH_TEXT_MAX_CHARS, sem Markdown: início da resposta, a pergunta,
+                           // o que a aprovação pede (ex.: "Executar: npm test") ou a mensagem de erro
+  requestId?: string,      // approval/question/retry
+  hostName: string,        // nome do dispositivo que roda o chat
+  ts: number               // ms Unix
+}
+```
+
+### 22.5 Quando o host avisa (DEVERIA)
+
+"**Turno do celular**": turno da sessão principal iniciado por um comando remoto (`send`, `force`,
+`branch.edit`, `branch.regenerate`) cujo `from_device_id` (§10.5) é um dispositivo com `push: true`.
+"**Ausente**": no momento do evento, o host está com a tela bloqueada, ou sem interação do usuário há
+≥ `AWAY_IDLE_S` (como o "ausente" do Discord), ou com a tela desligada. Host sem como saber (ex.: Wayland
+sem suporte) = presente.
+
+| Evento | Avisa quando | Para quem |
+|---|---|---|
+| turno da sessão principal terminou com resposta (`reply`) ou com erro (`error`; parar pelo usuário não conta) | turno do celular, ou host ausente | o celular de origem; se ausente sem origem móvel, `"all"` |
+| aprovação, pergunta ou espera de retry (`approval`/`question`/`retry`, também de subagentes) | imediatamente se turno do celular ou host ausente; senão depois de `PUSH_PENDING_GRACE_S` se ainda pendente | idem; depois da espera, `"all"` |
+| pendência acima resolvida (em qualquer dispositivo) ou cancelada | se o aviso foi enviado | os mesmos destinos (`dismiss`, mesma tag) |
+
+- `reply`/`error` DEVERIAM reutilizar uma tag por chat (o aviso novo substitui o anterior);
+  `approval`/`question`/`retry` usam uma tag por pedido.
+- O host NÃO avisa sobre chats que não hospeda e não manda nada se `features.push` for `null`.
+
+### 22.6 Aviso gerado pelo servidor: host caiu
+
+Quando o host de um chat **rodando** fica offline (depois de `HOST_DROP_GRACE_S`, §8.3), o servidor
+DEVERIA mandar `kind: "host_offline"` a todos os dispositivos com token, com `env: ""` e os campos extras
+em claro `chat_id` e `device_name` (o servidor já os conhece, §2); tag própria. Quando o host volta, PODE
+mandar `dismiss` dessa tag. Um aviso por queda de host (não um por chat): `chat_id` = um dos chats que
+rodavam.
+
+### 22.7 No celular (recebimento)
+
+- Mensagem de dados recebida mesmo com o app fechado (tarefa em segundo plano). App em primeiro plano
+  **com o chat aberto** → não mostra (o `dismiss` vale sempre).
+- Decifra com `K_push` se a DEK estiver disponível sem interação. DEK disponível e falha de
+  autenticação/AAD, `kind` interno diferente do externo ou `ts` mais velho que `PUSH_MAX_AGE_S` →
+  descarta. DEK indisponível (guardada com biometria, "não lembrar", ainda não desbloqueado) → texto
+  genérico pelo `kind` ("Um chat precisa da sua aprovação", "Resposta pronta num chat"…).
+- Título = `chatTitle`; corpo = `text` se o usuário quiser trecho (padrão: sim), senão o genérico. Na
+  tela bloqueada só o genérico (visibilidade privada do Android). Tocar abre o chat (`chatId`).
+- Canais Android: pendências (`approval`/`question`/`retry`, importância alta), respostas, erros, host
+  offline. Preferências por tipo e "mostrar trecho" ficam no aparelho (§4.4) e filtram no próprio app.

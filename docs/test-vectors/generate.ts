@@ -50,7 +50,8 @@ export const HKDF_INFO = {
   recordId: 'clearchat/v1/record-id',
   keyVerify: 'clearchat/v1/key-verify',
   recoveryKek: 'clearchat/v1/recovery-kek',
-  blobFile: 'clearchat/v1/blob-file'
+  blobFile: 'clearchat/v1/blob-file',
+  push: 'clearchat/v1/push'
 }
 
 export const FRAME_RAW = 0x00
@@ -293,6 +294,11 @@ export const aadCommand = (userId: string, chatId: string, cmdId: string): Uint8
 /** Resultado de um comando (host → dispositivo que enviou). */
 export const aadCommandResult = (userId: string, chatId: string, cmdId: string): Uint8Array =>
   utf8(`clearchat|v1|command-result|${userId}|${chatId}|${cmdId}`)
+export const aadPush = (userId: string, kind: string, tag: string): Uint8Array =>
+  utf8(`clearchat|v1|push|${userId}|${kind}|${tag}`)
+/** K_push (§22.4): fora de deriveSubkeys para não mexer em keys.json. */
+export const pushKey = (dek: Uint8Array): Uint8Array =>
+  hkdf(dek, new Uint8Array(0), HKDF_INFO.push)
 
 export const aadBlob = (userId: string, blobId: string, header: Uint8Array): Uint8Array =>
   concat(utf8(`clearchat|v1|blob|${userId}|${blobId}|`), header)
@@ -826,6 +832,66 @@ async function buildVectors(): Promise<Record<string, unknown>> {
     })
   }
 
+  // ---------------- push (notificações, §22) ----------------
+  const kPush = pushKey(DEK)
+  const pushCases = [
+    {
+      name: 'approval',
+      kind: 'approval',
+      tag: '5f0c1e2d3a4b5c6d7e8f901a2b3c4d5e',
+      json: JSON.stringify({
+        sv: 1,
+        kind: 'approval',
+        chatId: CHAT_ID,
+        sessionId: '9b8a7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d',
+        chatTitle: 'Refatorar login',
+        text: 'Executar: npm test',
+        requestId: 'req-31c2',
+        hostName: 'Desktop de casa',
+        ts: 1760000300000
+      }),
+      nonce: NONCE(0x99)
+    },
+    {
+      name: 'reply',
+      kind: 'reply',
+      tag: '0a1b2c3d4e5f60718293a4b5c6d7e8f9',
+      json: JSON.stringify({
+        sv: 1,
+        kind: 'reply',
+        chatId: CHAT_ID,
+        sessionId: '9b8a7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d',
+        chatTitle: 'Refatorar login',
+        text: 'Pronto, alterei os 3 arquivos e os testes passaram.',
+        hostName: 'Desktop de casa',
+        ts: 1760000400000
+      }),
+      nonce: NONCE(0xaa)
+    }
+  ]
+  const push = {
+    ...header,
+    description:
+      'Notificações push (§22): envelope dos registros com K_push = HKDF(DEK, info "clearchat/v1/push"); AAD amarra usuário, kind e tag.',
+    user_id: USER_ID,
+    push_key_hex: hex(kPush),
+    cases: pushCases.map((c) => {
+      const aad = aadPush(USER_ID, c.kind, c.tag)
+      const frame = frameJson(c.json, false)
+      const env = seal(kPush, aad, frame, c.nonce)
+      return {
+        name: c.name,
+        kind: c.kind,
+        tag: c.tag,
+        aad_utf8: new TextDecoder().decode(aad),
+        json: c.json,
+        frame_hex: hex(frame),
+        nonce_hex: hex(c.nonce),
+        envelope: env
+      }
+    })
+  }
+
   // ---------------- ids ----------------
   const ids = {
     ...header,
@@ -855,6 +921,7 @@ async function buildVectors(): Promise<Record<string, unknown>> {
     'records.json': records,
     'blobs.json': blobs,
     'realtime.json': realtime,
+    'push.json': push,
     'ids.json': ids
   }
 }

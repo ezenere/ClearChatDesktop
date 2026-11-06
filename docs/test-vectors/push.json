@@ -1,0 +1,39 @@
+{
+  "protocol_version": 1,
+  "note": "Gerado por docs/test-vectors/generate.ts. Binários: hex (minúsculo) quando o campo termina em _hex; base64url sem padding nos demais. Nonces/salts/DEK fixos SÓ para teste.",
+  "description": "Notificações push (§22): envelope dos registros com K_push = HKDF(DEK, info \"clearchat/v1/push\"); AAD amarra usuário, kind e tag.",
+  "user_id": "6f1c2b9e-3a4d-4e5f-8a7b-9c0d1e2f3a4b",
+  "push_key_hex": "d551f2ace82add0bbf2b1821ad20155d0f98afed89cb8862d415325cb6204976",
+  "cases": [
+    {
+      "name": "approval",
+      "kind": "approval",
+      "tag": "5f0c1e2d3a4b5c6d7e8f901a2b3c4d5e",
+      "aad_utf8": "clearchat|v1|push|6f1c2b9e-3a4d-4e5f-8a7b-9c0d1e2f3a4b|approval|5f0c1e2d3a4b5c6d7e8f901a2b3c4d5e",
+      "json": "{\"sv\":1,\"kind\":\"approval\",\"chatId\":\"3d6f0a52-7c1e-4b8a-9f2d-0e4c5b6a7d8e\",\"sessionId\":\"9b8a7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d\",\"chatTitle\":\"Refatorar login\",\"text\":\"Executar: npm test\",\"requestId\":\"req-31c2\",\"hostName\":\"Desktop de casa\",\"ts\":1760000300000}",
+      "frame_hex": "007b227376223a312c226b696e64223a22617070726f76616c222c22636861744964223a2233643666306135322d376331652d346238612d396632642d306534633562366137643865222c2273657373696f6e4964223a2239623861376336642d356534662d346133622d386332642d316530663961386237633664222c22636861745469746c65223a2252656661746f726172206c6f67696e222c2274657874223a2245786563757461723a206e706d2074657374222c22726571756573744964223a227265712d33316332222c22686f73744e616d65223a224465736b746f702064652063617361222c227473223a313736303030303330303030307d",
+      "nonce_hex": "999999999999999999999999",
+      "envelope": {
+        "v": 1,
+        "k": 1,
+        "n": "mZmZmZmZmZmZmZmZ",
+        "c": "IwDUEoZcu8RZKFX65m0D4LkThsoUa3HyvDg1VR4Q1r7GLg8Tu8KFJGaiEUkNUwCttT4enuW8bVV53lZruRrAsEvgASm7RuDcLeuV04ysac6Tiup3KupD2EfCpmA0-OjPCMRZCSxjqiaHO9WmD_7T_0q3CY-IhRLl73HYUg3w_KmwPoGmg9n_7zUz2VDA8ZazCKJV_7iAMBFoVURaJGXI4Uofm3rC8aazaox47jf-3lGo1RIxItOU9jeqabsMQbobbTPElvhG1ZaFz8DqmUksPE6snbdk-we3b_DTb1uX9Ie-ijRvwC16_qlMOq3L1Xz3ljz7d9y7YJx9FIUce9JYv5HAZ279b-E2BTCvdgEygw"
+      }
+    },
+    {
+      "name": "reply",
+      "kind": "reply",
+      "tag": "0a1b2c3d4e5f60718293a4b5c6d7e8f9",
+      "aad_utf8": "clearchat|v1|push|6f1c2b9e-3a4d-4e5f-8a7b-9c0d1e2f3a4b|reply|0a1b2c3d4e5f60718293a4b5c6d7e8f9",
+      "json": "{\"sv\":1,\"kind\":\"reply\",\"chatId\":\"3d6f0a52-7c1e-4b8a-9f2d-0e4c5b6a7d8e\",\"sessionId\":\"9b8a7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d\",\"chatTitle\":\"Refatorar login\",\"text\":\"Pronto, alterei os 3 arquivos e os testes passaram.\",\"hostName\":\"Desktop de casa\",\"ts\":1760000400000}",
+      "frame_hex": "007b227376223a312c226b696e64223a227265706c79222c22636861744964223a2233643666306135322d376331652d346238612d396632642d306534633562366137643865222c2273657373696f6e4964223a2239623861376336642d356534662d346133622d386332642d316530663961386237633664222c22636861745469746c65223a2252656661746f726172206c6f67696e222c2274657874223a2250726f6e746f2c20616c7465726569206f732033206172717569766f732065206f732074657374657320706173736172616d2e222c22686f73744e616d65223a224465736b746f702064652063617361222c227473223a313736303030303430303030307d",
+      "nonce_hex": "aaaaaaaaaaaaaaaaaaaaaaaa",
+      "envelope": {
+        "v": 1,
+        "k": 1,
+        "n": "qqqqqqqqqqqqqqqq",
+        "c": "TfFy3c0dawLNtsSlmjdCPjADJiDD2hpAdpMGN70l0WKMCix3CAFrqZwvR_FP6yytSWxfSd7qy5jNgAKVqopXTXfA1Aa2FYnCBDEp6e3uGLPkkUtxczm2UYdJOBRrtNewFPVJU3AccwMZe7jJcwW2ruEq4jwqxVUpD_cAqVx61S94v06VLAaKqH_KKJvlkN33mwdVvhFOqaMAnrWQyqeb2wIQdDxaNxQVJDVhuutvj8xS3pAC1E19shpOAL1M0xrmUPign8-wzdoRt2Jh8Wntiyr9NlzTsxtxnUL_m8fK37hg4HlYyCiU9-Jnm8Bs9LVN90JgK0ZJZVbSe64me7LpBTQ1VRIcV8FDiTxrWR6emIblGX4rw_I"
+      }
+    }
+  ]
+}
