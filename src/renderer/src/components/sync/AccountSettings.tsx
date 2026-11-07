@@ -24,7 +24,7 @@ import type { SyncDevice, SyncStatus } from '@shared/sync'
 import { api, errorMessage } from '../../lib/api'
 import { cn, relativeTime } from '../../lib/format'
 import { useStore } from '../../store'
-import { Button, Label, Spinner } from '../ui/controls'
+import { Button, Label, Spinner, Switch } from '../ui/controls'
 import { HelpTip, Tip } from '../ui/Tooltip'
 import { SecretInput } from '../ProviderForm'
 import { AccountFlow } from './AccountFlow'
@@ -488,29 +488,36 @@ export function AccountSettings(): React.JSX.Element {
         title="Notificações no celular"
         help="O aviso vai cifrado de ponta a ponta para o app do celular (o servidor não lê o conteúdo). Vale para os chats que este computador executa."
       >
-        <label className="flex items-start gap-2 text-[12.5px]" data-testid="push-notify">
-          <input
-            type="checkbox"
-            className="mt-0.5"
-            checked={status.push.enabled}
-            disabled={!status.push.available}
-            onChange={(e) => {
-              const on = e.target.checked
-              void run(async () => {
-                await api.sync.setPushNotify(on)
-                await refreshSync()
-              })
-            }}
-          />
-          <span>
-            Avisar no celular quando eu estiver ausente ou quando o pedido vier do celular
-            <span className="block text-[11px] text-subtle">
-              {status.push.available
-                ? 'Aprovações, perguntas e respostas prontas. Ausente = tela bloqueada ou sem uso há 5 minutos.'
-                : 'Este servidor não tem notificações push configuradas.'}
-            </span>
-          </span>
-        </label>
+        {/* mesmo layout do ToggleRow (rótulo + (?) à esquerda, Switch à direita), com `disabled` */}
+        <div className="flex items-start gap-3" data-testid="push-notify">
+          <div className="min-w-0 flex-1">
+            <div className="text-[13px] text-fg/90">
+              Avisar no celular quando eu estiver ausente ou quando o pedido vier do celular
+              <HelpTip label="Avisar no celular" className="ml-1.5 -translate-y-px">
+                Aprovações, perguntas e respostas prontas. Ausente = tela bloqueada ou sem uso há 5
+                minutos.
+              </HelpTip>
+            </div>
+            {!status.push.available && (
+              <p className="mt-0.5 text-[11.5px] leading-snug text-subtle">
+                Este servidor não tem notificações push configuradas.
+              </p>
+            )}
+          </div>
+          <div className="pt-0.5">
+            <Switch
+              checked={status.push.enabled}
+              disabled={!status.push.available}
+              label="Avisar no celular"
+              onChange={(on) => {
+                void run(async () => {
+                  await api.sync.setPushNotify(on)
+                  await refreshSync()
+                })
+              }}
+            />
+          </div>
+        </div>
       </Section>
 
       <Section title="Segurança">
