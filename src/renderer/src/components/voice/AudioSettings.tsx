@@ -54,22 +54,11 @@ import { AudioTagsField } from './AudioTagsField'
 import { DEFAULT_AUDIO_TAGS_PROMPT } from '@shared/audioTags'
 import type { ProviderOption } from '../../lib/voice/voiceSettingsHelpers'
 import { useInputDeviceList } from '../../lib/voice/useInputDevices'
+import { DICTATION_LANGUAGES } from '../../lib/voice/languages'
+import { bumpVoiceEnv } from '../../lib/voice/voiceResolution'
 
 /** Idiomas comuns do ditado (o campo aceita livre — "Outro…" abre o texto). */
-const LANGUAGES: { value: string; label: string }[] = [
-  { value: 'pt-BR', label: 'Português (Brasil)' },
-  { value: 'pt-PT', label: 'Português (Portugal)' },
-  { value: 'en-US', label: 'Inglês (EUA)' },
-  { value: 'en-GB', label: 'Inglês (Reino Unido)' },
-  { value: 'es-ES', label: 'Espanhol' },
-  { value: 'fr-FR', label: 'Francês' },
-  { value: 'de-DE', label: 'Alemão' },
-  { value: 'it-IT', label: 'Italiano' },
-  { value: 'ja-JP', label: 'Japonês' },
-  { value: 'zh-CN', label: 'Chinês (simplificado)' },
-  { value: 'ko-KR', label: 'Coreano' },
-  { value: 'ru-RU', label: 'Russo' }
-]
+const LANGUAGES = DICTATION_LANGUAGES
 const CUSTOM_LANGUAGE = '__custom__'
 
 /**
@@ -276,6 +265,8 @@ export function AudioSettings(): React.JSX.Element | null {
   const refreshModelSettings = (): void => {
     reloadVoiceGroups()
     refreshRuntime()
+    // a disponibilidade da voz das personas/chats (ícones do composer, aba Voz) muda junto
+    bumpVoiceEnv()
   }
 
   /** Ação da linha do modelo (`modelAction`): baixar/rebaixar, cancelar ou remover. */
@@ -371,11 +362,19 @@ export function AudioSettings(): React.JSX.Element | null {
 
   return (
     <div className="space-y-5" data-testid="audio-settings" data-view="main">
-      <div className="flex items-center gap-1.5 text-xs leading-relaxed text-subtle">
-        Ditado, transcrição, fala e chamada de voz — valem para todos os chats.
+      <div
+        className="flex items-center gap-1.5 text-xs leading-relaxed text-subtle"
+        data-testid="audio-device-note"
+      >
+        Padrões deste dispositivo (não sincronizam) — cada persona pode ter a própria voz e
+        transcrição.
         <HelpTip label="Áudio">
-          Cada persona/chat pode ligar/desligar a chamada de voz e ter modelo, tools e prompt
-          próprios (painel do chat → aba Voz). Os provedores de transcrição e fala são os de
+          Ditado, transcrição, fala e chamada de voz deste computador: valem para os chats sem voz
+          própria e não vão para os seus outros dispositivos (cada um tem os motores, modelos e o
+          microfone dele). Cada persona/chat pode escolher a própria voz e transcrição
+          (Configurações → Personas → Voz, ou painel do chat → aba Voz — essa escolha sincroniza;
+          onde ela não existir, vale o padrão daquele dispositivo), ligar/desligar a chamada e ter
+          modelo, tools e prompt próprios. Os provedores de transcrição e fala são os de
           Configurações → Provedores; os modelos que rodam no computador ficam em “Modelos locais”
           (botão ao lado do título).
         </HelpTip>

@@ -106,16 +106,23 @@ export function GpuReadiness({
   )
 }
 
-/** Painel de Fala com backend "Local (GPU)". */
+/**
+ * Painel de Fala com backend "Local (GPU)". `choiceTts` = voz de uma persona/chat (protocolo
+ * 1.9.0): só motor + voz são dela — passos e parâmetros do motor ficam nas settings deste
+ * dispositivo (escondidos aqui) e a prévia sai com a voz da persona.
+ */
 export function GpuTtsPanel({
   tts,
   status,
-  onCommit
+  onCommit,
+  choiceTts
 }: {
   tts: TtsSettings
   status: GpuStatus | null
   onCommit: (next: TtsSettings) => Promise<boolean>
+  choiceTts?: unknown
 }): React.JSX.Element {
+  const voiceOnly = choiceTts !== undefined
   const g = asGpuTts(tts)
   const engine = status?.engines.find((e) => e.id === g.gpu?.engine) ?? null
   const [preview, setPreview] = useState<{ id: string; state: 'busy' | 'playing' } | null>(null)
@@ -148,7 +155,11 @@ export function GpuTtsPanel({
     setError(null)
     setPreview({ id: v.id, state: 'busy' })
     void api.voice?.tts
-      .test({ voice: v.id, text: VOICE_PREVIEW_PHRASE })
+      .test({
+        voice: v.id,
+        text: VOICE_PREVIEW_PHRASE,
+        ...(voiceOnly ? { tts: choiceTts } : {})
+      })
       .then((r) => {
         setPreview({ id: v.id, state: 'playing' })
         player.current = playAudioBytes(
@@ -198,7 +209,7 @@ export function GpuTtsPanel({
           gerenciar em <GpuSectionLink testId="tts-gpu-manage" />
         </span>
       </div>
-      {engine?.id === 'omnivoice' && (
+      {engine?.id === 'omnivoice' && !voiceOnly && (
         <StepsControl
           value={g.gpu?.steps ?? engine.options?.steps}
           testId="tts-gpu-steps"
@@ -292,7 +303,7 @@ export function GpuTtsPanel({
           />
         </div>
       )}
-      {engine && engine.install.state === 'installed' && (
+      {engine && engine.install.state === 'installed' && !voiceOnly && (
         <GpuParamsEditor
           engineId={engine.id}
           engineLabel={engine.label}

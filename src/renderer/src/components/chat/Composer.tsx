@@ -48,6 +48,8 @@ import { ModelPill } from './ModelPill'
 import { SpendButton } from './SpendButton'
 import { BarLevelsContext, barAttrs, useBarCollapse, useBarLevel } from '../../lib/useBarCollapse'
 import { useDictation } from '../../lib/voice/useDictation'
+import { useChatVoiceLayers, useVoiceResolution } from '../../lib/voice/voiceResolution'
+import { dictationUnavailableText, voiceFallbackNote } from '../../lib/voice/voiceChoice'
 import { useDictationGpuPreparing } from '../../lib/voice/gpu/gpuPrepare'
 import {
   insertDictationText,
@@ -341,7 +343,15 @@ export function Composer({
    * textarea não muda; o desfecho (✓/×/Enviar) chega por `onFinal`/`onSettled` e é aplicado no
    * layout effect abaixo, com a textarea de volta.
    */
+  // transcrição do ditado = a da persona/chat neste dispositivo (protocolo 1.9.0): indisponível aqui
+  // → a padrão daqui (aviso discreto no tooltip); nenhuma funciona → mic esmaecido com o motivo
+  const voiceLayers = useChatVoiceLayers(session.chatId)
+  const voiceRes = useVoiceResolution(api.voice ? voiceLayers : null)
+  const dictationUnavailable = dictationUnavailableText(voiceRes?.stt)
   const dictation = useDictation({
+    voice: voiceLayers,
+    sttSettings: voiceRes?.stt.settings ?? null,
+    unavailable: dictationUnavailable,
     onFinal: (spoken) => {
       pendingFinalRef.current = spoken
       setCommitTick((n) => n + 1)
@@ -1024,7 +1034,21 @@ export function Composer({
                               dictation={dictation}
                               session={session}
                               dictationOff={
-                                callActive ? 'Ditado indisponível durante a chamada de voz' : null
+                                callActive
+                                  ? 'Ditado indisponível durante a chamada de voz'
+                                  : dictationUnavailable
+                              }
+                              dictationNote={voiceFallbackNote('stt', voiceRes?.stt)}
+                              voiceState={
+                                voiceRes?.stt
+                                  ? voiceRes.stt.available
+                                    ? voiceRes.stt.fallback
+                                      ? 'fallback'
+                                      : null
+                                    : voiceRes.stt.unconfigured
+                                      ? 'unconfigured'
+                                      : 'unavailable'
+                                  : null
                               }
                             />
                           </span>

@@ -1,14 +1,32 @@
-// Áudio/voz — ligação com o app: as settings globais (`audioInput`, `sttSettings`, `ttsSettings`,
-// `voiceCallDefaults`) no settings genérico do banco, sempre lidas completas e normalizadas.
+// Áudio/voz — ligação com o app: as settings de voz DESTE DISPOSITIVO (`audioInput`, `sttSettings`,
+// `ttsSettings`, `voiceCallDefaults` — locais desde o protocolo 1.9.0, não sincronizam) no settings
+// genérico do banco, sempre lidas completas e normalizadas, e a voz da persona/chat
+// (`config.voice.tts`/`.stt` — `chatVoiceLayers`, `resolveVoice`, `getVoiceSettingsWith`).
 // Escrita tipada por `setVoiceSetting` (normaliza + grava + devolve o valor gravado). As settings
 // de stt/tts guardam só o PROVEDOR (`providerId`), o modelo, a voz e as opções — endereço e chave
 // vêm do provedor cadastrado em Configurações → Provedores, resolvidos aqui só para os serviços do
 // main (`getVoiceSettings`; a chave nunca vai ao renderer). A transcrição vive em `voice/stt.ts` +
 // `voice/session.ts`. Ver SPEC.md → "Áudio".
-import type { VoiceSettingKind, VoiceSettingsMap, VoiceSettingsView } from '@shared/ipc'
+import type {
+  VoiceResolutionView,
+  VoiceSettingKind,
+  VoiceSettingsMap,
+  VoiceSettingsView
+} from '@shared/ipc'
 import {
   AUDIO_INPUT_SETTING,
+  applySttChoice,
+  applyTtsChoice,
   DEFAULT_TTS_LOCAL,
+  normalizeVoiceCallConfig,
+  resolveSttVoice,
+  resolveTtsVoice,
+  sttChoiceOf,
+  ttsChoiceOf,
+  type VoiceDeviceCaps,
+  type VoiceLayers,
+  type VoiceSttChoice,
+  type VoiceTtsChoice,
   normalizeAudioInput,
   normalizeSttSettings,
   normalizeTtsSettings,
@@ -28,16 +46,16 @@ import {
 import type { Provider } from '@shared/types'
 import { providerKind } from '@shared/providerKinds'
 import type { LocalModelCatalogEntry } from './voice/catalog'
-import { providersRepo, settingsRepo } from './repo'
+import { chatsRepo, presetsRepo, providersRepo, settingsRepo } from './repo'
 
 export interface VoiceSettings {
-  /** Ditado: microfone, push-to-talk, silêncio e idioma (100% global). */
+  /** Ditado: microfone, push-to-talk, silêncio e idioma (deste dispositivo). */
   audioInput: AudioInputSettings
   /** Voz em texto (STT): modo, endpoint de API e motor local. */
   stt: SttSettings
   /** Texto em voz (TTS): backend, endpoint de API e motor local. */
   tts: TtsSettings
-  /** Padrões globais herdados por chats/personas quando `ChatConfig.voice` tem null. */
+  /** Padrões da chamada deste dispositivo, herdados por chats/personas quando `ChatConfig.voice` tem null. */
   voiceCallDefaults: VoiceCallDefaults
 }
 
@@ -75,12 +93,93 @@ export function resolveVoiceEndpoint<
  * Nunca vai ao renderer (a visão é `getVoiceSettingsView`, sem resolver).
  */
 export function getVoiceSettings(): VoiceSettings {
+  return getVoiceSettingsWith({})
+}
+
+/**
+ * `getVoiceSettings` com a voz de uma persona/chat aplicada (protocolo 1.9.0): a fala/transcrição
+ * escolhidas (`applyTtsChoice`/`applySttChoice` sobre as deste dispositivo — o que é do dispositivo
+ * continua) e o `providerId` resolvido para endereço/chave do provedor salvo. null/ausente = as
+ * deste dispositivo. Só para os serviços do main (chamada, ditado, prévias, clipes).
+ */
+export function getVoiceSettingsWith(choice: {
+  tts?: VoiceTtsChoice | null
+  stt?: VoiceSttChoice | null
+}): VoiceSettings {
   const v = readVoiceSettings()
+  const stt = applySttChoice(v.stt, choice.stt ?? null)
+  const tts = applyTtsChoice(v.tts, choice.tts ?? null)
   const lookup = (id: string): Provider | null => providersRepo.get(id)
   return {
     ...v,
-    stt: { ...v.stt, api: withTtsProviderKind(resolveVoiceEndpoint(v.stt.api, lookup), lookup) },
-    tts: { ...v.tts, api: withTtsProviderKind(resolveVoiceEndpoint(v.tts.api, lookup), lookup) }
+    stt: { ...stt, api: withTtsProviderKind(resolveVoiceEndpoint(stt.api, lookup), lookup) },
+    tts: { ...tts, api: withTtsProviderKind(resolveVoiceEndpoint(tts.api, lookup), lookup) }
+  }
+}
+
+// ---------------- voz da persona/chat (protocolo 1.9.0) ----------------
+
+/** Camadas de voz de um chat salvo: a `voice` dele e a da persona de origem (lida ao vivo). */
+export function chatVoiceLayers(chatId: string): VoiceLayers {
+  const chat = chatsRepo.get(chatId)
+  const presetId = chat?.config.presetId
+  return {
+    chat: chat?.config.voice ?? null,
+    persona: presetId ? (presetsRepo.get(presetId)?.config.voice ?? null) : null
+  }
+}
+
+/** Camadas cruas vindas do renderer (`voice:resolve`, ditado) → normalizadas (lixo = sem a camada). */
+export function voiceLayersFrom(input: unknown): VoiceLayers {
+  const o =
+    input && typeof input === 'object' && !Array.isArray(input)
+      ? (input as Record<string, unknown>)
+      : {}
+  const layer = (v: unknown): VoiceLayers['chat'] =>
+    v && typeof v === 'object' ? normalizeVoiceCallConfig(v) : null
+  return { chat: layer(o.chat), persona: layer(o.persona) }
+}
+
+/**
+ * O que a resolução vai conferir NESTE dispositivo para estas camadas: motores locais (modelos em
+ * disco + runtimes) e/ou o modo GPU — as sondas só rodam quando alguma escolha ou setting os usa.
+ */
+export function voiceCapsNeed(layers: VoiceLayers): { local: boolean; gpu: boolean } {
+  const v = readVoiceSettings()
+  const tts = [v.tts.backend, ttsChoiceOf(layers).choice?.backend]
+  const stt = [v.stt.mode, sttChoiceOf(layers).choice?.mode]
+  return {
+    local: tts.includes('local') || stt.includes('local') || stt.includes('hybrid'),
+    gpu: tts.includes('gpu') || stt.includes('gpu')
+  }
+}
+
+/**
+ * Fala e transcrição de um chat/persona NESTE dispositivo (`resolveTtsVoice`/`resolveSttVoice`
+ * sobre as settings daqui): o que a chamada e o ditado usam, de onde veio, o fallback e se
+ * funciona. As `settings` da visão vêm SEM endereço/chave (podem ir ao renderer).
+ */
+export function resolveVoice(layers: VoiceLayers, caps: VoiceDeviceCaps): VoiceResolutionView {
+  const v = readVoiceSettings()
+  return {
+    tts: resolveTtsVoice(layers, v.tts, caps),
+    stt: resolveSttVoice(layers, v.stt, v.audioInput.language, caps)
+  }
+}
+
+/**
+ * A voz a USAR depois da resolução: a escolha quando ela vale aqui (null = as deste dispositivo,
+ * inclusive no fallback) e o idioma da escolha da persona/chat (vale mesmo no fallback).
+ */
+export function voiceUse(r: VoiceResolutionView): {
+  tts: VoiceTtsChoice | null
+  stt: VoiceSttChoice | null
+  language: string | null
+} {
+  return {
+    tts: r.tts.source === 'device' ? null : r.tts.choice,
+    stt: r.stt.source === 'device' ? null : r.stt.choice,
+    language: r.stt.choice?.language ?? null
   }
 }
 

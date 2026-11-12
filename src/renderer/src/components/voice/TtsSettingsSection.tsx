@@ -8,11 +8,14 @@
 // suas). Modelo remoto: "Parâmetros" (ElevenLabs: formato de saída, voice_settings, normalização,
 // frases completas; OpenRouter/OpenAI: velocidade, instruções). "Testar voz", "Gerar clipes de voz"
 // e a contagem dos clipes. Endereço e chave ficam só no provedor cadastrado.
+// Também é o seletor da VOZ DE UMA PERSONA/CHAT (`choice`, protocolo 1.9.0): `tts` = as settings
+// deste dispositivo com a escolha aplicada, `onCommit` grava a escolha; teste, ▶ prévia e "Gerar
+// clipes desta voz" saem com ela; passos/parâmetros da GPU (do dispositivo) ficam de fora.
 import { Play, Square } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { TtsVoicesView, VoiceModelInfo, VoiceRuntimeStatus } from '@shared/ipc'
 import type { ModelRef } from '@shared/models'
-import { ttsCallTransport, type TtsSettings } from '@shared/voice'
+import { ttsCallTransport, ttsChoiceFromSettings, type TtsSettings } from '@shared/voice'
 import {
   CALL_TTS_RECOMMENDED,
   describeVoice,
@@ -71,17 +74,28 @@ export function TtsSettingsSection({
   providers,
   models,
   runtime,
-  onCommit
+  onCommit,
+  choice
 }: {
   tts: TtsSettings
   providers: ProviderOption[]
   /** Modelos locais (catálogo + estado em disco) — o Kokoro instalado entra no seletor. */
   models: VoiceModelInfo[]
   runtime: VoiceRuntimeStatus | null
-  /** Grava `ttsSettings`. */
+  /** Grava `ttsSettings` (ou, com `choice`, a voz da persona/chat). */
   onCommit: (next: TtsSettings) => Promise<boolean>
+  /** Voz de uma persona/chat (`voice.tts`): título e textos do nível ("desta persona"/"deste chat"). */
+  choice?: { where: string }
 }): React.JSX.Element | null {
   const voiceApi = api.voice
+  /** Com `choice`: a voz da persona/chat vai junto do teste/prévia/clipes (não a deste dispositivo). */
+  // estável por CONTEÚDO (o pai recalcula `tts` a cada render): a contagem de clipes só relê
+  // quando a voz muda de verdade
+  const choiceKey = choice ? JSON.stringify(ttsChoiceFromSettings(tts)) : null
+  const choiceArg = useMemo(
+    () => (choiceKey ? { tts: JSON.parse(choiceKey) as unknown } : undefined),
+    [choiceKey]
+  )
   const setSettingsOpen = useStore((s) => s.setSettingsOpen)
   const backend = tts.backend
   const isApi = backend === 'api'
@@ -116,7 +130,7 @@ export function TtsSettingsSection({
 
   const refreshClips = useCallback((): void => {
     void api.voice?.tts.clips
-      .list()
+      .list(choiceArg)
       .then((m) =>
         setClips((c) => ({
           ...c,
@@ -127,7 +141,7 @@ export function TtsSettingsSection({
         }))
       )
       .catch(() => void 0)
-  }, [setClips])
+  }, [setClips, choiceArg])
 
   const refreshLocalVoices = useCallback((): void => {
     void api.voice?.tts
@@ -271,7 +285,7 @@ export function TtsSettingsSection({
     setPreview(null)
     setTest({ state: 'busy', error: null })
     void voiceApi.tts
-      .test()
+      .test(choiceArg)
       .then((r) => {
         setTest({ state: 'playing', error: null })
         play(
@@ -301,7 +315,8 @@ export function TtsSettingsSection({
         : voiceApi.tts.test({
             voice: id,
             ...(isApi && tts.api.model ? { model: tts.api.model } : {}),
-            text: VOICE_PREVIEW_PHRASE
+            text: VOICE_PREVIEW_PHRASE,
+            ...choiceArg
           })
     void get
       .then((r) => {
@@ -326,7 +341,7 @@ export function TtsSettingsSection({
   const runClips = (): void => {
     setClips((c) => ({ ...c, busy: true, done: 0, total: 0, error: null }))
     void voiceApi.tts.clips
-      .generate()
+      .generate(choiceArg)
       .then((m) =>
         setClips({
           busy: false,
@@ -355,8 +370,9 @@ export function TtsSettingsSection({
 
   return (
     <AudioSection
-      title="Fala (TTS)"
-      testId="tts-section"
+      title={choice ? `Voz ${choice.where}` : 'Fala (TTS)'}
+      first={!!choice}
+      testId={choice ? 'tts-choice-section' : 'tts-section'}
       help={
         <>
           <p>
@@ -459,11 +475,19 @@ export function TtsSettingsSection({
               void commit({ ...tts, api: params ? { ...rest, params } : rest })
             }}
             testId="tts-api-params"
+            persona={!!choice}
           />
         </div>
       )}
 
-      {isGpu && <GpuTtsPanel tts={tts} status={gpuStatus} onCommit={commit} />}
+      {isGpu && (
+        <GpuTtsPanel
+          tts={tts}
+          status={gpuStatus}
+          onCommit={commit}
+          {...(choiceArg ? { choiceTts: choiceArg.tts } : {})}
+        />
+      )}
 
       {backend === 'local' && (
         <div className="space-y-3" data-testid="tts-local">
@@ -573,7 +597,13 @@ export function TtsSettingsSection({
           disabled={clips.busy}
           onClick={runClips}
         >
-          {clips.stale || clips.count ? 'Gerar clipes de novo' : 'Gerar clipes de voz'}
+          {choice
+            ? clips.stale || clips.count
+              ? 'Gerar clipes desta voz de novo'
+              : 'Gerar clipes desta voz'
+            : clips.stale || clips.count
+              ? 'Gerar clipes de novo'
+              : 'Gerar clipes de voz'}
         </Button>
         <HelpTip label="Clipes de voz">
           Os clipes (os preâmbulos da chamada de voz — &quot;Hum, deixa eu ver aqui.&quot; — e as

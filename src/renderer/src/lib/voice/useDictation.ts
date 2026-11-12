@@ -14,8 +14,8 @@
 // binding `voice` do mock emite as parciais e devolve o texto fixo; o `Waveform` simula os níveis
 // e `window.__clearMockMic` (definido pelo cenário do mock) simula falhas do microfone.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import type { AudioInputSettings } from '@shared/voice'
-import type { VoiceApi } from '@shared/ipc'
+import type { AudioInputSettings, SttSettings } from '@shared/voice'
+import type { VoiceApi, VoiceLayersInput } from '@shared/ipc'
 import { api, errorMessage } from '../api'
 import { useStore } from '../../store'
 import { usePushToTalk, type StopReason } from '../audio/usePushToTalk'
@@ -49,6 +49,18 @@ export interface UseDictationOptions {
    * Configurações abertas): a tecla do PTT fica desligada e uma gravação em curso é CANCELADA.
    */
   suspended?: boolean
+  /**
+   * Camadas de voz do chat (protocolo 1.9.0): a transcrição do ditado é a da persona/chat neste
+   * dispositivo (o main resolve — indisponível aqui → a deste dispositivo).
+   */
+  voice?: VoiceLayersInput | null
+  /** Transcrição EFETIVA do chat (da resolução) — decide o auto-start da GPU. Ausente = a daqui. */
+  sttSettings?: SttSettings | null
+  /**
+   * Motivo de o ditado não funcionar neste dispositivo (nem a transcrição da persona/chat nem a
+   * daqui): iniciar (clique/tecla do PTT) mostra o motivo em vez de gravar. null = disponível.
+   */
+  unavailable?: string | null
 }
 
 export interface DictationControls {
@@ -177,7 +189,11 @@ export function useDictation(options: UseDictationOptions): DictationControls {
       const v = voiceRef.current
       if (!v) return null
       try {
-        const id = await v.transcribe.start(settingsRef.current.language)
+        const layers = optionsRef.current.voice
+        const id = await v.transcribe.start(
+          settingsRef.current.language,
+          layers ? { voice: layers } : undefined
+        )
         sessionIdRef.current = id
         return id
       } catch (err) {
@@ -304,7 +320,8 @@ export function useDictation(options: UseDictationOptions): DictationControls {
     onPcmChunk,
     onStopped: (reason) => void handleStopped(reason),
     onFallback: () => setNotice(MIC_FALLBACK_NOTICE),
-    suspended
+    // transcrição indisponível neste dispositivo: a tecla do PTT não grava (o mic mostra o motivo)
+    suspended: suspended || !!options.unavailable
   })
 
   const pttStop = ptt.stop
@@ -340,6 +357,13 @@ export function useDictation(options: UseDictationOptions): DictationControls {
       setErrorState('API de voz indisponível neste build.')
       return
     }
+    // nem a transcrição da persona/chat nem a deste dispositivo funcionam aqui: o motivo, sem gravar
+    const unavailable = optionsRef.current.unavailable
+    if (unavailable) {
+      setErrorState(unavailable)
+      settle('failed')
+      return
+    }
     setStarting(true)
     try {
       // settings FRESH nesta gravação (a tela Configurações → Áudio pode ter mudado tudo)
@@ -347,10 +371,12 @@ export function useDictation(options: UseDictationOptions): DictationControls {
       settingsRef.current = all.audioInput
       // transcrição na GPU local: o servidor liga sozinho (whisper aquecido) em paralelo à
       // gravação — o áudio espera na sessão; falha ao subir vira o erro do ditado
-      void prepareGpuForDictation(all.sttSettings).catch((err: unknown) => {
-        if (gen === genRef.current && mountedRef.current)
-          setErrorState(`Transcrição (GPU local): ${errorMessage(err)}`)
-      })
+      void prepareGpuForDictation(optionsRef.current.sttSettings ?? all.sttSettings).catch(
+        (err: unknown) => {
+          if (gen === genRef.current && mountedRef.current)
+            setErrorState(`Transcrição (GPU local): ${errorMessage(err)}`)
+        }
+      )
       if (gen !== genRef.current) return // stop/cancel enquanto carregava
       if (MOCK) {
         if (mockMicOpen(settingsRef.current.deviceId)) setNotice(MIC_FALLBACK_NOTICE)

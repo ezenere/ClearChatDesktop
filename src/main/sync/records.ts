@@ -1,7 +1,7 @@
 // Mapeamento entidades locais ↔ plaintext dos registros do sync (docs/SYNC_PROTOCOL.md §4.3).
 // Sem Electron: SQL direto na conexão (testável com banco temporário). Campos locais do dispositivo
-// (§4.4: `cwd` de chats e personas; as partes do dispositivo das settings de áudio — microfone,
-// modo/bloco da GPU local, "modelo instalado") nunca saem daqui e são preservados ao aplicar.
+// (§4.4: `cwd` de chats e personas; as settings de voz `audioInput`/`sttSettings`/`ttsSettings`/
+// `voiceCallDefaults`, locais desde o protocolo 1.9.0) nunca saem daqui e são preservados ao aplicar.
 import type Database from 'better-sqlite3'
 import { homedir } from 'node:os'
 import { providerKind } from '@shared/providerKinds'
@@ -55,34 +55,43 @@ export const SETTING_IDS = [
   // desde 1.4.0 (preferências; antes locais do dispositivo)
   'smartApproveDefaults',
   'autoTitle',
-  'toolOutputSpillChars',
-  // desde 1.5.0 (áudio: ditado, transcrição, fala e padrões da chamada de voz) — as partes do
-  // dispositivo ficam fora (VOICE_DEVICE_FIELDS)
+  'toolOutputSpillChars'
+  // 1.5.0 a 1.8.x também 'audioInput', 'sttSettings', 'ttsSettings' e 'voiceCallDefaults': locais
+  // do dispositivo desde 1.9.0 (DEVICE_VOICE_SETTING_IDS)
+] as const
+
+/**
+ * Settings de voz que sincronizaram de 1.5.0 a 1.8.x e são LOCAIS do dispositivo desde o protocolo
+ * 1.9.0 (§4.3.2/§4.4): dependem do que está instalado/configurado em cada máquina. Escritores não
+ * enviam (`buildLocal` → null; os triggers não as marcam); leitores ignoram os registros recebidos
+ * (de apps antigos) e mantêm o valor local; os registros já gravados no servidor ficam como estão.
+ * O que sincroniza da voz é a da persona/chat (`config.voice`, inclusive `voice.tts`/`voice.stt`).
+ */
+export const DEVICE_VOICE_SETTING_IDS = [
   'audioInput',
   'sttSettings',
   'ttsSettings',
   'voiceCallDefaults'
 ] as const
 
+/** Id de `setting` local do dispositivo desde 1.9.0 (nunca enviado; o recebido é ignorado). */
+export const isDeviceVoiceSetting = (id: string): boolean =>
+  (DEVICE_VOICE_SETTING_IDS as readonly string[]).includes(id)
+
 /**
  * Ids de `setting` que entraram depois do 1.0.0: um dispositivo que já sincronizava não marcou os
  * valores locais como sujos (os triggers não os viam) — o motor faz uma passada única depois do
- * primeiro pull (SyncEngine.backfillSettings). Mudou a lista → mudar a versão. A lista leva TODOS
- * os ids desde 1.4.0 (quem pula de < 1.4.0 direto para 1.5.0 também envia os de 1.4.0; os que já
- * têm registro online são pulados). Em 1.5.0 a passada também envia a `voice` local de chats e
- * personas (antes local do dispositivo) que ainda não está online.
+ * primeiro pull (SyncEngine.backfillSettings). Mudou a lista → mudar a versão (só quando ENTRA um
+ * id: tirar um não pede uma passada nova). A lista leva TODOS os ids desde 1.4.0 (quem pula de
+ * < 1.4.0 direto para 1.5.0 também envia os de 1.4.0; os que já têm registro online são pulados).
+ * Em 1.5.0 a passada também envia a `voice` local de chats e personas (antes local do dispositivo)
+ * que ainda não está online. As settings de voz (1.5.0) saíram em 1.9.0 (locais do dispositivo —
+ * DEVICE_VOICE_SETTING_IDS); a versão fica '1.5.0': quem já fez a passada não precisa refazê-la e
+ * quem ainda não fez a faz sem elas.
  */
 export const SETTINGS_BACKFILL = {
   version: '1.5.0',
-  ids: [
-    'smartApproveDefaults',
-    'autoTitle',
-    'toolOutputSpillChars',
-    'audioInput',
-    'sttSettings',
-    'ttsSettings',
-    'voiceCallDefaults'
-  ]
+  ids: ['smartApproveDefaults', 'autoTitle', 'toolOutputSpillChars']
 } as const
 
 /** Status transitórios de sessão (exibidos como interrupted sem janela aberta, §4.3.7). */
@@ -139,107 +148,7 @@ function setSetting(conn: Database.Database, key: string, value: unknown): void 
       .run(key, JSON.stringify(value))
 }
 
-// ---------------- settings de áudio (§4.3.2/§4.4, desde 1.5.0) ----------------
-
 const isObj = (v: unknown): v is Plain => !!v && typeof v === 'object' && !Array.isArray(v)
-
-/** Ids de `setting` do áudio com partes do dispositivo (filtradas na ida, preservadas na volta). */
-export const VOICE_SETTING_IDS = ['audioInput', 'sttSettings', 'ttsSettings'] as const
-
-/** Campos do endpoint que só o main preenche ao resolver o provedor — nunca gravados nem enviados. */
-const VOICE_ENDPOINT_RUNTIME = ['baseUrl', 'apiKey', 'providerKind', 'extraBody']
-
-/**
- * "Onde rodar" de stt/tts e o valor quando o online não tem um. O modo `gpu` ("Modo avançado (GPU
- * local)") é do DISPOSITIVO: nunca é enviado (vai o valor que já está online) e um dispositivo em
- * `gpu` continua em `gpu` ao receber o registro — a escolha sem GPU (api/local/híbrido) sincroniza.
- */
-const VOICE_MODE_FIELD: Record<string, { field: string; fallback: string }> = {
-  sttSettings: { field: 'mode', fallback: 'api' },
-  ttsSettings: { field: 'backend', fallback: 'local' }
-}
-
-/** `value` da última revisão do servidor de um `setting` (sync_records.base). */
-function onlineSettingValue(conn: Database.Database, id: string): unknown {
-  try {
-    const r = conn
-      .prepare("SELECT base FROM sync_records WHERE type = 'setting' AND id = ?")
-      .get(id) as { base: string | null } | undefined
-    return r?.base ? (parse<Plain>(r.base, {}).value ?? null) : null
-  } catch {
-    return null // sem as tabelas do sync (banco sem sync ligado)
-  }
-}
-
-/**
- * Partes do dispositivo do `audioInput`: o microfone desta máquina (`deviceId`) e o nível de
- * ativação dele (`activationDb` — depende do microfone/sala). Nunca saem; o recebido não as troca.
- */
-const AUDIO_INPUT_DEVICE_FIELDS = ['deviceId', 'activationDb'] as const
-
-/**
- * Valor local de uma setting de áudio → `value` do registro, sem as partes do dispositivo:
- * `audioInput.deviceId`/`activationDb` (microfone desta máquina e o nível dele); em stt/tts o bloco `gpu` (motor/voz/parâmetros
- * da GPU local), `local.installed` (modelo baixado AQUI), endereço/chave que o main resolve, e o
- * modo `gpu` (troca pelo valor online, ou o padrão). Objeto vazio → null.
- */
-export function voiceSettingOut(conn: Database.Database, id: string, value: unknown): unknown {
-  if (!isObj(value)) return value ?? null
-  const out = JSON.parse(JSON.stringify(value)) as Plain
-  if (id === 'audioInput') for (const k of AUDIO_INPUT_DEVICE_FIELDS) delete out[k]
-  const mode = VOICE_MODE_FIELD[id]
-  if (mode) {
-    delete out.gpu
-    if (isObj(out.api)) for (const k of VOICE_ENDPOINT_RUNTIME) delete out.api[k]
-    if (isObj(out.local)) delete out.local.installed
-    if (out[mode.field] === 'gpu') {
-      const online = onlineSettingValue(conn, id)
-      const v = isObj(online) ? online[mode.field] : undefined
-      out[mode.field] = typeof v === 'string' && v !== 'gpu' ? v : mode.fallback
-    }
-  }
-  return Object.keys(out).length ? out : null
-}
-
-/**
- * `value` recebido de uma setting de áudio + as partes do dispositivo do valor local (`cur`):
- * `deviceId`, bloco `gpu`, modo `gpu` (continua em `gpu`; `gpu` recebido nunca é aplicado) e
- * `local.installed` (mantido se o motor é o mesmo — a semântica de "instalado" é por motor —, senão
- * false: a UI oferece o download neste dispositivo). Endereço/chave recebidos são descartados.
- */
-export function voiceSettingIn(id: string, incoming: unknown, cur: unknown): unknown {
-  const local = isObj(cur) ? cur : null
-  const inc = isObj(incoming) ? (JSON.parse(JSON.stringify(incoming)) as Plain) : null
-  if (id === 'audioInput') {
-    const dev: Plain = {}
-    if (typeof local?.deviceId === 'string' && local.deviceId) dev.deviceId = local.deviceId
-    if (typeof local?.activationDb === 'number' && Number.isFinite(local.activationDb))
-      dev.activationDb = local.activationDb
-    if (!inc) return Object.keys(dev).length ? dev : null
-    for (const k of AUDIO_INPUT_DEVICE_FIELDS) delete inc[k]
-    return { ...inc, ...dev }
-  }
-  const mode = VOICE_MODE_FIELD[id]
-  if (!mode) return incoming ?? null
-  const gpuMode = local?.[mode.field] === 'gpu'
-  const keep: Plain = local && 'gpu' in local ? { gpu: local.gpu } : {}
-  if (!inc)
-    return gpuMode || 'gpu' in keep
-      ? { ...(gpuMode ? { [mode.field]: 'gpu' } : {}), ...keep }
-      : null
-  delete inc.gpu
-  if (isObj(inc.api)) for (const k of VOICE_ENDPOINT_RUNTIME) delete inc.api[k]
-  if (gpuMode) inc[mode.field] = 'gpu'
-  else if (inc[mode.field] === 'gpu') {
-    if (typeof local?.[mode.field] === 'string') inc[mode.field] = local[mode.field]
-    else delete inc[mode.field]
-  }
-  if (isObj(inc.local)) {
-    const ll = isObj(local?.local) ? local.local : null
-    inc.local.installed = !!ll && ll.engine === inc.local.engine && ll.installed === true
-  }
-  return { ...inc, ...keep }
-}
 
 /**
  * Marcadores da chamada de voz no fio (§4.3.8, desde 1.5.0). Localmente o marcador é
@@ -370,9 +279,46 @@ export function stripLegacyVoiceKeys(v: unknown): unknown {
   return out
 }
 
-/** Config de chat/persona com `voice` sem os campos legados. */
+/** Campos do endpoint que só o main preenche ao resolver o provedor — nunca gravados nem enviados. */
+const VOICE_ENDPOINT_RUNTIME = ['baseUrl', 'apiKey', 'providerKind', 'extraBody'] as const
+
+/**
+ * Voz da persona/chat (`voice.tts`/`voice.stt`, desde 1.9.0, §4.3.6) sem o que nunca vai ao fio nem
+ * vem dele: endereço/chave/campos de runtime do endpoint (`api.baseUrl`/`apiKey`/`providerKind`/
+ * `extraBody` — o endereço e a chave são do `provider`) e as partes do dispositivo da GPU (passos e
+ * parâmetros — só `engine`/`voice`/`model` sincronizam). Defensivo: o normalizador do app já não os
+ * grava. Não-objeto volta como veio.
+ */
+export function stripVoiceChoiceRuntime(v: unknown): unknown {
+  if (!isObj(v)) return v
+  let out: Plain | null = null
+  const edit = (): Plain => (out ??= { ...v })
+  for (const k of ['tts', 'stt'] as const) {
+    const choice = v[k]
+    if (!isObj(choice)) continue
+    let c: Plain | null = null
+    const editChoice = (): Plain => (c ??= { ...choice })
+    if (isObj(choice.api) && VOICE_ENDPOINT_RUNTIME.some((f) => f in (choice.api as Plain))) {
+      const api = { ...(choice.api as Plain) }
+      for (const f of VOICE_ENDPOINT_RUNTIME) delete api[f]
+      editChoice().api = api
+    }
+    if (isObj(choice.gpu) && ['steps', 'params'].some((f) => f in (choice.gpu as Plain))) {
+      const gpu = { ...(choice.gpu as Plain) }
+      delete gpu.steps
+      delete gpu.params
+      editChoice().gpu = gpu
+    }
+    if (c) edit()[k] = c
+  }
+  return out ?? v
+}
+
+/** Config de chat/persona com `voice` sem os campos legados nem os de runtime da voz escolhida. */
 const withoutLegacyVoice = (cfg: Plain): Plain =>
-  isObj(cfg.voice) ? { ...cfg, voice: stripLegacyVoiceKeys(cfg.voice) } : cfg
+  isObj(cfg.voice)
+    ? { ...cfg, voice: stripVoiceChoiceRuntime(stripLegacyVoiceKeys(cfg.voice)) }
+    : cfg
 
 // ---------------- local → plaintext ----------------
 
@@ -429,14 +375,9 @@ export function buildLocal(
               }
         return { scope: null, plain: { sv: 1, value } }
       }
+      // as settings de voz (DEVICE_VOICE_SETTING_IDS) não estão em SETTING_IDS: locais desde 1.9.0
       if (!(SETTING_IDS as readonly string[]).includes(id)) return null
-      const raw = settingValue(conn, id)
-      const value = (VOICE_SETTING_IDS as readonly string[]).includes(id)
-        ? voiceSettingOut(conn, id, raw)
-        : id === 'voiceCallDefaults'
-          ? stripLegacyVoiceKeys(raw)
-          : raw
-      return { scope: null, plain: { sv: 1, value } }
+      return { scope: null, plain: { sv: 1, value: settingValue(conn, id) } }
     }
     case 'preset': {
       const r = conn.prepare('SELECT * FROM presets WHERE id = ?').get(id) as
@@ -855,13 +796,12 @@ export function applyRemote(
         const v = (value ?? {}) as { providerId?: unknown; model?: unknown }
         setSetting(conn, 'defaultProviderId', value ? strOrNull(v.providerId) : null)
         setSetting(conn, 'defaultModel', value ? strOrNull(v.model) : null)
-      } else if ((VOICE_SETTING_IDS as readonly string[]).includes(id))
-        setSetting(conn, id, voiceSettingIn(id, value, settingValue(conn, id)))
-      else if (id === 'voiceCallDefaults') setSetting(conn, id, stripLegacyVoiceKeys(value))
-      else if ((SETTING_IDS as readonly string[]).includes(id)) setSetting(conn, id, value)
+      } else if (isDeviceVoiceSetting(id)) {
+        // locais do dispositivo desde 1.9.0: o registro de um app antigo é ignorado (o valor local
+        // fica; nada mudou aqui — sem escopo)
+        break
+      } else if ((SETTING_IDS as readonly string[]).includes(id)) setSetting(conn, id, value)
       res.scopes.add('settings')
-      if ((VOICE_SETTING_IDS as readonly string[]).includes(id) || id === 'voiceCallDefaults')
-        res.scopes.add('voice')
       if (id === 'approvalModes' || id === 'approvalLists' || id === 'smartApproveDefaults')
         res.scopes.add('approvals')
       if (id.startsWith('webSearch')) res.scopes.add('webSearch')

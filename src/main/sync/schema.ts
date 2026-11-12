@@ -22,12 +22,9 @@ export const SYNC_SETTING_KEYS: Record<string, string> = {
   // desde o protocolo 1.4.0: preferências que antes ficavam só no dispositivo
   smartApproveDefaults: 'smartApproveDefaults',
   autoTitle: 'autoTitle',
-  toolOutputSpillChars: 'toolOutputSpillChars',
-  // desde o protocolo 1.5.0: settings de áudio (as partes do dispositivo ficam fora — records.ts)
-  audioInput: 'audioInput',
-  sttSettings: 'sttSettings',
-  ttsSettings: 'ttsSettings',
-  voiceCallDefaults: 'voiceCallDefaults'
+  toolOutputSpillChars: 'toolOutputSpillChars'
+  // 1.5.0 a 1.8.x também audioInput/sttSettings/ttsSettings/voiceCallDefaults: locais do
+  // dispositivo desde o protocolo 1.9.0 (mudá-las não marca nada — records.ts DEVICE_VOICE_SETTING_IDS)
 }
 
 const TABLES = `
@@ -131,8 +128,11 @@ CREATE TRIGGER IF NOT EXISTS sync_settings_ad AFTER DELETE ON settings WHEN ${AC
   ${mark('setting', settingId('OLD.key'), 'NULL')}
 END;`
 
-/** Versão dos triggers (recria quando muda — ex.: chaves novas em SYNC_SETTING_KEYS). */
-const TRIGGERS_VERSION = '3'
+/**
+ * Versão dos triggers (recria quando muda — ex.: chaves novas ou removidas em SYNC_SETTING_KEYS;
+ * '4' = as settings de voz saíram, protocolo 1.9.0).
+ */
+const TRIGGERS_VERSION = '4'
 
 function triggerSql(): string {
   return [

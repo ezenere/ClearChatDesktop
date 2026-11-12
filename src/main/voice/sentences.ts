@@ -10,6 +10,10 @@
 // - `.` NÃO corta: entre dígitos (decimal "3.14"), quando o trecho desde a última fronteira é só
 //   um número ("1." de lista) ou quando a última palavra é uma abreviação pt-BR comum ("ex.",
 //   "etc.", "Dr.", "p.ex."…) — exceto no fim do buffer com `final: true` (é o fim da resposta);
+//   meses e dias da semana ("mar.", "set.", "out.", "ter.", "dom."…) também são palavras comuns
+//   ("o mar.", "vai ter."): só valem como abreviação num contexto de DATA (número antes — "15
+//   mar." —, número/ano depois — "mar. 2026", "mar. de 2026" — ou faixa "seg. a sex."); em
+//   streaming, sem o texto seguinte ainda, o corte espera o próximo pedaço;
 // - sem fronteira há muito tempo: corte forçado no último espaço antes de `maxChars` (padrão 240)
 //   — resposta sem pontuação nunca espera o fim inteiro para começar a falar;
 // - `commaCutMin` (1º pedaço da resposta): vírgula + espaço depois de ≥ N chars também corta — o
@@ -61,13 +65,21 @@ const ABBREVIATIONS: ReadonlySet<string> = new Set([
   'ltda',
   'vs',
   'a.c',
-  'd.c',
+  'd.c'
+])
+
+/**
+ * Abreviações de dia da semana e de mês — várias são palavras comuns ("mar", "set", "out", "ter",
+ * "dom", "sex"): só não cortam num contexto de data (`dateContext`).
+ */
+const DATE_ABBREVIATIONS: ReadonlySet<string> = new Set([
   'seg',
   'ter',
   'qua',
   'qui',
   'sex',
   'sáb',
+  'sab',
   'dom',
   'jan',
   'fev',
@@ -82,6 +94,35 @@ const ABBREVIATIONS: ReadonlySet<string> = new Set([
   'nov',
   'dez'
 ])
+const DATE_ABBR_RE =
+  '(?:seg|ter|qua|qui|sex|s[áa]b|dom|jan|fev|mar|abr|mai|jun|jul|ago|set|out|nov|dez)'
+/** Conectores de uma faixa de datas ("seg. a sex.", "jan.–mar.", "seg., qua. e sex."). */
+const RANGE_RE = '(?:a|à|e|até|-|–|—|,)'
+/** 2º item de uma faixa ("seg. a sex.": o trecho antes de "sex" termina em "seg. a "). */
+const RANGE_BEFORE = new RegExp(
+  String.raw`(?:^|[^\p{L}])${DATE_ABBR_RE}\.?\s*${RANGE_RE}\s*$`,
+  'iu'
+)
+/** 1º item de uma faixa ("seg. a sex.": depois do ponto de "seg" vem " a sex"). */
+const RANGE_AFTER = new RegExp(String.raw`^\s*${RANGE_RE}\s*${DATE_ABBR_RE}(?!\p{L})`, 'iu')
+
+/**
+ * O `.` de um mês/dia abreviado está num contexto de data? `before` = o trecho antes da
+ * abreviação; `after` = o texto depois do ponto. 'unknown' = só espaço depois (o resto ainda não
+ * chegou no streaming).
+ */
+function dateContext(before: string, after: string): 'date' | 'word' | 'unknown' {
+  // número antes: "15 mar.", "15 de mar.", "1º set.", "15/mar."
+  if (/\d{1,2}[ºª]?\s*(?:de\s+)?$/i.test(before) || /\d{1,2}\s*[/-]\s*$/.test(before)) return 'date'
+  // 2º item de uma faixa: "seg. a sex.", "jan.–mar."
+  if (RANGE_BEFORE.test(before)) return 'date'
+  if (!after.trim()) return 'unknown'
+  // número/ano depois: "mar. 2026", "mar. de 2026", "seg. 15/03"
+  if (/^\s*(?:de\s+)?\d/i.test(after)) return 'date'
+  // 1º item de uma faixa: "seg. a sex."
+  if (RANGE_AFTER.test(after)) return 'date'
+  return 'word'
+}
 
 const MARKS = '.!?…'
 /** Fechos que podem vir depois da marca antes do espaço: `."`, `?)`, `]`… */
@@ -114,7 +155,13 @@ function dotCuts(
   const seg = buffer.slice(segStart, i)
   if (/^\d+$/.test(seg.trim())) return false // "1." / "2." de lista numerada
   const token = trailingToken(seg)
-  return !(token && ABBREVIATIONS.has(token))
+  if (token && ABBREVIATIONS.has(token)) return false
+  if (token && DATE_ABBREVIATIONS.has(token)) {
+    const ctx = dateContext(seg.slice(0, seg.length - token.length), buffer.slice(i + 1))
+    // data → não corta; sem o texto seguinte ainda (streaming) → espera o próximo pedaço
+    if (ctx === 'date' || (ctx === 'unknown' && !final)) return false
+  }
+  return true
 }
 
 /**

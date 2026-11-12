@@ -8,7 +8,9 @@ import type {
   TtsLocalEngine,
   TtsSettings,
   VoiceCallDefaults,
-  VoiceCallState
+  VoiceCallState,
+  VoiceSttResolution,
+  VoiceTtsResolution
 } from './voice'
 import type { VoiceCatalogRequest, VoiceCatalogView } from './voiceCatalog'
 import type { GpuEngineId, GpuSelfTestResult, GpuStatus } from './gpuVoice'
@@ -270,6 +272,8 @@ export const IPC = {
     callBackchannel: 'voice:call:backchannel',
     callGetState: 'voice:call:get-state',
     runtimeStatus: 'voice:runtime:status',
+    // voz da persona/chat NESTE dispositivo (protocolo 1.9.0 — `resolveTtsVoice`/`resolveSttVoice`)
+    resolve: 'voice:resolve',
     // "Modo avançado (GPU local)" — SPEC → "Áudio → Modo avançado (GPU local)"
     gpuStatus: 'voice:gpu:status',
     gpuInstallRuntime: 'voice:gpu:install-runtime',
@@ -506,6 +510,26 @@ export type VoiceSettingKind = keyof VoiceSettingsMap
 /** O que `voice:settings:get` devolve (= `VoiceSettingsMap`). */
 export type VoiceSettingsView = VoiceSettingsMap
 
+/**
+ * Camadas de voz de um chat/persona (`voice:resolve`, ditado, prévias): a `voice` do chat (salva ou
+ * rascunho) e a da persona de origem. Valores crus — o main normaliza. Ausente = sem a camada.
+ */
+export interface VoiceLayersInput {
+  chat?: unknown
+  persona?: unknown
+}
+
+/**
+ * Voz resolvida NESTE dispositivo (`voice:resolve` — protocolo 1.9.0): fala e transcrição efetivas
+ * (escolha do chat → da persona → settings daqui), de onde vieram, o fallback quando a escolha não
+ * está disponível aqui e se funcionam (microfone/telefone esmaecidos com o motivo). As `settings`
+ * nunca levam endereço/chave do provedor.
+ */
+export interface VoiceResolutionView {
+  tts: VoiceTtsResolution
+  stt: VoiceSttResolution
+}
+
 /** Parcial ao vivo de uma sessão de transcrição (canal `voice:partial`, assinada por `onVoicePartial`). */
 export interface VoicePartialEvent {
   /** Sessão que emitiu (a UI descarta eventos de sessões antigas). */
@@ -565,8 +589,13 @@ export interface VoiceApi {
     set<K extends VoiceSettingKind>(kind: K, value: unknown): Promise<VoiceSettingsMap[K]>
   }
   transcribe: {
-    /** Cria a sessão global (PCM16 mono 16 kHz). `language` ausente = `audioInput.language`. */
-    start(language?: string): Promise<string>
+    /**
+     * Cria a sessão global (PCM16 mono 16 kHz). `language` ausente = `audioInput.language`.
+     * `opts.voice` (ditado no composer) = as camadas de voz do chat: a transcrição usa a da
+     * persona/chat (`resolveSttVoice` — idioma dela, se escolhido; indisponível aqui → a deste
+     * dispositivo). A chamada não passa nada: o main usa a voz decidida no `voice:call:start`.
+     */
+    start(language?: string, opts?: { voice?: VoiceLayersInput }): Promise<string>
     /** Acumula PCM16 mono little-endian (16 kHz; `sampleRate`, se vier, precisa casar). */
     push(sessionId: string, pcm16: Uint8Array, sampleRate?: number): Promise<void>
     /**
@@ -614,16 +643,26 @@ export interface VoiceApi {
      * settings salvas e `TTS_TEST_PHRASE`; `voice`/`model` sobrescrevem só neste teste (▶ prévia de
      * uma voz ainda não escolhida) e `text` troca a frase (até 200 caracteres).
      */
-    test(input?: { voice?: string | null; model?: string; text?: string }): Promise<TtsSynthResult>
+    test(input?: {
+      voice?: string | null
+      model?: string
+      text?: string
+      /** `VoiceTtsChoice` de uma persona/chat: o teste/prévia sai com ela (não com a deste dispositivo). */
+      tts?: unknown
+    }): Promise<TtsSynthResult>
     clips: {
       /**
        * Gera os clipes dos preâmbulos da voz atual (cache em `userData/voice-clips`),
        * emitindo `voice:tts:clips:progress` a cada clipe. Cache válido (mesma voz/definição) é
        * reutilizado; voz muda → gera no diretório da voz nova.
        */
-      generate(): Promise<TtsClipsView>
-      /** Cache de clipes da voz atual (null = ainda não gerados). */
-      list(): Promise<TtsClipsView | null>
+      generate(input?: { tts?: unknown }): Promise<TtsClipsView>
+      /**
+       * Cache de clipes da voz atual (null = ainda não gerados). `input.tts` (gerar/listar) = a voz
+       * de uma persona/chat (`VoiceTtsChoice`) em vez da deste dispositivo — "Gerar clipes desta
+       * voz" (nunca gerados sozinhos: uma API paga só com o clique do usuário).
+       */
+      list(input?: { tts?: unknown }): Promise<TtsClipsView | null>
     }
     /** Vozes do motor local atual (com estado de instalação) + sugestões livres para a API. */
     voices(): Promise<TtsVoicesView>
@@ -699,6 +738,12 @@ export interface VoiceApi {
     list(input: VoiceCatalogRequest): Promise<VoiceCatalogView>
     preview(input: { url: string }): Promise<{ audio: Uint8Array; mime: string }>
   }
+  /**
+   * Voz de um chat/persona NESTE dispositivo (`voice:resolve`, protocolo 1.9.0): o que a chamada e
+   * o ditado vão usar, se é a da persona/chat ou a padrão daqui (com o motivo do fallback) e se
+   * funciona (ícones esmaecidos). Opcional como `runtime` (implementações antigas).
+   */
+  resolve?(input: VoiceLayersInput): Promise<VoiceResolutionView>
   /** Prontidão dos runtimes locais (canal `voice:runtime:status`) — opcional como `call.getState`. */
   runtime?: {
     /** Sonda (memoizado) whisper.cpp/onnxruntime/espeak-ng e o "pronto" local de STT e TTS. */

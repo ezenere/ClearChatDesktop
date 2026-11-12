@@ -1154,7 +1154,8 @@ export class SyncEngine {
    * (registro existe → nada a enviar: vale o que chegou primeiro ao servidor, como no LWW).
    * Desde 1.5.0 também a `voice` de chats/personas (antes local): o registro online sem `voice` e o
    * local com → o chat/persona é marcado (o merge por chave da config envia só o que mudou; um
-   * `voice` que já está online vence).
+   * `voice` que já está online vence). As settings de voz de 1.5.0 saíram da lista em 1.9.0
+   * (locais do dispositivo — `DEVICE_VOICE_SETTING_IDS`).
    */
   private backfillSettings(): void {
     if (!this.started || this.kv('settings_backfill') === SETTINGS_BACKFILL.version) return
@@ -3175,10 +3176,17 @@ export class SyncEngine {
         if (sa.capture && typeof sa.capture === 'object')
           set(sa.capture as Plain, 'providerId', 'provider')
       }
-      // modelo da chamada de voz (1.5.0: `voice` sincroniza)
+      // modelo da chamada de voz (1.5.0: `voice` sincroniza) e a fala/transcrição da persona/chat
+      // pela API (1.9.0: `voice.tts.api`/`voice.stt.api`)
       const voice = cfg.voice as Plain | undefined
-      if (voice && typeof voice === 'object' && voice.model && typeof voice.model === 'object')
-        set(voice.model as Plain, 'providerId', 'provider')
+      if (voice && typeof voice === 'object') {
+        if (voice.model && typeof voice.model === 'object')
+          set(voice.model as Plain, 'providerId', 'provider')
+        for (const k of ['tts', 'stt']) {
+          const api = (voice[k] as Plain | undefined)?.api
+          if (api && typeof api === 'object') set(api as Plain, 'providerId', 'provider')
+        }
+      }
       const mem = cfg.memory as Plain | undefined
       if (mem && typeof mem === 'object') {
         if (mem.extraction && typeof mem.extraction === 'object')
@@ -3215,7 +3223,9 @@ export class SyncEngine {
       }
     }
     // settings com provedor dentro do objeto (1.4.0): smartApproveDefaults.capture e autoTitle;
-    // (1.5.0) o provedor da transcrição/fala e o modelo padrão da chamada de voz
+    // (1.5.0) o provedor da transcrição/fala e o modelo padrão da chamada de voz — locais do
+    // dispositivo desde 1.9.0, mas continuam apontando para os provedores daqui (que o merge
+    // deduplicou): remapeadas para não ficarem com um id que deixou de existir
     for (const [sk, path] of [
       ['smartApproveDefaults', ['capture']],
       ['autoTitle', []],

@@ -175,7 +175,7 @@ const api: FullClearApi = {
       set: (kind, value) => invoke(IPC.voice.settingsSet, kind, value)
     },
     transcribe: {
-      start: (language) => invoke(IPC.voice.transcribeStart, language),
+      start: (language, opts) => invoke(IPC.voice.transcribeStart, language, opts),
       push: (sessionId, pcm16, sampleRate) =>
         invoke(IPC.voice.transcribePush, sessionId, pcm16, sampleRate),
       stop: (sessionId, opts) => invoke(IPC.voice.transcribeStop, sessionId, opts),
@@ -192,8 +192,8 @@ const api: FullClearApi = {
       synth: (input) => invoke(IPC.voice.ttsSynth, input),
       test: (input) => invoke(IPC.voice.ttsTest, input),
       clips: {
-        generate: () => invoke(IPC.voice.ttsClipsGenerate),
-        list: () => invoke(IPC.voice.ttsClipsList)
+        generate: (input) => invoke(IPC.voice.ttsClipsGenerate, input),
+        list: (input) => invoke(IPC.voice.ttsClipsList, input)
       },
       voices: () => invoke(IPC.voice.ttsVoices)
     },
@@ -213,6 +213,7 @@ const api: FullClearApi = {
       list: (input) => invoke(IPC.voice.catalogList, input),
       preview: (input) => invoke(IPC.voice.catalogPreview, input)
     },
+    resolve: (input) => invoke(IPC.voice.resolve, input),
     runtime: {
       status: () => invoke(IPC.voice.runtimeStatus)
     },

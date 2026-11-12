@@ -9,7 +9,13 @@
 // `voice.runtime.status()`, os runtimes locais — espeak-ng etc.) — o que faltar vira toast com o
 // caminho em Configurações → Áudio (nunca uma chamada que falha calada). Com fala/transcrição na
 // GPU local, o status da GPU entra na pré-checagem (runtime, motor, servidor).
-// Testids: `voice-call-button` (com `voice-call-button-active` quando na chamada).
+// Voz POR PERSONA/CHAT (protocolo 1.9.0): a fala e a transcrição são as resolvidas para o chat neste
+// dispositivo (`useVoiceResolution` → `voice.resolve`): nenhuma das duas funcionando aqui (nem a da
+// persona/chat nem a padrão daqui) → telefone esmaecido e desabilitado com o motivo no tooltip
+// ("não configurada"/"não funciona neste dispositivo"); a da persona indisponível e a daqui no lugar
+// → aviso discreto no tooltip. A pré-checagem usa a mesma resolução (fresca) antes de entrar.
+// Testids: `voice-call-button` (com `voice-call-button-active` quando na chamada; `data-voice` =
+// `fallback`/`unconfigured`/`unavailable`).
 import { Phone, PhoneOff } from 'lucide-react'
 import { useState } from 'react'
 import type { Session } from '@shared/types'
@@ -22,6 +28,8 @@ import { gpuApi, type SttSettingsGpu, type TtsSettingsGpu } from '../../lib/voic
 import { gpuCallPlan } from '../../lib/voice/gpu/gpuUi'
 import { useVoiceCallRuntime } from '../../lib/voice/voiceCallRuntime'
 import { loadVoiceSettings, useVoiceSettings } from '../../lib/voice/voiceSettings'
+import { useChatVoiceLayers, useVoiceResolution } from '../../lib/voice/voiceResolution'
+import { callUnavailableText, voiceFallbackNote, voiceIconState } from '../../lib/voice/voiceChoice'
 import { useHostInfo } from '../sync/hooks'
 import { Tip } from '../ui/Tooltip'
 
@@ -45,6 +53,9 @@ export function VoiceCallButton({
   const persona = useStore((s) =>
     presetId ? (s.presets.find((p) => p.id === presetId) ?? null) : null
   )
+  // voz do chat NESTE dispositivo (persona/chat → padrão daqui), com a disponibilidade real
+  const layers = useChatVoiceLayers(session.depth === 0 ? session.chatId : null)
+  const resolution = useVoiceResolution(api.voice ? layers : null)
 
   if (!api.voice || session.depth > 0 || !chat) return null
   // chat > persona > global: desligada no global some; desligada pela persona/chat fica
@@ -59,18 +70,30 @@ export function VoiceCallButton({
   const off = !enabled && !mine
   const busy = call.active && !mine
   const remote = host?.mode === 'remote' && !mine
-  const disabled = off || busy || remote || checking
+  // nem a voz da persona/chat nem a deste dispositivo funcionam aqui (no host remoto, quem decide é ele)
+  const unavailable = !mine && !off && !remote ? callUnavailableText(resolution) : null
+  const voiceState = resolution ? voiceIconState([resolution.stt, resolution.tts]) : null
+  const fallbackNote = [
+    voiceFallbackNote('tts', resolution?.tts),
+    voiceFallbackNote('stt', resolution?.stt)
+  ]
+    .filter(Boolean)
+    .join(' ')
+  const disabled = off || busy || remote || checking || !!unavailable
 
   const start = async (): Promise<void> => {
     setChecking(true)
     try {
-      const view = await loadVoiceSettings()
-      // probe dos runtimes locais (whisper/onnxruntime/espeak-ng) só quando algum motor local conta
+      const deviceView = await loadVoiceSettings()
+      // voz EFETIVA do chat (persona/chat → padrão daqui), resolvida agora com o disco/GPU de
+      // agora; sem `voice.resolve` (build antigo) vale a deste dispositivo
+      const fresh =
+        layers && api.voice?.resolve ? await api.voice.resolve(layers).catch(() => null) : null
+      const view = fresh
+        ? { sttSettings: fresh.stt.settings, ttsSettings: fresh.tts.settings }
+        : deviceView
       const sttMode = (view.sttSettings as SttSettingsGpu).mode
       const ttsBackend = (view.ttsSettings as TtsSettingsGpu).backend
-      const needsLocal =
-        ttsBackend !== 'api' || sttMode === 'local' || sttMode === 'hybrid' || sttMode === 'gpu'
-      const runtime = needsLocal ? await api.voice?.runtime?.status().catch(() => null) : null
       // modo GPU (avançado): runtime/motor/servidor da GPU local
       const needsGpu = ttsBackend === 'gpu' || sttMode === 'gpu'
       const gpu = needsGpu
@@ -78,11 +101,22 @@ export function VoiceCallButton({
             ?.status()
             .catch(() => null) ?? null)
         : null
-      // provedores cadastrados: sem provedor de STT/TTS a pré-checagem aponta Áudio/Provedores
-      const providers = useStore.getState().providers
-      const problems = voiceCallReadiness(view, runtime, gpu, providers)
+      let problems: string[]
+      if (fresh) {
+        const why = callUnavailableText(fresh)
+        problems = why ? [why] : []
+      } else {
+        // probe dos runtimes locais (whisper/onnxruntime/espeak-ng) só quando algum motor local conta
+        const needsLocal =
+          ttsBackend !== 'api' || sttMode === 'local' || sttMode === 'hybrid' || sttMode === 'gpu'
+        const runtime = needsLocal ? await api.voice?.runtime?.status().catch(() => null) : null
+        // provedores cadastrados: sem provedor de STT/TTS a pré-checagem aponta Áudio/Provedores
+        const providers = useStore.getState().providers
+        const list = voiceCallReadiness(deviceView, runtime, gpu, providers)
+        problems = list.length ? [`Chamada de voz indisponível — ${list.join(' ')}`] : []
+      }
       if (problems.length) {
-        toast(`Chamada de voz indisponível — ${problems.join(' ')}`, 'error')
+        toast(problems.join(' '), 'error')
         return
       }
       // GPU local: aviso de uso da GPU e da VRAM livre agora (pouca = avisa, não barra) para a barra
@@ -100,17 +134,23 @@ export function VoiceCallButton({
   return (
     <Tip
       label={
-        off
-          ? source === 'persona'
-            ? `Chamada de voz desligada pela persona “${persona?.name ?? ''}” — religue neste chat no painel → Chat → Chamada de voz (Ligada).`
-            : 'Chamada de voz desligada neste chat — religue no painel → Chat → Chamada de voz.'
-          : remote
-            ? `A chamada de voz roda no dispositivo que executa este chat (${host?.host?.name ?? 'outro dispositivo'}) — use-a por lá ou execute o chat aqui. O ditado continua disponível.`
-            : busy
-              ? 'Já existe uma chamada em andamento'
-              : mine
-                ? 'Encerrar chamada de voz'
-                : 'Chamada de voz (falar com o agente)'
+        <span className="block max-w-[28rem] leading-snug whitespace-normal">
+          {unavailable
+            ? unavailable
+            : off
+              ? source === 'persona'
+                ? `Chamada de voz desligada pela persona “${persona?.name ?? ''}” — religue neste chat no painel → Chat → Chamada de voz (Ligada).`
+                : 'Chamada de voz desligada neste chat — religue no painel → Chat → Chamada de voz.'
+              : remote
+                ? `A chamada de voz roda no dispositivo que executa este chat (${host?.host?.name ?? 'outro dispositivo'}) — use-a por lá ou execute o chat aqui. O ditado continua disponível.`
+                : busy
+                  ? 'Já existe uma chamada em andamento'
+                  : mine
+                    ? 'Encerrar chamada de voz'
+                    : fallbackNote
+                      ? `Chamada de voz (falar com o agente) — ${fallbackNote}`
+                      : 'Chamada de voz (falar com o agente)'}
+        </span>
       }
     >
       {/* span: o tooltip continua funcionando com o botão desabilitado */}
@@ -119,6 +159,7 @@ export function VoiceCallButton({
           type="button"
           data-testid="voice-call-button"
           data-off={off ? source : undefined}
+          data-voice={!mine && voiceState && voiceState !== 'ok' ? voiceState : undefined}
           disabled={disabled}
           aria-label={mine ? 'Encerrar chamada de voz' : 'Iniciar chamada de voz'}
           aria-pressed={mine}
@@ -129,7 +170,7 @@ export function VoiceCallButton({
           className={cn(
             'flex size-7 shrink-0 items-center justify-center rounded-lg text-subtle transition-colors hover:bg-hover hover:text-fg',
             mine && 'voice-call-button-active bg-accent/15 text-accent-strong hover:bg-accent/25',
-            (busy || remote || off) && 'opacity-40',
+            (busy || remote || off || unavailable) && 'opacity-40',
             className
           )}
         >

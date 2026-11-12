@@ -12,7 +12,12 @@
 // (prévia publicada), "Testar voz" com sucesso (local e API — a CSP libera `media-src blob:`) e com
 // erro legível, curadoria (só os modelos medidos rápidos; id livre = "não testado"; salvo lento =
 // aviso com troca de um clique) e a aba sem rolagem horizontal em 1440/1100.
-// Cenários: `?scenario=chat|voice-not-ready|voice-alias|voice-api|voice-elevenlabs|voice-tts-fail|voice-slow-model`.
+// Voz por persona (protocolo 1.9.0): nota "padrões deste dispositivo (não sincronizam)" no topo da
+// aba; no editor da persona e na aba Voz do chat, as seções "Fala" e "Transcrição" dizem o que vale
+// (própria / da persona / padrão deste dispositivo), se funciona AQUI (ou o fallback com o motivo),
+// "Escolher…" abre os mesmos seletores (com "Gerar clipes desta voz" e o idioma ★) e "Voltar a usar…"
+// volta a herdar.
+// Cenários: `?scenario=chat|voice-not-ready|voice-alias|voice-api|voice-elevenlabs|voice-tts-fail|voice-slow-model|voice-persona|voice-persona-fallback`.
 //
 // Uso:
 //   unset ELECTRON_RUN_AS_NODE
@@ -816,6 +821,177 @@ app.on('window-all-closed', () => app.quit())
       const after = await savedVoice()
       assert.equal(after.ttsSettings.api.params, undefined)
       return err
+    }
+  )
+
+  await step('Áudio: nota de que são os padrões DESTE dispositivo (não sincronizam)', async () => {
+    await openAudio('chat')
+    const note = page.getByTestId('audio-device-note')
+    await note.waitFor()
+    assert.match(await note.innerText(), /Padrões deste dispositivo \(não sincronizam\)/)
+    assert.match(await note.innerText(), /cada persona pode ter a própria voz e transcrição/)
+    await page.keyboard.press('Escape')
+    await dialog().waitFor({ state: 'detached' })
+  })
+
+  /** Abre o editor da persona (Configurações → Personas) na aba Voz. */
+  const openPersonaVoice = async (scenario: string, name: string): Promise<void> => {
+    await page.evaluate((s) => {
+      location.search = `?scenario=${s}`
+    }, scenario)
+    await page.waitForLoadState('domcontentloaded')
+    await page.getByRole('button', { name: /^Configurações/ }).waitFor()
+    await page.waitForTimeout(400)
+    await page.getByRole('button', { name: /^Configurações/ }).click()
+    await dialog().getByRole('button', { name: 'Personas', exact: true }).click()
+    await dialog()
+      .getByTestId('preset-row')
+      .filter({ hasText: name })
+      .getByRole('button', { name: /Editar/ })
+      .click()
+    await dialog().getByTestId('preset-editor').waitFor()
+    await dialog().getByRole('tab', { name: 'Voz' }).click()
+    await dialog().getByTestId('tts-choice-persona').waitFor()
+    await page.waitForTimeout(400)
+  }
+
+  await step(
+    'persona → Voz: "Fala"/"Transcrição" com o que vale e se funciona aqui; Escolher/Voltar sem opção "herdar" duplicada',
+    async () => {
+      // persona SEM voz própria: mostra a padrão deste dispositivo + "Escolher…"
+      await openPersonaVoice('voice-persona', 'Revisor de código')
+      const cur = dialog().getByTestId('tts-choice-current')
+      assert.match(
+        await cur.innerText(),
+        /^Usando a voz padrão deste dispositivo: Kokoro · pf_dora/
+      )
+      assert.match(
+        await dialog().getByTestId('stt-choice-current').innerText(),
+        /^Usando a transcrição padrão deste dispositivo: Groq · whisper-large-v3-turbo · pt-BR/
+      )
+      await waitFor(
+        async () =>
+          (await dialog().getByTestId('tts-choice-availability').getAttribute('data-state')) ===
+          'ok',
+        3000,
+        'disponível aqui'
+      )
+      assert.equal(await count('tts-choice-inherit'), 0, 'sem "voltar" sem escolha própria')
+      // escolher uma voz própria: os mesmos seletores de Áudio (modo da persona)
+      await dialog().getByTestId('tts-choice-custom').click()
+      await dialog().getByTestId('tts-choice-section').waitFor()
+      assert.match(await cur.innerText(), /^Voz própria desta persona: Kokoro · pf_dora/)
+      assert.equal(await count('tts-gpu-steps'), 0, 'passos da GPU são do dispositivo')
+      // a voz da persona: ElevenLabs Flash pelo OpenRouter (provedor cadastrado aqui)
+      await pickModel(page, dialog().getByTestId('tts-model'), 'elevenlabs/eleven-flash-v2.5', {
+        provider: 'OpenRouter'
+      })
+      await waitFor(
+        async () => /OpenRouter/.test(await cur.innerText()),
+        3000,
+        'voz própria na API'
+      )
+      assert.match(await cur.innerText(), /Voz própria desta persona: OpenRouter · .*eleven/i)
+      // "Gerar clipes desta voz" (só com o clique — nunca sozinho)
+      const gen = dialog().getByTestId('tts-clips-generate')
+      assert.match(await gen.innerText(), /Gerar clipes desta voz/)
+      assert.equal(await count('tts-clips-count'), 0)
+      await gen.click()
+      await dialog().getByTestId('tts-clips-count').waitFor({ timeout: 8000 })
+      await shot('persona-voice-tts-custom')
+      // transcrição própria com idioma (★ = o do dispositivo)
+      await dialog().getByTestId('stt-choice-custom').click()
+      await dialog().getByTestId('stt-choice-section').waitFor()
+      assert.equal(await count('stt-gpu-params'), 0)
+      await dialog().getByRole('button', { name: 'Idioma da transcrição' }).click()
+      await popover()
+        .getByRole('button', { name: /Inglês \(EUA\)/ })
+        .click()
+      await dialog().getByTestId('stt-choice-language').waitFor()
+      assert.match(
+        await dialog().getByTestId('stt-choice-current').innerText(),
+        /Transcrição própria desta persona: .* · en-US/
+      )
+      // voltar a herdar
+      await dialog().getByTestId('tts-choice-inherit').click()
+      assert.match(await cur.innerText(), /^Usando a voz padrão deste dispositivo/)
+      await page.keyboard.press('Escape')
+      await page.keyboard.press('Escape')
+      await dialog()
+        .waitFor({ state: 'detached' })
+        .catch(() => undefined)
+      return 'padrão → própria (API + clipes + idioma) → padrão'
+    }
+  )
+
+  await step(
+    'persona com voz de outro dispositivo: "Não disponível neste dispositivo — usa o padrão deste dispositivo: <motivo>"',
+    async () => {
+      await openPersonaVoice('voice-persona-fallback', 'Narradora')
+      const av = dialog().getByTestId('tts-choice-availability')
+      await waitFor(
+        async () => (await av.getAttribute('data-state')) === 'fallback',
+        3000,
+        'fallback'
+      )
+      assert.match(
+        await av.innerText(),
+        /Não disponível neste dispositivo — usa o padrão deste dispositivo \(Kokoro · pf_dora\): o provedor escolhido não existe neste dispositivo/
+      )
+      assert.match(
+        await dialog().getByTestId('tts-choice-current').innerText(),
+        /Voz própria desta persona: provedor que não existe aqui · elevenlabs\/eleven-flash-v2.5 · sarah/
+      )
+      assert.equal(
+        await dialog().getByTestId('stt-choice-availability').getAttribute('data-state'),
+        'ok'
+      )
+      await shot('persona-voice-fallback')
+      await page.keyboard.press('Escape')
+      await page.keyboard.press('Escape')
+      await dialog()
+        .waitFor({ state: 'detached' })
+        .catch(() => undefined)
+    }
+  )
+
+  await step(
+    'chat → aba Voz: "Usando a voz da persona “Narradora”" e escolha própria do chat',
+    async () => {
+      await page.evaluate(() => {
+        location.search = '?scenario=voice-persona'
+      })
+      await page.waitForLoadState('domcontentloaded')
+      await page
+        .getByTestId('chat-item')
+        .filter({ hasText: 'Ideias de nomes para o app' })
+        .first()
+        .click()
+      await page.getByTestId('chat-scroller').waitFor()
+      if (!(await page.getByTestId('right-panel').isVisible()))
+        await page.getByRole('banner').getByRole('button', { name: 'Abrir painel' }).click()
+      await page.getByTestId('right-panel').getByRole('tab', { name: 'Voz' }).click()
+      const panel = page.getByTestId('right-panel')
+      const cur = panel.getByTestId('tts-choice-current')
+      await cur.waitFor()
+      assert.match(
+        await cur.innerText(),
+        /^Usando a voz da persona “Narradora”: OpenRouter · elevenlabs\/eleven-flash-v2.5 · sarah/
+      )
+      assert.match(
+        await panel.getByTestId('stt-choice-current').innerText(),
+        /^Usando a transcrição da persona “Narradora”: Groq · whisper-large-v3-turbo · en-US/
+      )
+      await panel.getByTestId('tts-choice-custom').click()
+      await panel.getByTestId('tts-choice-section').waitFor()
+      assert.match(await cur.innerText(), /^Voz própria deste chat:/)
+      assert.match(
+        await panel.getByTestId('tts-choice-inherit').innerText(),
+        /Voltar a usar a voz da persona/
+      )
+      await shot('chat-voice-tab-custom')
+      await panel.getByTestId('tts-choice-inherit').click()
+      assert.match(await cur.innerText(), /^Usando a voz da persona “Narradora”/)
     }
   )
 

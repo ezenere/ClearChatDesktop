@@ -39,15 +39,23 @@ import {
   normalizeSttSettings,
   normalizeTtsSettings,
   normalizeVoiceCallDefaults,
+  applyTtsChoice,
+  normalizeVoiceCallConfig,
+  normalizeVoiceTtsChoice,
   resolveFillerPool,
+  resolveSttVoice,
   resolveToolPhrasePool,
+  resolveTtsVoice,
   resolveTurnSilenceMs,
   type SttLocalEngine,
   type SttSettings,
   type TtsLocalEngine,
   type TtsSettings,
-  type VoiceCallState
+  type VoiceCallState,
+  type VoiceCheck,
+  type VoiceDeviceCaps
 } from '@shared/voice'
+import { providerSupportsVoice } from '@shared/voiceCatalog'
 import type { UpdateStatus } from '@shared/updates'
 import { OFFICIAL_SYNC_URL, type SyncStatus } from '@shared/sync'
 import {
@@ -1569,6 +1577,44 @@ export function createMockApi(scenario: string): ClearApi {
     updatedAt: now
   })
   if (scenario === 'memory') seedMemoryScenario()
+  // ?scenario=voice-persona → persona "Narradora" com voz e transcrição PRÓPRIAS (ElevenLabs Flash
+  // pelo OpenRouter · sarah; Groq em inglês) no chat c2 (Ideias de nomes); ?scenario=
+  // voice-persona-fallback → a voz dela é de um provedor que não existe neste dispositivo (cai na
+  // padrão daqui, com aviso) — protocolo 1.9.0
+  if (scenario === 'voice-persona' || scenario === 'voice-persona-fallback') {
+    presets.push({
+      id: 'pr4',
+      name: 'Narradora',
+      description: 'Fala com a voz dela.',
+      icon: '🎙️',
+      config: {
+        voice: {
+          enabled: null,
+          model: null,
+          tools: null,
+          voicePrompt: null,
+          fillers: null,
+          tts: {
+            backend: 'api',
+            api: {
+              providerId: scenario === 'voice-persona' ? 'p1' : 'p-outro-pc',
+              model: 'elevenlabs/eleven-flash-v2.5',
+              voice: 'sarah'
+            }
+          },
+          stt: {
+            mode: 'api',
+            api: { providerId: 'p4', model: 'whisper-large-v3-turbo' },
+            language: 'en-US'
+          }
+        }
+      },
+      createdAt: now,
+      updatedAt: now
+    })
+    const c2 = chats.find((c) => c.id === 'c2')
+    if (c2) c2.config = { ...c2.config, presetId: 'pr4' }
+  }
   function seedMemoryScenario(): void {
     chats.unshift({
       id: 'c5',
@@ -2611,8 +2657,11 @@ export function createMockApi(scenario: string): ClearApi {
             delay(apply(kind, value)) as Promise<VoiceSettingsMap[K]>
         },
         transcribe: {
-          start: async (language?: string) => {
-            void language
+          start: async (language?: string, opts?: { voice?: unknown }) => {
+            // E2E: o ditado passa as camadas de voz do chat (a transcrição da persona — 1.9.0)
+            ;(
+              window as unknown as { __clearMockLastTranscribe?: unknown }
+            ).__clearMockLastTranscribe = { language: language ?? null, voice: opts?.voice ?? null }
             if (active) throw new Error('Já há uma sessão de transcrição ativa.')
             const id = `voice-mock-${++sessionSeq}`
             const timers = MOCK_PARTIALS.map((text, i) =>
@@ -2839,7 +2888,17 @@ export function createMockApi(scenario: string): ClearApi {
               ms: 350
             }
           }
-          let clips: TtsClipsView | null = null
+          /** Cache de clipes POR VOZ (como `userData/voice-clips/<voz>`). */
+          const clipsByVoice = new Map<string, TtsClipsView>()
+          /** Fala efetiva: a deste dispositivo ou a voz de uma persona/chat (`input.tts`). */
+          const ttsFor = (input?: { tts?: unknown }): TtsSettings =>
+            applyTtsChoice(tts, normalizeVoiceTtsChoice(input?.tts))
+          const voiceIdOf = (t: TtsSettings): string =>
+            t.backend === 'local'
+              ? `local-kokoro-${t.local?.voice || 'pf_dora'}`
+              : t.backend === 'gpu'
+                ? `gpu-${t.gpu?.engine ?? 'omnivoice'}-${t.gpu?.voice ?? 'padrao'}`
+                : `api-${t.api.voice || 'padrao'}`
           return {
             synth: ({ format }) => fakeSynth(format),
             test: async (input) => {
@@ -2849,7 +2908,16 @@ export function createMockApi(scenario: string): ClearApi {
                   'chave de API inválida ou sem permissão (HTTP 401) — No auth credentials found'
                 )
               }
-              void input
+              // `input.tts` = a voz de uma persona/chat (prévia do editor): o resultado diz o modelo dela
+              const choice = normalizeVoiceTtsChoice(input?.tts)
+              if (choice) {
+                const r = await fakeSynth('wav')
+                const eff = applyTtsChoice(tts, choice)
+                return {
+                  ...r,
+                  model: eff.backend === 'api' ? eff.api.model : `${eff.backend} (mock)`
+                }
+              }
               // ElevenLabs direto com o formato de saída do plano Pro (conta sem Pro): o mesmo texto
               // que o main gera do 403 `output_format_not_allowed`
               const el = providers.find((p) => p.id === tts.api.providerId)
@@ -2866,20 +2934,18 @@ export function createMockApi(scenario: string): ClearApi {
               return fakeSynth('wav')
             },
             clips: {
-              generate: async () => {
-                const voiceId =
-                  tts.backend === 'local'
-                    ? `local-kokoro-${tts.local?.voice || 'pf_dora'}`
-                    : `api-${tts.api.voice || 'padrao'}`
-                clips = {
+              generate: async (input) => {
+                const t = ttsFor(input)
+                const voiceId = voiceIdOf(t)
+                const view: TtsClipsView = {
                   voiceId,
-                  backend: tts.backend,
-                  engine: tts.backend === 'local' ? 'kokoro' : null,
-                  model: tts.backend === 'api' ? tts.api.model : (tts.local?.voice ?? ''),
+                  backend: t.backend,
+                  engine: t.backend === 'local' ? 'kokoro' : null,
+                  model: t.backend === 'api' ? t.api.model : (t.local?.voice ?? ''),
                   generatedAt: new Date().toISOString(),
                   clips: []
                 }
-                const view = clips
+                clipsByVoice.set(voiceId, view)
                 // os preâmbulos e as frases de ferramenta (pools configurados): `FILLER_<n>`/`TOOL_<n>`
                 const sets = [
                   ['FILLER', resolveFillerPool(voiceCallDefaults.fillers.pool)],
@@ -2897,7 +2963,7 @@ export function createMockApi(scenario: string): ClearApi {
                   }
                 return view
               },
-              list: async () => clips
+              list: async (input) => clipsByVoice.get(voiceIdOf(ttsFor(input))) ?? null
             },
             voices: async (): Promise<TtsVoicesView> => ({
               local:
@@ -3119,6 +3185,69 @@ export function createMockApi(scenario: string): ClearApi {
         })(),
         // descoberta de modelos/vozes (dados reais do OpenRouter recortados — `mockVoiceCatalog.ts`)
         catalog: createMockVoiceCatalog(() => providers, delay),
+        // voz da persona/chat NESTE dispositivo (protocolo 1.9.0): o resolvedor compartilhado sobre
+        // o que o mock "tem" (provedores, Kokoro/whisper "instalados", espeak-ng, a GPU do mock)
+        resolve: async (input) => {
+          const gs = (await mockApi.voice?.gpu?.status().catch(() => null)) ?? null
+          const noEspeak = scenario === 'voice-no-espeak'
+          const gpuCheck = (engine: string, voice?: string | null): VoiceCheck => {
+            if (!gs)
+              return { ok: false, reason: 'o modo GPU local não está disponível neste dispositivo' }
+            if (gs.runtime.state !== 'installed')
+              return { ok: false, reason: 'o runtime da GPU não está instalado neste dispositivo' }
+            const e = gs.engines.find((x) => x.id === engine)
+            if (!e || e.install.state !== 'installed')
+              return {
+                ok: false,
+                reason: `o motor ${e?.label ?? engine} não está instalado neste dispositivo`
+              }
+            if (voice && !e.voices.some((v) => v.id === voice))
+              return { ok: false, reason: `a voz “${voice}” não existe neste dispositivo` }
+            return { ok: true }
+          }
+          const caps: VoiceDeviceCaps = {
+            provider: (id, capability) => {
+              const p = providers.find((x) => x.id === id)
+              if (!p)
+                return { ok: false, reason: 'o provedor escolhido não existe neste dispositivo' }
+              return providerSupportsVoice(p, capability)
+                ? { ok: true }
+                : {
+                    ok: false,
+                    reason: `o provedor “${p.name}” não serve ${capability === 'tts' ? 'fala' : 'transcrição'}`
+                  }
+            },
+            ttsLocal: ({ engine, voice }) => {
+              if (engine !== 'kokoro')
+                return { ok: false, reason: `o motor ${engine} ainda não fala nesta versão do app` }
+              if (noEspeak)
+                return {
+                  ok: false,
+                  reason:
+                    'espeak-ng não encontrado no sistema (instale o pacote "espeak-ng") neste dispositivo'
+                }
+              if (!ready && !(tts.local?.engine === 'kokoro' && tts.local.installed))
+                return { ok: false, reason: 'modelo do Kokoro não instalado neste dispositivo' }
+              return voice === 'pf_dora'
+                ? { ok: true }
+                : { ok: false, reason: `voz ${voice} não instalada neste dispositivo` }
+            },
+            sttLocal: () =>
+              stt.local?.installed
+                ? { ok: true }
+                : { ok: false, reason: 'nenhum modelo do whisper.cpp instalado neste dispositivo' },
+            ttsGpu: ({ engine, voice }) => gpuCheck(engine, voice),
+            sttGpu: ({ engine }) => gpuCheck(engine)
+          }
+          const layers = {
+            chat: input?.chat ? normalizeVoiceCallConfig(input.chat) : null,
+            persona: input?.persona ? normalizeVoiceCallConfig(input.persona) : null
+          }
+          return delay({
+            tts: resolveTtsVoice(layers, tts, caps),
+            stt: resolveSttVoice(layers, stt, normalizeAudioInput(audioInput).language, caps)
+          })
+        },
         // probe dos runtimes locais (mock): tudo carregável, salvo ?scenario=voice-no-espeak
         runtime: {
           status: async (): Promise<VoiceRuntimeStatus> => {

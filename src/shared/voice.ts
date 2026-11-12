@@ -1,9 +1,10 @@
-// Áudio/voz — contratos da feature: configuração do DITADO (100% global, settings `audioInput`,
-// `sttSettings`, `ttsSettings`) e da CHAMADA DE VOZ (por persona/chat em `ChatConfig.voice`, com os
-// padrões globais herdados na setting `voiceCallDefaults`). Tudo JSON-serializável (nunca
-// `undefined` nos writers); sincronizam desde o protocolo 1.5.0, menos as partes do dispositivo
-// (microfone, `installed`, modo/bloco da GPU — `src/main/sync/records.ts`, SPEC → "Áudio no
-// sync"). Ver SPEC.md → "Áudio".
+// Áudio/voz — contratos da feature: as settings de voz DESTE DISPOSITIVO (`audioInput`,
+// `sttSettings`, `ttsSettings`, `voiceCallDefaults` — locais desde o protocolo 1.9.0: não
+// sincronizam) e a voz/config da CHAMADA por persona/chat em `ChatConfig.voice` (sincroniza),
+// inclusive a escolha de FALA e TRANSCRIÇÃO da persona (`voice.tts`/`voice.stt`, protocolo 1.9.0 —
+// `resolveTtsVoice`/`resolveSttVoice`: chat → persona → settings do dispositivo, com a
+// disponibilidade conferida aqui). Tudo JSON-serializável (nunca `undefined` nos writers). Ver
+// SPEC.md → "Áudio" e "Voz da persona/chat".
 import { DEFAULT_ACTIVATION_DB, normalizeActivationDb } from './speechGate'
 import { AUDIO_TAGS_PROMPT_MAX, DEFAULT_AUDIO_TAGS_PROMPT } from './audioTags'
 import {
@@ -15,6 +16,7 @@ import {
 } from './types'
 import { planVoiceReasoning, type VoiceReasoningRules } from './voiceCallParams'
 import {
+  DEFAULT_STT_GPU,
   DEFAULT_TTS_GPU,
   GPU_STT_ENGINE_ID,
   isGpuTtsEngineId,
@@ -54,7 +56,7 @@ export interface AudioInputSettings {
    * Nível de ativação do microfone (dBFS de RMS; padrão `DEFAULT_ACTIVATION_DB` = −45; faixa
    * −70…−20): abaixo dele nada é fala — o portão de ativação (`@shared/speechGate`) não manda o
    * trecho ao STT (ditado e chamada). Depende do microfone/sala: **local do dispositivo** como o
-   * `deviceId` (nunca sai no registro do sync; o recebido não o sobrescreve).
+   * `deviceId` (como todo o `audioInput` desde o protocolo 1.9.0 — nunca sincroniza).
    */
   activationDb: number
   /** Push-to-talk: a captura só corre enquanto a tecla (ou o botão) estiver pressionada (padrão true). */
@@ -112,7 +114,8 @@ export interface SttEndpointConfig {
   providerKind?: string
   /**
    * Parâmetros do modelo por família de API (`temperature`, `prompt` — `@shared/voiceParams`): só
-   * os escolhidos (aditivo; sincroniza com o resto de `sttSettings` — protocolo 1.5.0, §4.3.2).
+   * os escolhidos (aditivo). Nas settings deste dispositivo não sincroniza (1.9.0); na escolha de
+   * uma persona/chat (`VoiceSttChoice.api.params`) vai junto com ela.
    */
   params?: VoiceApiParams
 }
@@ -206,13 +209,14 @@ export interface TtsEndpointConfig {
   /**
    * ElevenLabs direta: a chamada usa o WebSocket multi-contexto (texto em streaming) quando o
    * modelo aceita. Ausente = ligado (padrão); `false` = força HTTP por frase. Gravado só quando
-   * `false` (aditivo; sincroniza com o resto de `ttsSettings` — protocolo 1.5.0).
+   * `false` (aditivo; na escolha de uma persona/chat sincroniza com ela).
    */
   elevenLabsWs?: boolean
   /**
    * Parâmetros do modelo por família de API (`@shared/voiceParams` — ElevenLabs: formato de saída,
    * `voice_settings`, normalização, `auto_mode`; OpenRouter/OpenAI: `speed`, `instructions`): só os
-   * escolhidos (aditivo; sincroniza com o resto de `ttsSettings` — protocolo 1.5.0, §4.3.2).
+   * escolhidos (aditivo). Nas settings deste dispositivo não sincroniza (1.9.0); na escolha de
+   * uma persona/chat (`VoiceTtsChoice.api.params`) vai junto com ela.
    */
   params?: VoiceApiParams
   /**
@@ -596,6 +600,57 @@ export interface VoiceCallConfig {
   toolPhrases?: boolean | null
   /** Texto da instrução das tags; null/ausente = herda (persona → global → `DEFAULT_AUDIO_TAGS_PROMPT`). */
   audioTagsPrompt?: string | null
+  /**
+   * Voz da persona/chat — com que motor/provedor, modelo, voz e parâmetros FALAR (chamada, prévias,
+   * clipes). null/ausente = herda (chat → persona → `ttsSettings` deste dispositivo). Protocolo
+   * 1.9.0; aditivo (só gravado quando escolhido). Ver `resolveTtsVoice`.
+   */
+  tts?: VoiceTtsChoice | null
+  /**
+   * Transcrição da persona/chat — com que motor/modelo/idioma OUVIR (chamada e ditado no composer
+   * dos chats dela). null/ausente = herda (chat → persona → `sttSettings` deste dispositivo).
+   * Protocolo 1.9.0; aditivo. Ver `resolveSttVoice`.
+   */
+  stt?: VoiceSttChoice | null
+}
+
+// ---------------- voz da persona/chat (`voice.tts`/`voice.stt` — protocolo 1.9.0) ----------------
+
+/**
+ * Fala pela API: provedor CADASTRADO (`providerId` = id de `provider`; endereço/chave nunca entram
+ * aqui), modelo, voz e os parâmetros escolhidos (`api.params`, como em `ttsSettings`).
+ */
+export interface VoiceTtsApiChoice {
+  providerId: string
+  model: string
+  /** null = a voz padrão da API. */
+  voice: string | null
+  /** ElevenLabs direta: `false` = HTTP por frase na chamada (ausente = WebSocket). */
+  elevenLabsWs?: false
+  params?: VoiceApiParams
+}
+
+/**
+ * Com que voz a persona/chat FALA (protocolo 1.9.0, §4.3.6). Mesma forma/regras do registro
+ * `ttsSettings`: na GPU só motor + voz sincronizam (passos/parâmetros ficam no dispositivo).
+ */
+export type VoiceTtsChoice =
+  | { backend: 'api'; api: VoiceTtsApiChoice }
+  | { backend: 'local'; local: { engine: TtsLocalEngine; voice: string } }
+  /** `engine` = id do motor da GPU (`GpuTtsEngineId`; um id desconhecido aqui é preservado e vale como indisponível). */
+  | { backend: 'gpu'; gpu: { engine: string; voice: string | null } }
+
+/**
+ * Com que motor/modelo/idioma a persona/chat OUVE (protocolo 1.9.0, §4.3.6). `api` obrigatório em
+ * `api`/`hybrid`, `local` em `local`/`hybrid`, `gpu` em `gpu` (blocos de outros modos não são
+ * gravados). `language` null/ausente = o idioma do ditado deste dispositivo (`audioInput.language`).
+ */
+export interface VoiceSttChoice {
+  mode: SttMode
+  api?: { providerId: string; model: string; params?: VoiceApiParams }
+  local?: { engine: SttLocalEngine; model: string }
+  gpu?: { engine: string; model: string | null }
+  language?: string | null
 }
 
 /**
@@ -1115,7 +1170,110 @@ export function normalizeVoiceCallConfig(v: unknown): VoiceCallConfig {
     ...(() => {
       const p = normalizeAudioTagsPrompt(src.audioTagsPrompt)
       return p ? { audioTagsPrompt: p } : {}
+    })(),
+    // voz da persona/chat (protocolo 1.9.0; aditivo): só gravada quando escolhida — lixo some
+    ...(() => {
+      const tts = normalizeVoiceTtsChoice(src.tts)
+      return tts ? { tts } : {}
+    })(),
+    ...(() => {
+      const stt = normalizeVoiceSttChoice(src.stt)
+      return stt ? { stt } : {}
     })()
+  }
+}
+
+/** Id curto (provedor/modelo/voz/motor): aparado, até 200 chars; vazio/não-string → null. */
+const choiceId = (v: unknown): string | null =>
+  typeof v === 'string' && v.trim() ? v.trim().slice(0, 200) : null
+
+/**
+ * Voz da persona/chat (`voice.tts`) a partir de qualquer valor salvo/recebido; null = herda (lixo,
+ * backend desconhecido, API sem provedor/modelo, motor local desconhecido). Endereço/chave e
+ * campos de runtime (`baseUrl`, `apiKey`, `providerKind`, `extraBody`) e os parâmetros da GPU
+ * (`steps`, `params`) nunca são copiados.
+ */
+export function normalizeVoiceTtsChoice(v: unknown): VoiceTtsChoice | null {
+  const src = asObject(v)
+  if (!src) return null
+  if (src.backend === 'api') {
+    const api = asObject(src.api)
+    const providerId = choiceId(api?.providerId)
+    const model = choiceId(api?.model)
+    if (!api || !providerId || !model) return null
+    const params = normalizeVoiceApiParams('tts', api.params)
+    return {
+      backend: 'api',
+      api: {
+        providerId,
+        model,
+        voice: choiceId(api.voice),
+        ...(api.elevenLabsWs === false ? { elevenLabsWs: false as const } : {}),
+        ...(params ? { params } : {})
+      }
+    }
+  }
+  if (src.backend === 'local') {
+    const local = asObject(src.local)
+    if (!local || !(TTS_LOCAL_ENGINES as readonly unknown[]).includes(local.engine)) return null
+    return {
+      backend: 'local',
+      local: {
+        engine: local.engine as TtsLocalEngine,
+        voice: choiceId(local.voice) ?? DEFAULT_TTS_LOCAL.voice
+      }
+    }
+  }
+  if (src.backend === 'gpu') {
+    const gpu = asObject(src.gpu)
+    const engine = choiceId(gpu?.engine)
+    if (!gpu || !engine) return null
+    return { backend: 'gpu', gpu: { engine, voice: choiceId(gpu.voice) } }
+  }
+  return null
+}
+
+/**
+ * Transcrição da persona/chat (`voice.stt`) a partir de qualquer valor; null = herda (lixo, modo
+ * desconhecido, bloco obrigatório do modo ausente/inválido). Só os blocos do modo são mantidos;
+ * `gpu` ausente no modo `gpu` vira o motor único (`whisper-large-v3-turbo`). Sem endereço/chave nem
+ * parâmetros da GPU.
+ */
+export function normalizeVoiceSttChoice(v: unknown): VoiceSttChoice | null {
+  const src = asObject(v)
+  if (!src || !(STT_MODES as readonly unknown[]).includes(src.mode)) return null
+  const mode = src.mode as SttMode
+  const apiSrc = asObject(src.api)
+  const providerId = choiceId(apiSrc?.providerId)
+  const model = choiceId(apiSrc?.model)
+  const params = normalizeVoiceApiParams('stt', apiSrc?.params)
+  const api = providerId && model ? { providerId, model, ...(params ? { params } : {}) } : null
+  const localSrc = asObject(src.local)
+  const local =
+    localSrc && (STT_LOCAL_ENGINES as readonly unknown[]).includes(localSrc.engine)
+      ? {
+          engine: localSrc.engine as SttLocalEngine,
+          model: typeof localSrc.model === 'string' ? localSrc.model.trim().slice(0, 200) : ''
+        }
+      : null
+  const usesApi = mode === 'api' || mode === 'hybrid'
+  const usesLocal = mode === 'local' || mode === 'hybrid'
+  if ((usesApi && !api) || (usesLocal && !local)) return null
+  const gpuSrc = asObject(src.gpu)
+  const language = choiceId(src.language)?.slice(0, 35) ?? null
+  return {
+    mode,
+    ...(usesApi && api ? { api } : {}),
+    ...(usesLocal && local ? { local } : {}),
+    ...(mode === 'gpu'
+      ? {
+          gpu: {
+            engine: choiceId(gpuSrc?.engine) ?? GPU_STT_ENGINE_ID,
+            model: choiceId(gpuSrc?.model)
+          }
+        }
+      : {}),
+    ...(language ? { language } : {})
   }
 }
 
@@ -1276,6 +1434,8 @@ export function layerVoiceCallConfig(
   const audioTags = c.audioTags ?? p.audioTags ?? null
   const toolPhrases = c.toolPhrases ?? p.toolPhrases ?? null
   const audioTagsPrompt = c.audioTagsPrompt ?? p.audioTagsPrompt ?? null
+  const tts = c.tts ?? p.tts ?? null
+  const stt = c.stt ?? p.stt ?? null
   return {
     enabled: c.enabled ?? p.enabled,
     model: c.model ?? p.model,
@@ -1286,7 +1446,9 @@ export function layerVoiceCallConfig(
     ...(endCall !== null ? { endCall } : {}),
     ...(audioTags !== null ? { audioTags } : {}),
     ...(toolPhrases !== null ? { toolPhrases } : {}),
-    ...(audioTagsPrompt !== null ? { audioTagsPrompt } : {})
+    ...(audioTagsPrompt !== null ? { audioTagsPrompt } : {}),
+    ...(tts ? { tts } : {}),
+    ...(stt ? { stt } : {})
   }
 }
 
@@ -1433,6 +1595,354 @@ export function applyVoiceCallChat(
     }).params
   }
   return { ...chat, config: out }
+}
+
+// ---------------- voz da persona/chat: herança, disponibilidade e resolução (1.9.0) ----------------
+
+/** De onde vêm as settings de voz efetivas: o chat, a persona de origem ou as deste dispositivo. */
+export type VoiceChoiceSource = 'chat' | 'persona' | 'device'
+
+/**
+ * Camadas de voz de um chat: a `voice` do próprio chat e a da persona de origem (`presetId`, lida
+ * AO VIVO). No editor da persona só há `persona`. Valores crus são aceitos (normalizados aqui).
+ */
+export interface VoiceLayers {
+  chat?: VoiceCallConfig | null
+  persona?: VoiceCallConfig | null
+}
+
+/** Escolha de fala herdada (chat → persona) e de onde veio; `device` = nenhuma (as settings daqui). */
+export function ttsChoiceOf(layers: VoiceLayers | null | undefined): {
+  choice: VoiceTtsChoice | null
+  source: VoiceChoiceSource
+} {
+  const c = normalizeVoiceTtsChoice(layers?.chat?.tts)
+  if (c) return { choice: c, source: 'chat' }
+  const p = normalizeVoiceTtsChoice(layers?.persona?.tts)
+  return p ? { choice: p, source: 'persona' } : { choice: null, source: 'device' }
+}
+
+/** Escolha de transcrição herdada (chat → persona) e de onde veio. */
+export function sttChoiceOf(layers: VoiceLayers | null | undefined): {
+  choice: VoiceSttChoice | null
+  source: VoiceChoiceSource
+} {
+  const c = normalizeVoiceSttChoice(layers?.chat?.stt)
+  if (c) return { choice: c, source: 'chat' }
+  const p = normalizeVoiceSttChoice(layers?.persona?.stt)
+  return p ? { choice: p, source: 'persona' } : { choice: null, source: 'device' }
+}
+
+/**
+ * `ttsSettings` deste dispositivo com a escolha da persona/chat aplicada (null = as do dispositivo).
+ * O que é do dispositivo continua: passos/parâmetros da GPU (`gpu.steps`/`gpu.params`), o
+ * `installed` do mesmo motor local. Motor da GPU desconhecido nesta versão → as do dispositivo
+ * (a resolução já o trata como indisponível). Puro; `api` vem SEM endereço/chave (o main resolve).
+ */
+export function applyTtsChoice(
+  device: TtsSettings,
+  choice: VoiceTtsChoice | null | undefined
+): TtsSettings {
+  if (!choice) return device
+  if (choice.backend === 'api')
+    return {
+      ...device,
+      backend: 'api',
+      api: {
+        providerId: choice.api.providerId,
+        model: choice.api.model,
+        voice: choice.api.voice,
+        ...(choice.api.elevenLabsWs === false ? { elevenLabsWs: false } : {}),
+        ...(choice.api.params ? { params: choice.api.params } : {})
+      }
+    }
+  if (choice.backend === 'local')
+    return {
+      ...device,
+      backend: 'local',
+      local: {
+        engine: choice.local.engine,
+        voice: choice.local.voice,
+        installed: device.local?.engine === choice.local.engine ? device.local.installed : false
+      }
+    }
+  const engine = choice.gpu.engine
+  if (!isGpuTtsEngineId(engine)) return device
+  return {
+    ...device,
+    backend: 'gpu',
+    gpu: {
+      engine,
+      voice: choice.gpu.voice,
+      ...(device.gpu?.steps !== undefined ? { steps: device.gpu.steps } : {}),
+      ...(device.gpu?.params ? { params: device.gpu.params } : {})
+    }
+  }
+}
+
+/**
+ * `sttSettings` deste dispositivo com a escolha da persona/chat aplicada (null = as do
+ * dispositivo). Do dispositivo continuam: parciais ao vivo, "final rápida", os parâmetros da GPU e
+ * o `installed` do mesmo motor+modelo local. Puro; `api` vem SEM endereço/chave.
+ */
+export function applySttChoice(
+  device: SttSettings,
+  choice: VoiceSttChoice | null | undefined
+): SttSettings {
+  if (!choice) return device
+  const dl = device.local
+  return {
+    ...device,
+    mode: choice.mode,
+    api: choice.api
+      ? {
+          providerId: choice.api.providerId,
+          model: choice.api.model,
+          ...(choice.api.params ? { params: choice.api.params } : {})
+        }
+      : device.api,
+    local: choice.local
+      ? {
+          engine: choice.local.engine,
+          model: choice.local.model,
+          installed:
+            !!dl &&
+            dl.engine === choice.local.engine &&
+            dl.model === choice.local.model &&
+            dl.installed
+        }
+      : dl,
+    ...(choice.mode === 'gpu' ? { gpu: device.gpu ?? { ...DEFAULT_STT_GPU } } : {})
+  }
+}
+
+/** A escolha de fala que as settings (do seletor) representam — o inverso de `applyTtsChoice`. */
+export function ttsChoiceFromSettings(s: TtsSettings): VoiceTtsChoice | null {
+  return normalizeVoiceTtsChoice(
+    s.backend === 'api'
+      ? { backend: 'api', api: s.api }
+      : s.backend === 'gpu'
+        ? { backend: 'gpu', gpu: s.gpu ?? DEFAULT_TTS_GPU }
+        : s.local
+          ? { backend: 'local', local: s.local }
+          : null
+  )
+}
+
+/** A escolha de transcrição que as settings (do seletor) representam, com o idioma escolhido. */
+export function sttChoiceFromSettings(
+  s: SttSettings,
+  language?: string | null
+): VoiceSttChoice | null {
+  return normalizeVoiceSttChoice({
+    mode: s.mode,
+    api: s.api,
+    local: s.local,
+    ...(s.mode === 'gpu'
+      ? { gpu: { engine: s.gpu?.engine ?? GPU_STT_ENGINE_ID, model: null } }
+      : {}),
+    language: language ?? null
+  })
+}
+
+/** Resultado de uma checagem de disponibilidade NESTE dispositivo. */
+export interface VoiceCheck {
+  ok: boolean
+  /** Motivo legível (pt-BR, minúsculo, sem ponto final) quando `ok` é false. */
+  reason?: string
+  /** Nada escolhido (falta configurar) × escolhido mas ausente/quebrado aqui. */
+  unconfigured?: boolean
+}
+
+/**
+ * O que ESTE dispositivo tem, para a disponibilidade da voz (protocolo §4.3.6 — DEVE): `api` = o
+ * provedor existe aqui e serve a capacidade; `local` = motor e modelo/voz instalados AQUI; `gpu` =
+ * runtime e motor instalados AQUI e a voz existe nesta máquina. Checagem ausente = o dispositivo
+ * não tem aquele backend (ex.: o celular só tem `provider`).
+ */
+export interface VoiceDeviceCaps {
+  provider(providerId: string, capability: 'tts' | 'stt'): VoiceCheck
+  ttsLocal?(local: { engine: TtsLocalEngine; voice: string }): VoiceCheck
+  ttsGpu?(gpu: { engine: string; voice: string | null }): VoiceCheck
+  sttLocal?(local: { engine: SttLocalEngine; model: string }): VoiceCheck
+  sttGpu?(gpu: { engine: string; model: string | null }): VoiceCheck
+}
+
+const NO_LOCAL = 'este dispositivo não tem motores locais de voz'
+const NO_GPU = 'este dispositivo não tem o modo GPU local'
+
+/** As settings de fala funcionam aqui? (backend escolhido + o que ele exige — `VoiceDeviceCaps`). */
+export function ttsSettingsCheck(s: TtsSettings, caps: VoiceDeviceCaps): VoiceCheck {
+  if (s.backend === 'api') {
+    if (!s.api.providerId)
+      return { ok: false, unconfigured: true, reason: 'nenhum modelo de fala escolhido' }
+    const p = caps.provider(s.api.providerId, 'tts')
+    if (!p.ok) return p
+    if (!s.api.model.trim())
+      return { ok: false, unconfigured: true, reason: 'nenhum modelo de fala escolhido' }
+    return { ok: true }
+  }
+  if (s.backend === 'gpu') {
+    const g = s.gpu ?? DEFAULT_TTS_GPU
+    return caps.ttsGpu
+      ? caps.ttsGpu({ engine: g.engine, voice: g.voice })
+      : { ok: false, reason: NO_GPU }
+  }
+  if (!s.local) return { ok: false, unconfigured: true, reason: 'nenhuma voz local escolhida' }
+  return caps.ttsLocal
+    ? caps.ttsLocal({ engine: s.local.engine, voice: s.local.voice })
+    : { ok: false, reason: NO_LOCAL }
+}
+
+/** As settings de transcrição funcionam aqui? (híbrido: basta a API ou o motor local). */
+export function sttSettingsCheck(s: SttSettings, caps: VoiceDeviceCaps): VoiceCheck {
+  const api = (): VoiceCheck => {
+    if (!s.api.providerId)
+      return { ok: false, unconfigured: true, reason: 'nenhum modelo de transcrição escolhido' }
+    const p = caps.provider(s.api.providerId, 'stt')
+    if (!p.ok) return p
+    if (!s.api.model.trim())
+      return { ok: false, unconfigured: true, reason: 'nenhum modelo de transcrição escolhido' }
+    return { ok: true }
+  }
+  const local = (): VoiceCheck => {
+    if (!s.local)
+      return {
+        ok: false,
+        unconfigured: true,
+        reason: 'nenhum modelo local de transcrição escolhido'
+      }
+    return caps.sttLocal
+      ? caps.sttLocal({ engine: s.local.engine, model: s.local.model })
+      : { ok: false, reason: NO_LOCAL }
+  }
+  if (s.mode === 'api') return api()
+  if (s.mode === 'local') return local()
+  if (s.mode === 'gpu')
+    return caps.sttGpu
+      ? caps.sttGpu({ engine: s.gpu?.engine ?? GPU_STT_ENGINE_ID, model: null })
+      : { ok: false, reason: NO_GPU }
+  const a = api()
+  if (a.ok) return a
+  const l = local()
+  if (l.ok) return l
+  return {
+    ok: false,
+    reason: a.reason,
+    ...(a.unconfigured && l.unconfigured ? { unconfigured: true } : {})
+  }
+}
+
+/**
+ * Voz resolvida de um chat/persona NESTE dispositivo (uma por capacidade — fala e transcrição).
+ * `settings` = as efetivas (a escolha aplicada sobre as do dispositivo, ou as do dispositivo);
+ * `source` = de onde vieram ('device' também quando a escolha caiu no padrão — ver `fallback`);
+ * `available` = funcionam aqui (false → microfone/telefone esmaecidos com `reason`).
+ */
+export interface VoiceResolution<S, C> {
+  settings: S
+  source: VoiceChoiceSource
+  /** A escolha configurada (chat/persona) — null = herda as settings deste dispositivo. */
+  choice: C | null
+  /** De onde veio a escolha configurada (null = nenhuma). */
+  choiceSource: 'chat' | 'persona' | null
+  /** A escolha não está disponível aqui → as settings do dispositivo (com o motivo). */
+  fallback?: { from: 'chat' | 'persona'; reason: string }
+  available: boolean
+  /** Por que as settings efetivas não funcionam aqui (só com `available` false). */
+  reason?: string
+  /** Falta configurar (nada escolhido) — senão "não funciona neste dispositivo". */
+  unconfigured?: boolean
+}
+export type VoiceTtsResolution = VoiceResolution<TtsSettings, VoiceTtsChoice>
+export interface VoiceSttResolution extends VoiceResolution<SttSettings, VoiceSttChoice> {
+  /** Idioma da transcrição: o da escolha (mesmo com fallback — é da persona) ou o do dispositivo. */
+  language: string
+}
+
+/** Marca o motor local como instalado (a checagem acabou de conferir o disco). */
+const withLocalInstalled = <S extends { local: { installed: boolean } | null }>(s: S): S =>
+  s.local && !s.local.installed ? { ...s, local: { ...s.local, installed: true } } : s
+
+/**
+ * Fala de um chat/persona aqui: escolha do chat → da persona → `ttsSettings` deste dispositivo.
+ * Escolha indisponível (provedor que não existe aqui, motor/voz não instalados, GPU ausente, voz
+ * clonada de outro PC) → as do dispositivo, com `fallback.reason`. Puro (caps injetadas).
+ */
+export function resolveTtsVoice(
+  layers: VoiceLayers | null | undefined,
+  device: TtsSettings,
+  caps: VoiceDeviceCaps
+): VoiceTtsResolution {
+  const { choice, source } = ttsChoiceOf(layers)
+  const choiceSource = source === 'device' ? null : source
+  let fallback: VoiceTtsResolution['fallback']
+  if (choice && choiceSource) {
+    const known = choice.backend !== 'gpu' || isGpuTtsEngineId(choice.gpu.engine)
+    const eff = applyTtsChoice(device, choice)
+    const chk: VoiceCheck = known
+      ? ttsSettingsCheck(eff, caps)
+      : {
+          ok: false,
+          reason: `o motor da GPU “${choice.backend === 'gpu' ? choice.gpu.engine : ''}” não existe nesta versão do app`
+        }
+    if (chk.ok)
+      return {
+        settings: withLocalInstalled(eff),
+        source: choiceSource,
+        choice,
+        choiceSource,
+        available: true
+      }
+    fallback = { from: choiceSource, reason: chk.reason ?? 'indisponível neste dispositivo' }
+  }
+  const d = ttsSettingsCheck(device, caps)
+  return {
+    settings: d.ok ? withLocalInstalled(device) : device,
+    source: 'device',
+    choice,
+    choiceSource,
+    ...(fallback ? { fallback } : {}),
+    available: d.ok,
+    ...(d.ok ? {} : { reason: d.reason, ...(d.unconfigured ? { unconfigured: true } : {}) })
+  }
+}
+
+/**
+ * Transcrição de um chat/persona aqui (chamada e ditado): escolha do chat → da persona →
+ * `sttSettings` deste dispositivo, com o mesmo fallback de `resolveTtsVoice`. `deviceLanguage` =
+ * o idioma do ditado deste dispositivo (`audioInput.language`); o da escolha vale mesmo no fallback.
+ */
+export function resolveSttVoice(
+  layers: VoiceLayers | null | undefined,
+  device: SttSettings,
+  deviceLanguage: string,
+  caps: VoiceDeviceCaps
+): VoiceSttResolution {
+  const { choice, source } = sttChoiceOf(layers)
+  const choiceSource = source === 'device' ? null : source
+  const language = choice?.language || deviceLanguage
+  let fallback: VoiceSttResolution['fallback']
+  if (choice && choiceSource) {
+    const eff = applySttChoice(device, choice)
+    const chk = sttSettingsCheck(eff, caps)
+    if (chk.ok) {
+      const settings = eff.mode === 'local' ? withLocalInstalled(eff) : eff
+      return { settings, source: choiceSource, choice, choiceSource, available: true, language }
+    }
+    fallback = { from: choiceSource, reason: chk.reason ?? 'indisponível neste dispositivo' }
+  }
+  const d = sttSettingsCheck(device, caps)
+  return {
+    settings: device,
+    source: 'device',
+    choice,
+    choiceSource,
+    ...(fallback ? { fallback } : {}),
+    available: d.ok,
+    ...(d.ok ? {} : { reason: d.reason, ...(d.unconfigured ? { unconfigured: true } : {}) }),
+    language
+  }
 }
 
 // ---------------- estado da chamada de voz (main → store/UI; canais `voice:call:*`) ----------------

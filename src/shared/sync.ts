@@ -231,7 +231,11 @@ export type SyncScope =
   | 'skills'
   | 'approvals'
   | 'webSearch'
-  /** Settings de áudio (`audioInput`, `sttSettings`, `ttsSettings`, `voiceCallDefaults` — 1.5.0). */
+  /**
+   * Settings de áudio deste dispositivo (`audioInput`, `sttSettings`, `ttsSettings`,
+   * `voiceCallDefaults`): locais desde 1.9.0 — só vem no recarregamento completo (merge remapeia o
+   * provedor delas); a voz da persona/chat chega com `presets`/`chats`.
+   */
   | 'voice'
 
 export interface TakeoverOptions {

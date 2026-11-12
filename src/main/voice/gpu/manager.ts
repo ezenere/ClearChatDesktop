@@ -719,17 +719,20 @@ export class GpuVoiceManager implements GpuEndpointResolver {
   }
 
   /** Voz escolhida por motor (aquecimento: prepara a voz que a chamada vai usar). */
-  private warmVoices(): Record<string, string> {
-    const tts = this.deps.getTts()
+  private warmVoices(tts: TtsSettings = this.deps.getTts()): Record<string, string> {
     return tts.gpu?.voice ? { [tts.gpu.engine]: tts.gpu.voice } : {}
   }
 
-  /** Motores escolhidos nas settings (fala `gpu` + transcrição `gpu`). */
-  selectedEngines(): GpuEngineId[] {
+  /**
+   * Motores escolhidos (fala `gpu` + transcrição `gpu`): os das settings deste dispositivo, ou os de
+   * `settings` (a voz efetiva da chamada — a da persona/chat, protocolo 1.9.0).
+   */
+  selectedEngines(settings?: { tts: TtsSettings; stt: SttSettings }): GpuEngineId[] {
     const out: GpuEngineId[] = []
-    const tts = this.deps.getTts()
+    const tts = settings?.tts ?? this.deps.getTts()
+    const stt = settings?.stt ?? this.deps.getStt()
     if (tts.backend === 'gpu') out.push((tts.gpu ?? DEFAULT_TTS_GPU).engine)
-    if (this.deps.getStt().mode === 'gpu') out.push(GPU_STT_ENGINE_ID)
+    if (stt.mode === 'gpu') out.push(GPU_STT_ENGINE_ID)
     return out
   }
 
@@ -772,7 +775,14 @@ export class GpuVoiceManager implements GpuEndpointResolver {
    * corrompidos) → `GpuEndpointError` legível; falha só do request de aquecimento (timeout) é
    * registrada e não impede (a 1ª fala carrega sob demanda).
    */
-  async startServer(ids?: unknown, opts: { onPhase?: (text: string) => void } = {}): Promise<void> {
+  async startServer(
+    ids?: unknown,
+    opts: {
+      onPhase?: (text: string) => void
+      /** Fala que vai ser usada (a da chamada — voz da persona/chat); ausente = a das settings. */
+      tts?: TtsSettings
+    } = {}
+  ): Promise<void> {
     const list = (
       Array.isArray(ids) ? ids.filter(isGpuEngineId) : this.selectedEngines()
     ) as GpuEngineId[]
@@ -798,7 +808,7 @@ export class GpuVoiceManager implements GpuEndpointResolver {
             r = await this.post(
               p.port,
               '/v1/warmup',
-              { engines, wait: true, synth: true, voices: this.warmVoices() },
+              { engines, wait: true, synth: true, voices: this.warmVoices(opts.tts) },
               180_000
             )
           } catch (e) {

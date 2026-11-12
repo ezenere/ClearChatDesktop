@@ -335,6 +335,22 @@ export async function kokoroReadiness(
     probeEspeak(deps.run),
     listLocalModels(baseDir).catch(() => [] as LocalModelInfo[])
   ])
+  return kokoroReadinessOf({ onnx, espeak, models }, voiceId)
+}
+
+/**
+ * `kokoroReadiness` sobre um retrato já coletado (probes + modelos em disco) — puro: a
+ * disponibilidade da voz de uma persona (`voice/voiceCaps.ts`) confere várias vozes de uma vez.
+ */
+export function kokoroReadinessOf(
+  snap: {
+    onnx: Pick<TtsRuntimeProbe, 'available' | 'reason'>
+    espeak: Pick<TtsRuntimeProbe, 'available' | 'reason'>
+    models: readonly Pick<LocalModelInfo, 'entry' | 'state'>[]
+  },
+  voiceId: string | null
+): TtsRuntimeProbe {
+  const { onnx, espeak, models } = snap
   const missing: string[] = []
   if (!onnx.available) missing.push(onnx.reason ?? 'runtime ONNX indisponível')
   if (!espeak.available) missing.push(espeakMissingError().message)

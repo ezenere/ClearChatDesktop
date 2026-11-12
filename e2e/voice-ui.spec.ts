@@ -10,8 +10,11 @@
 // textarea, rascunho intacto ao encerrar, pílula "Chamada ativa em…" nos outros chats, aprovações e
 // pergunta clicáveis acima da barra —, CTA de clipes ausentes, botão some com a chamada desligada) e Configurações (barra lateral de abas sem
 // cortes; Esc na captura da tecla do PTT não fecha o modal; tecla que digita é recusada).
-// Cenários do mock: `?scenario=voice-mic-missing|voice-mic-denied|voice-mic-lost|voice-call-fail|
-// voice-not-ready|voice-no-espeak` (ver `dev/mockApi.ts` → binding `voice`). Screenshots em $CLEARCHAT_E2E_DIR/shots.
+// Voz por persona (protocolo 1.9.0): telefone/mic esmaecidos com o motivo quando nada funciona
+// aqui, aviso discreto quando a voz da persona cai no padrão deste dispositivo e o ditado levando as
+// camadas de voz do chat. Cenários do mock: `?scenario=voice-mic-missing|voice-mic-denied|
+// voice-mic-lost|voice-call-fail|voice-not-ready|voice-no-espeak|voice-persona|
+// voice-persona-fallback` (ver `dev/mockApi.ts` → binding `voice`). Screenshots em $CLEARCHAT_E2E_DIR/shots.
 //
 // Uso:
 //   unset ELECTRON_RUN_AS_NODE
@@ -551,19 +554,53 @@ app.on('window-all-closed', () => app.quit())
       await toast.waitFor({ timeout: 4000 })
       assert.equal(await page.getByTestId('voice-call-dock').count(), 0)
       await shot('after-call-start-failure')
+      // nada configurado/funcionando AQUI (protocolo 1.9.0 — `voice.resolve`): telefone e mic
+      // esmaecidos e desabilitados, com o motivo no tooltip (sem chamada que falha calada)
       await open('voice-not-ready', 'Ideias de nomes para o app')
-      await page.getByTestId('voice-call-button').click()
-      const t2 = page.getByTestId('toast').filter({ hasText: 'Chamada de voz indisponível' })
+      const phone = page.getByTestId('voice-call-button')
+      await page.waitForFunction(
+        () =>
+          document.querySelector('[data-testid=voice-call-button]')?.getAttribute('data-voice') ===
+          'unavailable'
+      )
+      assert(await phone.isDisabled(), 'telefone habilitado sem transcrição/fala funcionando')
+      await phone.hover()
+      const t2 = page.getByText(/^Chamada de voz não funciona neste dispositivo/)
       await t2.waitFor({ timeout: 4000 })
       const txt = await t2.innerText()
-      assert.match(txt, /Transcrição: escolha um modelo de transcrição em Configurações → Áudio/)
-      assert.match(txt, /Kokoro/)
-      // runtime local quebrado (espeak-ng ausente — probe `voice.runtime.status`)
+      assert.match(txt, /transcrição: nenhum modelo de transcrição escolhido/)
+      assert.match(txt, /fala: modelo do Kokoro não instalado/)
+      await shot('after-voice-not-ready-phone-tip')
+      await page.mouse.move(5, 5)
+      // o Radix só abre o próximo tooltip depois de fechar este de vez (Esc)
+      await page.keyboard.press('Escape')
+      await page.waitForTimeout(300)
+      const mic = page.getByTestId('voice-mic-button')
+      assert.equal(await mic.getAttribute('data-voice'), 'unconfigured')
+      assert.equal(await mic.getAttribute('aria-disabled'), 'true')
+      await mic.hover()
+      await page
+        .getByText(/^Ditado não configurado neste dispositivo — nenhum modelo de transcrição/)
+        .waitFor({ timeout: 4000 })
+      await shot('after-voice-not-ready-mic-tip')
+      await page.mouse.move(5, 5)
+      // aria-disabled: o Playwright não clica sem `force` (o clique de verdade chega e é ignorado)
+      await mic.click({ force: true })
+      await page.waitForTimeout(300)
+      assert.equal(await recording().count(), 0, 'o mic esmaecido não grava')
+      // runtime local quebrado (espeak-ng ausente): a fala não funciona aqui — motivo no tooltip
       await open('voice-no-espeak', 'Ideias de nomes para o app')
-      await page.getByTestId('voice-call-button').click()
-      const t3 = page.getByTestId('toast').filter({ hasText: 'espeak-ng não encontrado' })
-      await t3.waitFor({ timeout: 4000 })
+      await page.waitForFunction(
+        () =>
+          document.querySelector('[data-testid=voice-call-button]')?.getAttribute('data-voice') ===
+          'unavailable'
+      )
+      await page.getByTestId('voice-call-button').hover()
+      await page.getByText(/fala: espeak-ng não encontrado/).waitFor({ timeout: 4000 })
+      await page.mouse.move(5, 5)
       assert.equal(await page.getByTestId('voice-call-dock').count(), 0)
+      // o ditado continua (a transcrição funciona aqui)
+      assert.equal(await page.getByTestId('voice-mic-button').getAttribute('data-voice'), null)
       // Configurações → Áudio mostra o motivo do motor local não estar pronto
       await openAudioSettings()
       const warn = page.getByTestId('tts-runtime-warning')
@@ -962,6 +999,50 @@ app.on('window-all-closed', () => app.quit())
         () => !document.querySelector('[data-testid=voice-call-button]')?.hasAttribute('disabled')
       )
       return `persona ${presetId}: desligada → telefone desabilitado; chat religa`
+    }
+  )
+
+  await step(
+    'voz da persona (1.9.0): ditado usa a transcrição da persona; indisponível aqui → padrão daqui com aviso discreto',
+    async () => {
+      // persona com voz e transcrição próprias, disponíveis aqui
+      await open('voice-persona', 'Ideias de nomes para o app')
+      const phone = page.getByTestId('voice-call-button')
+      await page.waitForTimeout(400)
+      assert.equal(await phone.getAttribute('data-voice'), null, 'voz da persona disponível')
+      assert(!(await phone.isDisabled()))
+      // ditado: a sessão de transcrição recebe as camadas do chat (a persona → inglês)
+      await page.getByTestId('voice-mic-button').click()
+      await recording().waitFor()
+      const sent = await page.evaluate(() => (window as any).__clearMockLastTranscribe)
+      assert.equal(sent?.voice?.persona?.stt?.language, 'en-US', JSON.stringify(sent))
+      assert.equal(sent?.voice?.persona?.tts?.api?.voice, 'sarah')
+      await page.keyboard.press('Escape')
+      await page.waitForTimeout(300)
+      // a voz da persona é de um provedor que não existe neste dispositivo: a padrão daqui entra
+      await open('voice-persona-fallback', 'Ideias de nomes para o app')
+      await page.waitForFunction(
+        () =>
+          document.querySelector('[data-testid=voice-call-button]')?.getAttribute('data-voice') ===
+          'fallback'
+      )
+      assert(!(await phone.isDisabled()), 'com o padrão daqui funcionando, a chamada segue')
+      await phone.hover()
+      await page
+        .getByText(
+          /A voz da persona não está disponível neste dispositivo \(o provedor escolhido não existe neste dispositivo\) — usando a padrão deste dispositivo/
+        )
+        .waitFor({ timeout: 4000 })
+      await shot('after-persona-voice-fallback-tip')
+      await page.mouse.move(5, 5)
+      // a transcrição da persona (Groq) existe aqui: o mic fica normal
+      assert.equal(await page.getByTestId('voice-mic-button').getAttribute('data-voice'), null)
+      // a chamada entra (com a voz daqui)
+      await phone.click()
+      await page.getByTestId('voice-call-dock').waitFor()
+      await page.getByTestId('voice-call-end').click()
+      await page.getByTestId('voice-call-dock').waitFor({ state: 'detached' })
+      return 'disponível → normal; fallback → aviso no tooltip; ditado com as camadas da persona'
     }
   )
 

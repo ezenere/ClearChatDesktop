@@ -32,17 +32,24 @@ const SEGMENT =
 
 /**
  * `[ telefone | mic | ˅ ]` na barra do composer (some sem `window.api.voice`). `dictationOff`:
- * motivo para o ditado não estar disponível agora (ex.: chamada ativa em outro chat) — o mic fica
- * visível porém inerte, com o motivo no tooltip; o telefone segue as regras dele.
+ * motivo para o ditado não estar disponível agora (ex.: chamada ativa em outro chat; a transcrição
+ * não configurada/não funciona neste dispositivo — protocolo 1.9.0) — o mic fica visível porém
+ * inerte e esmaecido, com o motivo no tooltip; o telefone segue as regras dele. `dictationNote`:
+ * aviso discreto no tooltip (a transcrição da persona não está disponível aqui e a padrão deste
+ * dispositivo entra no lugar). `voiceState` vai em `data-voice` do mic (testes).
  */
 export function VoiceGroup({
   dictation,
   session,
-  dictationOff
+  dictationOff,
+  dictationNote,
+  voiceState
 }: {
   dictation: DictationControls
   session: Session
   dictationOff?: string | null
+  dictationNote?: string | null
+  voiceState?: 'fallback' | 'unconfigured' | 'unavailable' | null
 }): React.JSX.Element | null {
   const level = useBarLevel('voice-controls')
   const [open, setOpen] = useState(false)
@@ -61,9 +68,8 @@ export function VoiceGroup({
       : ''
   const micLabel = dictationOff
     ? dictationOff
-    : compact
-      ? 'Ditar por voz · botão direito: microfone (ditado e chamada)'
-      : 'Ditar por voz'
+    : (compact ? 'Ditar por voz · botão direito: microfone (ditado e chamada)' : 'Ditar por voz') +
+      (dictationNote ? ` — ${dictationNote}` : '')
   return (
     <div
       {...barAttrs('voice-controls', level)}
@@ -74,11 +80,17 @@ export function VoiceGroup({
       className="flex h-[30px] shrink-0 items-stretch divide-x divide-border overflow-hidden rounded-lg border border-border bg-elevated/40"
     >
       <VoiceCallButton session={session} className="rounded-none!" />
-      <Tip label={micLabel} shortcut={!dictationOff && ptt ? `segure ${ptt}` : undefined}>
+      <Tip
+        label={
+          <span className="block max-w-[28rem] leading-snug whitespace-normal">{micLabel}</span>
+        }
+        shortcut={!dictationOff && ptt ? `segure ${ptt}` : undefined}
+      >
         <button
           type="button"
           ref={micRef}
           data-testid="voice-mic-button"
+          data-voice={voiceState ?? undefined}
           aria-label="Ditar por voz"
           aria-disabled={dictationOff ? true : undefined}
           onClick={(e) => {

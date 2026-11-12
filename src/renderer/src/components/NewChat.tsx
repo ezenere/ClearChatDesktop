@@ -19,6 +19,7 @@ import { AppSignatureField, AppSignatureInfo } from './AppSignatureField'
 import { api } from '../lib/api'
 import { compactPath, isMac } from '../lib/format'
 import { initialPresetId, newChatBase, presetProviderMissing, resolvePreset } from '../lib/presets'
+import { withoutVoiceChoice } from '../lib/voice/voiceChoice'
 import { useStore } from '../store'
 import { ModelFieldInfo, RootInfo, SystemPromptInfo } from './apiDocs'
 import { NewFolderForm } from './panel/FilesTab'
@@ -137,7 +138,8 @@ export function NewChat(): React.JSX.Element {
         : supportsCacheControl(providerKind(provider))
     await createChat({
       config: {
-        ...withoutCwd(preset?.config),
+        // a voz/transcrição da persona não entra no snapshot: o chat a herda ao vivo (1.9.0)
+        ...withoutVoiceChoice(withoutCwd(preset?.config)),
         ...visibleConfig(),
         cwd: form.cwd,
         cacheEnabled,

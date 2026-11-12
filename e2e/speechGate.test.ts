@@ -300,25 +300,25 @@ const getSetting = (conn: Database.Database, key: string): any => {
   return r ? JSON.parse(r.value) : undefined
 }
 
-test('audioInput.activationDb: normalizado, nunca sai no sync e sobrevive ao registro recebido', () => {
+test('audioInput.activationDb: normalizado e local do dispositivo (audioInput inteiro não sincroniza desde 1.9.0)', () => {
   assert.equal(normalizeAudioInput({}).activationDb, -45)
   assert.equal(normalizeAudioInput({ activationDb: -38 }).activationDb, -38)
   const a = newDb()
   const b = newDb()
   putSetting(a, 'audioInput', normalizeAudioInput({ deviceId: 'mic-a', activationDb: -30 }))
   putSetting(b, 'audioInput', normalizeAudioInput({ deviceId: 'mic-b', activationDb: -52 }))
-  const out = buildLocal(a, 'setting', 'audioInput')!.plain.value as Record<string, unknown>
-  assert.equal(out.activationDb, undefined, 'o nível de A não sai')
-  assert.equal(out.deviceId, undefined)
-  applyRemote(b, 'setting', 'audioInput', { sv: 1, value: out })
+  // protocolo 1.9.0: `audioInput` é local do dispositivo — nunca vira registro
+  assert.equal(buildLocal(a, 'setting', 'audioInput'), null, 'o audioInput de A não sai')
+  // registro de um app ≤ 1.8.x (com ou sem o nível): ignorado — B fica com o dele
+  applyRemote(b, 'setting', 'audioInput', {
+    sv: 1,
+    value: { pttEnabled: false, language: 'en-US', activationDb: -20 }
+  })
   assert.equal(getSetting(b, 'audioInput').activationDb, -52, 'B mantém o próprio nível')
   assert.equal(getSetting(b, 'audioInput').deviceId, 'mic-b')
-  // escritor fora do contrato mandando o campo: ignorado
-  applyRemote(b, 'setting', 'audioInput', { sv: 1, value: { ...out, activationDb: -20 } })
-  assert.equal(getSetting(b, 'audioInput').activationDb, -52)
-  // remover (null) mantém só as partes do dispositivo
+  assert.equal(getSetting(b, 'audioInput').language, 'pt-BR')
   applyRemote(b, 'setting', 'audioInput', { sv: 1, value: null })
-  assert.deepEqual(getSetting(b, 'audioInput'), { deviceId: 'mic-b', activationDb: -52 })
+  assert.equal(getSetting(b, 'audioInput').activationDb, -52, 'null recebido não apaga nada')
 })
 
 // ---------------- a detecção de fala da chamada (renderer) usa a MESMA regra ----------------

@@ -248,3 +248,138 @@ test('resolveVoiceEndpoint: puro — só o provedor dá endereço/chave; sem ele
     { ...withId, baseUrl: 'https://p/v1', apiKey: 's' }
   )
 })
+
+// ---------------- voz da persona/chat (protocolo 1.9.0) ----------------
+
+test('voz da persona/chat: camadas do repositório, resolução aqui e o endpoint do provedor DELA (chamada/ditado)', async () => {
+  const v = await voice()
+  const r = await repo()
+  const xi = r.providersRepo.create({
+    name: 'ElevenLabs',
+    kind: 'elevenlabs',
+    baseUrl: 'https://api.elevenlabs.io',
+    apiKey: 'xi-PERSONASECRET'
+  })
+  const groq = r.providersRepo.create({
+    name: 'Groq',
+    kind: 'openai',
+    baseUrl: 'https://api.groq.com/openai/v1',
+    apiKey: 'gsk-DEVICESECRET'
+  })
+  // este dispositivo: Kokoro + Groq em pt-BR
+  v.setVoiceSetting('ttsSettings', {
+    backend: 'local',
+    local: { engine: 'kokoro', voice: 'pf_dora' }
+  })
+  v.setVoiceSetting('sttSettings', {
+    mode: 'api',
+    api: { providerId: groq.id, model: 'whisper-large-v3-turbo' }
+  })
+  v.setVoiceSetting('audioInput', { language: 'pt-BR' })
+  const persona = r.presetsRepo.create({
+    name: 'Narradora',
+    config: {
+      voice: {
+        enabled: null,
+        model: null,
+        tools: null,
+        voicePrompt: null,
+        fillers: null,
+        tts: { backend: 'api', api: { providerId: xi.id, model: 'eleven_v3', voice: 'rachel' } },
+        stt: {
+          mode: 'api',
+          api: { providerId: groq.id, model: 'whisper-large-v3' },
+          language: 'en-US'
+        }
+      }
+    }
+  })
+  const { chat } = r.chatsRepo.create({ title: 'Voz', config: { presetId: persona.id } })
+  const layers = v.chatVoiceLayers(chat.id)
+  assert.equal(layers.chat?.tts, undefined, 'o chat não guarda a voz da persona')
+  const personaTts = layers.persona?.tts
+  assert.equal(personaTts?.backend === 'api' ? personaTts.api.providerId : null, xi.id)
+  // caps fake: tudo da API existe aqui
+  const caps = { provider: () => ({ ok: true }) }
+  const res = v.resolveVoice(layers, caps)
+  assert.equal(res.tts.source, 'persona')
+  assert.equal(res.stt.source, 'persona')
+  assert.equal(res.stt.language, 'en-US')
+  assert.ok(!JSON.stringify(res).includes('SECRET'), 'a visão da resolução nunca leva chave')
+  const use = v.voiceUse(res)
+  assert.equal(use.language, 'en-US')
+  // os serviços do main (chamada, ditado, prévias, clipes) usam o endpoint do provedor DA PERSONA
+  const eff = v.getVoiceSettingsWith(use)
+  assert.equal(eff.tts.backend, 'api')
+  assert.equal(eff.tts.api.baseUrl, 'https://api.elevenlabs.io')
+  assert.equal(eff.tts.api.apiKey, 'xi-PERSONASECRET')
+  assert.equal(eff.tts.api.providerKind, 'elevenlabs')
+  assert.equal(eff.stt.api.model, 'whisper-large-v3')
+  assert.equal(eff.stt.api.apiKey, 'gsk-DEVICESECRET')
+  // as settings DESTE dispositivo não mudaram
+  assert.equal(v.getVoiceSettings().tts.backend, 'local')
+  assert.equal(v.getVoiceSettingsView().ttsSettings.backend, 'local')
+  // provedor da persona ausente neste dispositivo → fallback no padrão daqui (com o motivo)
+  const missing = v.resolveVoice(layers, {
+    provider: (id: string) =>
+      id === xi.id
+        ? { ok: false, reason: 'o provedor escolhido não existe neste dispositivo' }
+        : { ok: true },
+    ttsLocal: () => ({ ok: true })
+  })
+  assert.equal(missing.tts.source, 'device')
+  assert.equal(missing.tts.fallback?.reason, 'o provedor escolhido não existe neste dispositivo')
+  assert.equal(v.voiceUse(missing).tts, null, 'a chamada usa a voz daqui')
+  assert.equal(v.getVoiceSettingsWith(v.voiceUse(missing)).tts.backend, 'local')
+  // a chamada/o ditado só sondam motores locais/GPU quando alguma camada ou setting os usa
+  assert.deepEqual(
+    v.voiceCapsNeed(layers),
+    { local: true, gpu: false },
+    'o Kokoro do dispositivo conta'
+  )
+  v.setVoiceSetting('ttsSettings', {
+    backend: 'api',
+    api: { providerId: xi.id, model: 'eleven_v3' }
+  })
+  assert.deepEqual(v.voiceCapsNeed(layers), { local: false, gpu: false })
+  assert.deepEqual(
+    v.voiceCapsNeed({
+      chat: {
+        enabled: null,
+        model: null,
+        tools: null,
+        voicePrompt: null,
+        fillers: null,
+        tts: { backend: 'gpu', gpu: { engine: 'xtts-v2', voice: null } }
+      }
+    }),
+    { local: false, gpu: true }
+  )
+  // camadas cruas do renderer: normalizadas (lixo = sem a camada)
+  assert.deepEqual(
+    v.voiceLayersFrom({
+      chat: 42,
+      persona: { tts: { backend: 'api', api: { providerId: 'p', model: 'm', apiKey: 'sk' } } }
+    }),
+    {
+      chat: null,
+      persona: {
+        enabled: null,
+        model: null,
+        tools: null,
+        voicePrompt: null,
+        fillers: null,
+        tts: { backend: 'api', api: { providerId: 'p', model: 'm', voice: null } }
+      }
+    }
+  )
+  assert.deepEqual(v.voiceLayersFrom(null), { chat: null, persona: null })
+  // limpa
+  r.chatsRepo.delete(chat.id)
+  r.presetsRepo.delete(persona.id)
+  r.providersRepo.delete(xi.id)
+  r.providersRepo.delete(groq.id)
+  v.setVoiceSetting('ttsSettings', { backend: 'local' })
+  v.setVoiceSetting('sttSettings', {})
+  v.setVoiceSetting('audioInput', {})
+})

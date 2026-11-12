@@ -6,7 +6,11 @@
 // motor + modelo de uma vez. Com modelo de API: "Parâmetros" do modelo (temperatura, dica de
 // vocabulário) e, com um modelo local instalado, o interruptor do híbrido (motor local nas parciais
 // e como reserva). Endereço e chave ficam só no provedor cadastrado — a chave nunca passa pela tela.
-import { useCallback } from 'react'
+// Também é o seletor da TRANSCRIÇÃO DE UMA PERSONA/CHAT (`choice`, protocolo 1.9.0): `stt` = as
+// settings deste dispositivo com a escolha aplicada, `onCommit` grava a escolha; o que é do
+// dispositivo (parciais ao vivo, final rápida, parâmetros do whisper da GPU) fica de fora e o
+// idioma da escolha entra em `extra`.
+import { useCallback, type ReactNode } from 'react'
 import type { VoiceModelInfo, VoiceRuntimeStatus } from '@shared/ipc'
 import type { ModelRef } from '@shared/models'
 import type { SttSettings } from '@shared/voice'
@@ -43,7 +47,9 @@ export function SttSettingsSection({
   providers,
   models,
   runtime,
-  onCommit
+  onCommit,
+  choice,
+  extra
 }: {
   stt: SttSettings
   language: string
@@ -51,8 +57,12 @@ export function SttSettingsSection({
   /** Modelos locais (catálogo + estado em disco) — os instalados entram no seletor. */
   models: VoiceModelInfo[]
   runtime: VoiceRuntimeStatus | null
-  /** Grava `sttSettings`. */
+  /** Grava `sttSettings` (ou, com `choice`, a transcrição da persona/chat). */
   onCommit: (next: SttSettings) => Promise<boolean>
+  /** Transcrição de uma persona/chat (`voice.stt`): título/textos do nível ("desta persona"). */
+  choice?: { where: string }
+  /** Controles extras depois do Modelo (o idioma da escolha da persona/chat). */
+  extra?: ReactNode
 }): React.JSX.Element {
   const setSettingsOpen = useStore((s) => s.setSettingsOpen)
   const mode = stt.mode
@@ -90,8 +100,9 @@ export function SttSettingsSection({
 
   return (
     <AudioSection
-      title="Transcrição (STT)"
-      testId="stt-section"
+      title={choice ? `Transcrição ${choice.where}` : 'Transcrição (STT)'}
+      first={!!choice}
+      testId={choice ? 'stt-choice-section' : 'stt-section'}
       help={
         <>
           <p>
@@ -132,6 +143,8 @@ export function SttSettingsSection({
         />
       </div>
 
+      {extra}
+
       {missing && (
         <WarnNote testId="stt-provider-missing">
           O provedor do modelo escolhido não existe mais — escolha outro modelo acima.
@@ -151,10 +164,13 @@ export function SttSettingsSection({
             void onCommit({ ...stt, api: params ? { ...rest, params } : rest })
           }}
           testId="stt-api-params"
+          persona={!!choice}
         />
       )}
 
-      {mode === 'gpu' && <GpuSttPanel stt={stt} status={gpuStatus} onCommit={onCommit} />}
+      {mode === 'gpu' && (
+        <GpuSttPanel stt={stt} status={gpuStatus} onCommit={choice ? undefined : onCommit} />
+      )}
 
       {mode === 'local' && (
         <div className="space-y-1.5" data-testid="stt-local">
@@ -205,27 +221,29 @@ export function SttSettingsSection({
         />
       )}
 
-      <ToggleRow
-        label="Parciais ao vivo"
-        checked={stt.livePartials}
-        onChange={(livePartials) => void onCommit({ ...stt, livePartials })}
-        help={
-          mode === 'gpu'
-            ? 'Melhor-esforço enquanto você fala: o whisper da GPU transcreve em janelas (rápido o bastante para o large-v3-turbo).'
-            : mode === 'local'
-              ? 'Melhor-esforço enquanto você fala: o motor local transcreve em janelas (só modelos até o base).'
-              : 'Melhor-esforço enquanto você fala: o texto parcial aparece no composer (fora do texto editável) e a transcrição final entra no rascunho ao parar. Só pela API, cada parcial é uma request extra ao provedor; com o motor local como reserva, elas vêm dele quando pronto.'
-        }
-        status={
-          mode === 'local' && stt.livePartials && localPartialsOff && localModel ? (
-            <span className="text-warning" data-testid="stt-partials-off">
-              Desligadas para {localModel.name}: grande demais para transcrever enquanto você fala —
-              o texto aparece nas pausas. Use o ggml-base ou o ggml-tiny para ver ao vivo.
-            </span>
-          ) : undefined
-        }
-      />
-      {usesApi && stt.livePartials && (
+      {!choice && (
+        <ToggleRow
+          label="Parciais ao vivo"
+          checked={stt.livePartials}
+          onChange={(livePartials) => void onCommit({ ...stt, livePartials })}
+          help={
+            mode === 'gpu'
+              ? 'Melhor-esforço enquanto você fala: o whisper da GPU transcreve em janelas (rápido o bastante para o large-v3-turbo).'
+              : mode === 'local'
+                ? 'Melhor-esforço enquanto você fala: o motor local transcreve em janelas (só modelos até o base).'
+                : 'Melhor-esforço enquanto você fala: o texto parcial aparece no composer (fora do texto editável) e a transcrição final entra no rascunho ao parar. Só pela API, cada parcial é uma request extra ao provedor; com o motor local como reserva, elas vêm dele quando pronto.'
+          }
+          status={
+            mode === 'local' && stt.livePartials && localPartialsOff && localModel ? (
+              <span className="text-warning" data-testid="stt-partials-off">
+                Desligadas para {localModel.name}: grande demais para transcrever enquanto você fala
+                — o texto aparece nas pausas. Use o ggml-base ou o ggml-tiny para ver ao vivo.
+              </span>
+            ) : undefined
+          }
+        />
+      )}
+      {!choice && usesApi && stt.livePartials && (
         <ToggleRow
           label="Final rápida (usar a parcial)"
           checked={stt.reusePartialFinal !== false}

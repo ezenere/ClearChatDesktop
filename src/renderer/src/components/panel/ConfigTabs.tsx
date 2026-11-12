@@ -22,6 +22,8 @@ import {
 import { CollapsibleSection, Section } from './fields'
 import { MemorySection } from '../memory/MemorySection'
 import { VoiceCallConfigSection } from '../voice/VoiceCallConfigSection'
+import { VoiceChoiceSections } from '../voice/VoiceChoiceSections'
+import { withInheritedVoice } from '../../lib/voice/voiceChoice'
 
 function usePatch(chat: Chat): (p: Partial<ChatConfig>) => void {
   const patchConfig = useStore((s) => s.patchConfig)
@@ -62,9 +64,18 @@ export function ChatTab({ chat }: { chat: Chat }): React.JSX.Element {
   )
 }
 
-/** Aba Voz: chamada de voz deste chat (liga/desliga, modelo e parâmetros, tools e prompt do modo voz). */
+/**
+ * Aba Voz: a voz (Fala) e a Transcrição deste chat (da persona de origem ao vivo, ou próprias —
+ * protocolo 1.9.0) e a chamada de voz (liga/desliga, modelo e parâmetros, tools e prompt do modo voz).
+ */
 export function VoiceTab({ chat }: { chat: Chat }): React.JSX.Element {
-  return <VoiceCallConfigSection cfg={chat.config} patch={usePatch(chat)} defaultOpen />
+  const patch = usePatch(chat)
+  return (
+    <>
+      <VoiceChoiceSections cfg={chat.config} patch={patch} scope="chat" defaultOpen />
+      <VoiceCallConfigSection cfg={chat.config} patch={patch} defaultOpen />
+    </>
+  )
 }
 
 function ChatInfoSection({ chat }: { chat: Chat }): React.JSX.Element {
@@ -102,7 +113,10 @@ function ChatInfoSection({ chat }: { chat: Chat }): React.JSX.Element {
         onClose={() => setSaveOpen(false)}
         cwd={chat.config.cwd}
         base={origin}
-        buildConfig={(_mode, includeCwd) => snapshotPreset(chat.config, { includeCwd })}
+        buildConfig={(_mode, includeCwd) =>
+          // a voz/transcrição herdada ao vivo da persona de origem vai junto (o chat não a guarda)
+          snapshotPreset(withInheritedVoice(chat.config, origin?.config.voice), { includeCwd })
+        }
         onSaved={(p) => patchConfig(chat.id, { presetId: p.id })}
       />
     </Section>

@@ -38,6 +38,7 @@ import { HelpTip } from '../ui/Tooltip'
 import { IconPicker, PresetIcon } from './PresetIcon'
 import { MemorySection } from '../memory/MemorySection'
 import { VoiceCallConfigSection } from '../voice/VoiceCallConfigSection'
+import { VoiceChoiceSections } from '../voice/VoiceChoiceSections'
 
 function useResolver(): (p: Pick<Preset, 'config'> | null) => ChatConfig {
   const providers = useStore((s) => s.providers)
@@ -384,7 +385,10 @@ export function PresetEditor({
         ) : tab === 'tools' ? (
           <ToolsEditor cfg={cfg} patch={patch} onOpenMemory={() => setTab('memory')} />
         ) : tab === 'voice' ? (
-          <VoiceCallConfigSection cfg={cfg} patch={patch} scope="persona" defaultOpen />
+          <>
+            <VoiceChoiceSections cfg={cfg} patch={patch} scope="persona" defaultOpen />
+            <VoiceCallConfigSection cfg={cfg} patch={patch} scope="persona" defaultOpen />
+          </>
         ) : (
           <MemorySection cfg={cfg} patch={patch} />
         )}

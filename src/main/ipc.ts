@@ -116,11 +116,25 @@ import type {
   MemoryPatch
 } from '@shared/memory'
 import {
+  chatVoiceLayers,
   getVoiceSettings,
   getVoiceSettingsView,
+  getVoiceSettingsWith,
+  resolveVoice,
   setVoiceSetting,
-  syncLocalModelInstalled
+  syncLocalModelInstalled,
+  voiceCapsNeed,
+  voiceLayersFrom,
+  voiceUse,
+  type VoiceSettings
 } from './voice'
+import { collectVoiceCaps } from './voice/voiceCaps'
+import {
+  normalizeVoiceTtsChoice,
+  type VoiceLayers,
+  type VoiceSttChoice,
+  type VoiceTtsChoice
+} from '@shared/voice'
 import { cachedVoiceUnitPrice, fetchVoicePreview, listVoiceCatalog } from './voice/voiceCatalog'
 import { onSttApiUsage } from './voice/stt'
 import { audioDurationMs, sanitizeDictationMeta } from '@shared/voiceCallMarks'
@@ -224,6 +238,24 @@ let ttsRelayRef: TtsStreamRelay | null = null
 /** [tts-feed] WebSocket da ElevenLabs da chamada (fechado quando o renderer some). */
 let elevenCallRef: ElevenLabsCallTts | null = null
 let voiceCallOwner: number | null = null
+/**
+ * Voz da chamada em andamento, decidida no `voice:call:start` (protocolo 1.9.0): a escolha da
+ * persona/chat quando disponível AQUI (null = as settings deste dispositivo, relidas a cada uso) e
+ * o idioma da escolha. Limpa quando a chamada termina.
+ */
+let callVoice: {
+  chatId: string
+  tts: VoiceTtsChoice | null
+  stt: VoiceSttChoice | null
+  language: string | null
+} | null = null
+
+/** Settings de voz para os serviços da chamada: as efetivas do chat da chamada (ver `callVoice`). */
+function callVoiceSettings(chatId?: string | null): VoiceSettings {
+  return callVoice && (!chatId || chatId === callVoice.chatId)
+    ? getVoiceSettingsWith(callVoice)
+    : getVoiceSettings()
+}
 
 /**
  * O renderer `webContentsId` recarregou, navegou, caiu ou a janela fechou: tudo de voz que ele
@@ -304,6 +336,29 @@ function requireModelId(input: { id: string } | undefined): string {
 let kokoro: KokoroEngine | null = null
 const ttsLocalEngine = (): KokoroEngine =>
   (kokoro ??= createKokoroEngine({ baseDir: app.getPath('userData') }))
+
+/**
+ * Voz de um chat/persona NESTE dispositivo (protocolo 1.9.0): sonda só o que as camadas e as
+ * settings daqui usam (modelos locais/runtimes, modo GPU) e resolve fala + transcrição
+ * (`resolveVoice`). Usado pelo `voice:resolve`, pelo início da chamada e pelo ditado.
+ */
+async function resolveVoiceFor(layers: VoiceLayers): Promise<ReturnType<typeof resolveVoice>> {
+  const caps = await collectVoiceCaps(
+    {
+      provider: (id) => providersRepo.get(id),
+      localModels: () => listLocalModels(localModelsBaseDir()),
+      whisper: () => probeWhisperRuntime(),
+      onnx: () => probeOnnxRuntime(),
+      espeak: async () => {
+        const e = await probeEspeak()
+        return e.available ? e : { available: false, reason: espeakMissingError().message }
+      },
+      gpu: async () => (gpuManagerRef ? gpuManagerRef.status() : null)
+    },
+    voiceCapsNeed(layers)
+  )
+  return resolveVoice(layers, caps)
+}
 
 /** Prontidão dos runtimes locais (`voice:runtime:status`) — probes memoizados + estado em disco. */
 async function voiceRuntimeStatus(): Promise<VoiceRuntimeStatus> {
@@ -497,7 +552,7 @@ export function registerIpc(): void {
   const elevenOpts = (): ReturnType<typeof elevenLabsCallOptions> => {
     const now = Date.now()
     if (!elevenOptsCache || now - elevenOptsCache.at > 1000)
-      elevenOptsCache = { at: now, v: elevenLabsCallOptions(getVoiceSettings().tts) }
+      elevenOptsCache = { at: now, v: elevenLabsCallOptions(callVoiceSettings().tts) }
     return elevenOptsCache.v
   }
   const elevenCall = new ElevenLabsCallTts({
@@ -540,7 +595,7 @@ export function registerIpc(): void {
         elevenOpts()
           ? elevenCall.synth(text, s)
           : synthesizeStream(
-              { text, settings: getVoiceSettings().tts },
+              { text, settings: callVoiceSettings().tts },
               { local: ttsLocalEngine(), signal: s }
             )
       ),
@@ -548,7 +603,7 @@ export function registerIpc(): void {
     // parte com os bytes completos — a ElevenLabs vai pelo REST, nunca no contexto WS da resposta
     synthPhrase: (text, signal) =>
       synthesizeBlock(
-        { text, settings: getVoiceSettings().tts },
+        { text, settings: callVoiceSettings().tts },
         { local: ttsLocalEngine(), signal }
       ),
     ttsFeed: () => (elevenOpts() ? elevenCall : null),
@@ -557,16 +612,20 @@ export function registerIpc(): void {
     emitUtteranceCancel: (id) => sendToWindows(VOICE_CALL_UTTERANCE_CANCEL_CHANNEL, { id }),
     emitTimeline: (event) => sendToWindows(VOICE_CALL_TIMELINE_CHANNEL, event),
     logEval: (event) => evalLogger.log(event),
-    clip: (cls, n) =>
-      // só o cache em dia com a definição atual (pool de preâmbulos/frases/voz) — clipe velho não toca
-      loadCurrentClipAudio(
+    clip: (cls, n) => {
+      // só o cache em dia com a definição atual (pool de preâmbulos/frases/voz) — clipe velho não
+      // toca; o cache é POR VOZ: a voz da persona/chat sem clipes gerados cai nas reservas de
+      // sempre (frase de ferramenta → síntese ao vivo; preâmbulo → não toca)
+      const v = callVoiceSettings()
+      return loadCurrentClipAudio(
         app.getPath('userData'),
-        getVoiceSettings().tts,
-        getVoiceSettings().voiceCallDefaults.fillers.pool,
+        v.tts,
+        v.voiceCallDefaults.fillers.pool,
         cls,
         n,
-        getVoiceSettings().voiceCallDefaults.toolPhrases.pool
-      ),
+        v.voiceCallDefaults.toolPhrases.pool
+      )
+    },
     // turno continuado/barge-in: para o turno e deixa no histórico só o que foi falado
     amendTurn: async (sessionId, amend) => {
       await runner.amendVoiceTurn(sessionId, amend)
@@ -583,21 +642,25 @@ export function registerIpc(): void {
     },
     // falhas de STT/TTS: fatal encerra a chamada com motivo legível (provedor pelo endpoint)
     classifyError: (e, source) => {
-      const v = getVoiceSettings()
+      const v = callVoiceSettings()
       const local = source === 'stt' ? v.stt.mode === 'local' : v.tts.backend === 'local'
       const onGpu = source === 'stt' ? v.stt.mode === 'gpu' : v.tts.backend === 'gpu'
       const base = source === 'stt' ? v.stt.api.baseUrl : v.tts.api.baseUrl
       return classifyVoiceError(e, source, onGpu ? 'GPU local' : voiceProviderLabel(base, local))
     },
-    onCallEnded: () => ttsRelay.abortAll(),
+    onCallEnded: () => {
+      ttsRelay.abortAll()
+      callVoice = null
+    },
     // sem motor local configurado, o veredito do fim de turno sai pela API (lento)
     slowSpeculation: () => {
-      const stt = getVoiceSettings().stt
+      const stt = callVoiceSettings().stt
       // GPU local: whisper em ~0,1 s — veredito rápido como o motor local
       return stt.mode !== 'local' && stt.mode !== 'gpu' && !stt.local
     },
-    settings: () => {
-      const v = getVoiceSettings()
+    // a voz efetiva do chat da chamada (persona/chat ou a deste dispositivo — `callVoice`)
+    settings: (chatId) => {
+      const v = callVoiceSettings(chatId)
       return { defaults: v.voiceCallDefaults, audioInput: v.audioInput, stt: v.stt, tts: v.tts }
     },
     onEvent: (cb) => onAgentEvent(cb),
@@ -608,7 +671,7 @@ export function registerIpc(): void {
     sessionMessages: (sessionId) => messagesRepo.path(sessionId),
     // preço de lista da voz (OpenRouter `/models`, já em cache pela tela de Áudio/início da chamada)
     ttsUnitPrice: () => {
-      const api = getVoiceSettings().tts.api
+      const api = callVoiceSettings().tts.api
       return api.providerId && api.model
         ? cachedVoiceUnitPrice('tts', api.providerId, api.model)
         : null
@@ -1147,15 +1210,28 @@ export function registerIpc(): void {
     [IPC.voice.settingsGet]: () => getVoiceSettingsView(),
     [IPC.voice.settingsSet]: (kind: VoiceSettingKind, value: unknown) => {
       const saved = setVoiceSetting(kind, value)
-      // modo GPU: nada mais escolhido → os processos do servidor saem (VRAM de volta)
-      if (kind === 'ttsSettings' || kind === 'sttSettings') void gpu.onSettingsChanged()
+      // modo GPU: nada mais escolhido → os processos do servidor saem (VRAM de volta) — menos com
+      // uma chamada em andamento na GPU (a voz da persona/chat pode usá-la mesmo sem a daqui)
+      const inCall = voiceCalls.state().active && gpu.selectedEngines(callVoiceSettings()).length
+      if ((kind === 'ttsSettings' || kind === 'sttSettings') && !inCall)
+        void gpu.onSettingsChanged()
       return saved
     },
-    [IPC.voice.transcribeStart]: async (language?: string) => {
+    [IPC.voice.transcribeStart]: async (language?: string, opts?: { voice?: unknown }) => {
       const owner = ipcSenderId // antes de qualquer await
-      const v = getVoiceSettings()
+      // transcrição POR CHAT (protocolo 1.9.0): a fala da chamada usa a voz decidida no início
+      // dela; o ditado do composer resolve a das camadas do chat (indisponível aqui → a daqui)
+      const inCall = voiceCalls.state().active && owner !== null && owner === voiceCallOwner
+      const use =
+        inCall && callVoice
+          ? { stt: callVoice.stt, language: callVoice.language }
+          : opts?.voice
+            ? voiceUse(await resolveVoiceFor(voiceLayersFrom(opts.voice)))
+            : { stt: null, language: null }
+      const v = getVoiceSettingsWith({ stt: use.stt })
       const lang =
-        typeof language === 'string' && language.trim() ? language : v.audioInput.language
+        use.language ||
+        (typeof language === 'string' && language.trim() ? language : v.audioInput.language)
       const gpuMode = v.stt.mode === 'gpu'
       const [models, gpuReady] = await Promise.all([
         listLocalModels(localModelsBaseDir()),
@@ -1300,11 +1376,17 @@ export function registerIpc(): void {
         { local: ttsLocalEngine() }
       )
     },
-    [IPC.voice.ttsTest]: (input?: { voice?: unknown; model?: unknown; text?: unknown }) => {
+    [IPC.voice.ttsTest]: (input?: {
+      voice?: unknown
+      model?: unknown
+      text?: unknown
+      tts?: unknown
+    }) => {
       // overrides só deste teste (▶ prévia de uma voz/modelo ainda não escolhidos no seletor)
       const clip = (v: unknown): string | null =>
         typeof v === 'string' && v.trim() ? v.trim().slice(0, 200) : null
-      const saved = getVoiceSettings().tts
+      // `tts` = a voz de uma persona/chat (prévias do editor da persona) em vez da deste dispositivo
+      const saved = getVoiceSettingsWith({ tts: normalizeVoiceTtsChoice(input?.tts) }).tts
       const voice = clip(input?.voice)
       const model = clip(input?.model)
       const settings =
@@ -1346,19 +1428,22 @@ export function registerIpc(): void {
       ),
     [IPC.voice.catalogPreview]: (input: { url: string }) =>
       fetchVoicePreview(typeof input?.url === 'string' ? input.url : ''),
-    [IPC.voice.ttsClipsGenerate]: async (): Promise<TtsClipsView> => {
+    // `input.tts` = a voz de uma persona/chat ("Gerar clipes desta voz" — só com o clique do
+    // usuário: nunca gerados sozinhos, uma API paga custa por clipe); ausente = a deste dispositivo
+    [IPC.voice.ttsClipsGenerate]: async (input?: { tts?: unknown }): Promise<TtsClipsView> => {
+      const v = getVoiceSettingsWith({ tts: normalizeVoiceTtsChoice(input?.tts) })
       const manifest = await generateClips({
         baseDir: app.getPath('userData'),
-        settings: getVoiceSettings().tts,
-        fillerPool: getVoiceSettings().voiceCallDefaults.fillers.pool,
-        toolPool: getVoiceSettings().voiceCallDefaults.toolPhrases.pool,
+        settings: v.tts,
+        fillerPool: v.voiceCallDefaults.fillers.pool,
+        toolPool: v.voiceCallDefaults.toolPhrases.pool,
         local: ttsLocalEngine(),
         onProgress: (e) => sendToWindows(VOICE_TTS_CLIPS_PROGRESS_CHANNEL, e)
       })
       return toClipsView(manifest)
     },
-    [IPC.voice.ttsClipsList]: async (): Promise<TtsClipsView | null> => {
-      const v = getVoiceSettings()
+    [IPC.voice.ttsClipsList]: async (input?: { tts?: unknown }): Promise<TtsClipsView | null> => {
+      const v = getVoiceSettingsWith({ tts: normalizeVoiceTtsChoice(input?.tts) })
       const m = await loadClips(app.getPath('userData'), clipVoiceId(v.tts))
       if (!m) return null
       // cache de uma definição antiga (frases/pool mudaram): "stale" → a UI pede para regerar; as
@@ -1391,13 +1476,37 @@ export function registerIpc(): void {
       const sessionId = input && typeof input.sessionId === 'string' ? input.sessionId.trim() : ''
       if (!sessionId) throw new Error('Sessão não informada (esperado { sessionId }).')
       const owner = ipcSenderId
+      // voz da chamada (protocolo 1.9.0): a da persona/chat quando disponível AQUI, senão a deste
+      // dispositivo — decidida agora e mantida até o fim da chamada; nenhuma das duas funciona →
+      // recusa com o motivo (a pré-checagem do renderer já esmaece o telefone)
+      const startChatId = sessionsRepo.get(sessionId)?.chatId ?? null
+      const res = startChatId ? await resolveVoiceFor(chatVoiceLayers(startChatId)) : null
+      const problems = res
+        ? [
+            !res.stt.available && `Transcrição: ${res.stt.reason ?? 'não configurada'}.`,
+            !res.tts.available && `Fala: ${res.tts.reason ?? 'não configurada'}.`
+          ].filter((x): x is string => !!x)
+        : []
+      if (problems.length)
+        throw new Error(`Chamada de voz indisponível neste dispositivo — ${problems.join(' ')}`)
+      const use = res ? voiceUse(res) : { tts: null, stt: null, language: null }
+      const effective = getVoiceSettingsWith(use)
       // modo GPU: os motores já estão carregados? (senão a chamada entra em "Preparando a GPU…")
-      const gpuEngines = gpu.selectedEngines()
+      const gpuEngines = gpu.selectedEngines(effective)
       const gpuWarm = gpuEngines.length ? await gpu.isWarm(gpuEngines).catch(() => false) : true
       // chamada órfã de um renderer que sumiu sem avisar (ex.: crash antes do hook): o mesmo dono
       // pedindo de novo reabre; outro dono ainda vivo segue recusado pelo manager
       if (voiceCalls.state().active && owner !== null && voiceCallOwner === owner) voiceCalls.stop()
-      let state = voiceCalls.start(sessionId)
+      const prevVoice = callVoice
+      callVoice = startChatId ? { chatId: startChatId, ...use } : null
+      elevenOptsCache = null
+      let state: ReturnType<typeof voiceCalls.start>
+      try {
+        state = voiceCalls.start(sessionId)
+      } catch (e) {
+        callVoice = prevVoice // outra chamada ativa (outro dono) segue com a voz dela
+        throw e
+      }
       voiceCallOwner = owner
       const gen = ++gpuCallGen
       if (!gpuWarm) {
@@ -1408,7 +1517,7 @@ export function registerIpc(): void {
         void prepareGpuForCall({
           engines: gpuEngines,
           isWarm: async () => false,
-          start: (ids, onPhase) => gpu.startServer([...ids], { onPhase }),
+          start: (ids, onPhase) => gpu.startServer([...ids], { onPhase, tts: effective.tts }),
           setPreparing: (text) => void voiceCalls.setPreparing(text),
           stillActive: () => {
             const st = voiceCalls.state()
@@ -1432,7 +1541,7 @@ export function registerIpc(): void {
         if (p) void listModels(p).catch(() => undefined)
       }
       // preço de lista da voz (custo ≈ no marcador de fim): a listagem de modelos de fala em cache
-      const ttsApi = getVoiceSettings().tts
+      const ttsApi = effective.tts
       if (ttsApi.backend === 'api' && ttsApi.api.providerId)
         void listVoiceCatalog(
           { capability: 'tts', providerId: ttsApi.api.providerId },
@@ -1448,6 +1557,8 @@ export function registerIpc(): void {
     },
     [IPC.voice.callGetState]: () => voiceCalls.state(),
     [IPC.voice.runtimeStatus]: () => voiceRuntimeStatus(),
+    // voz da persona/chat neste dispositivo (protocolo 1.9.0): camadas cruas → normalizadas aqui
+    [IPC.voice.resolve]: (input?: unknown) => resolveVoiceFor(voiceLayersFrom(input)),
     // ---- modo avançado (GPU local): URL/token do servidor nunca saem do main ----
     [IPC.voice.gpuStatus]: () => gpu.status(true),
     [IPC.voice.gpuInstallRuntime]: () => gpu.installRuntime(),

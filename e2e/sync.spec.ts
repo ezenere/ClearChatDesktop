@@ -1174,7 +1174,7 @@ async function main(): Promise<void> {
   )
 
   await step(
-    'áudio (protocolo 1.5.0): settings de voz, provedor ElevenLabs, voz do chat, ditado e marcadores da chamada de A chegam em B; o microfone fica local',
+    'áudio (protocolo 1.9.0): settings de voz ficam em cada dispositivo; provedor ElevenLabs, voz do chat (com fala/transcrição), ditado e marcadores da chamada de A chegam em B',
     async () => {
       const xi = (
         await api(A, 'providers.create', {
@@ -1184,6 +1184,8 @@ async function main(): Promise<void> {
           kind: 'elevenlabs'
         })
       ).id
+      // settings de voz de B ANTES (locais desde 1.9.0: o que A muda não chega)
+      const beforeB = await api<any>(B, 'voice.settings.get')
       const cur = await api<any>(A, 'voice.settings.get')
       await api(A, 'voice.settings.set', 'audioInput', {
         ...cur.audioInput,
@@ -1194,13 +1196,14 @@ async function main(): Promise<void> {
       await api(A, 'voice.settings.set', 'ttsSettings', {
         ...cur.ttsSettings,
         backend: 'api',
-        api: {
-          providerId: xi,
-          model: 'eleven_flash_v2_5',
-          voice: 'voz-do-pc',
-          // parâmetros do modelo remoto (preferência — sincroniza; os da GPU não)
-          params: { elevenlabs: { output_format: 'pcm_16000', stability: 0.4, speed: 1.1 } }
-        }
+        api: { providerId: xi, model: 'eleven_flash_v2_5', voice: 'voz-do-pc' }
+      })
+      // transcrição DESTE dispositivo (A): sem ela a chamada é recusada com o motivo (1.9.0 — nem a
+      // voz do chat nem a do dispositivo funcionam); o provedor falso é OpenAI-compatível (serve STT)
+      await api(A, 'voice.settings.set', 'sttSettings', {
+        ...cur.sttSettings,
+        mode: 'api',
+        api: { providerId, model: 'whisper-1' }
       })
       await api(A, 'voice.settings.set', 'voiceCallDefaults', {
         ...cur.voiceCallDefaults,
@@ -1223,7 +1226,17 @@ async function main(): Promise<void> {
           (m) => m.meta?.kind === 'voice-call'
         )
       await waitFor(async () => (await markersOf(A)).length >= 2, 10_000, 'marcadores em A')
-      // voz do chat (chamada desligada neste chat) — depois da chamada
+      // voz do chat (chamada desligada neste chat + a fala/transcrição escolhidas) — sincroniza
+      const tts = {
+        backend: 'api',
+        api: {
+          providerId: xi,
+          model: 'eleven_flash_v2_5',
+          voice: 'voz-do-chat',
+          // parâmetros do modelo remoto (preferência da voz — sincroniza; os da GPU não)
+          params: { elevenlabs: { output_format: 'pcm_16000', stability: 0.4, speed: 1.1 } }
+        }
+      }
       await api(A, 'chats.update', chat.id, {
         config: {
           voice: {
@@ -1231,37 +1244,33 @@ async function main(): Promise<void> {
             model: null,
             tools: null,
             voicePrompt: 'fale como no PC',
-            fillers: null
+            fillers: null,
+            tts,
+            stt: {
+              mode: 'local',
+              local: { engine: 'whisper.cpp', model: 'ggml-base' },
+              language: 'es-ES'
+            }
           }
         }
       })
       await settled(A)
 
-      const vB = await waitFor(
+      const voiceB = await waitFor(
         async () => {
-          const v = await api<any>(B, 'voice.settings.get')
-          return v.ttsSettings.api.providerId === xi && v.voiceCallDefaults.endCall === false && v
+          const v = (await api<any>(B, 'chats.get', chat.id))?.config?.voice
+          return v?.enabled === false && v?.tts?.api?.voice === 'voz-do-chat' && v
         },
-        15_000,
-        'B recebeu as settings de voz'
-      )
-      assert(vB.ttsSettings.backend === 'api' && vB.ttsSettings.api.voice === 'voz-do-pc', 'fala')
-      assert(
-        JSON.stringify(vB.ttsSettings.api.params) ===
-          JSON.stringify({
-            elevenlabs: { output_format: 'pcm_16000', stability: 0.4, speed: 1.1 }
-          }),
-        `parâmetros do modelo remoto em B: ${JSON.stringify(vB.ttsSettings.api.params)}`
-      )
-      assert(vB.audioInput.language === 'es-ES' && vB.audioInput.silenceStopMs === 3200, 'ditado')
-      assert(vB.audioInput.deviceId !== 'microfone-do-pc', 'o microfone de A não chega em B')
-      const provB = (await api<any[]>(B, 'providers.list')).find((p) => p.id === xi)
-      assert(provB?.kind === 'elevenlabs' && provB.apiKey === 'xi-fake-1', 'provedor de voz')
-      await waitFor(
-        async () => (await api<any>(B, 'chats.get', chat.id))?.config?.voice?.enabled === false,
         15_000,
         'B recebeu a voz do chat'
       )
+      assert(
+        JSON.stringify(voiceB.tts) === JSON.stringify(tts),
+        `fala do chat em B: ${JSON.stringify(voiceB.tts)}`
+      )
+      assert(voiceB.stt?.language === 'es-ES', 'transcrição do chat em B')
+      const provB = (await api<any[]>(B, 'providers.list')).find((p) => p.id === xi)
+      assert(provB?.kind === 'elevenlabs' && provB.apiKey === 'xi-fake-1', 'provedor de voz')
       await waitFor(async () => (await markersOf(B)).length >= 2, 15_000, 'marcadores em B')
       const msgsB = await api<any[]>(B, 'sessions.messages', chat.mainSessionId)
       const dict = msgsB.find((m) => textOf(m.message.content) === 'texto ditado no PC')
@@ -1272,17 +1281,23 @@ async function main(): Promise<void> {
           marks.some((m) => m.meta.voiceCall?.phase === 'end' && m.meta.voiceCall.usage),
         'início e fim (com custos)'
       )
+      // settings de voz: as de B continuam as dele (nada do PC chegou)
+      const vB = await api<any>(B, 'voice.settings.get')
+      assert(
+        JSON.stringify(vB) === JSON.stringify(beforeB),
+        `settings de voz de B intactas: ${JSON.stringify(vB)}`
+      )
 
-      // UI de B: Configurações → Áudio mostra o silêncio vindo do PC
+      // UI de B: Configurações → Áudio mostra o silêncio DE B (o do PC não chega)
       await B.page.keyboard.press('Control+,')
       await B.page.getByRole('dialog').getByRole('button', { name: 'Áudio', exact: true }).click()
       const silence = B.page.getByLabel('Silêncio que encerra a gravação (ms)')
-      await waitFor(
-        async () => (await silence.inputValue()) === '3200',
-        10_000,
-        'Áudio de B atualizado'
+      await silence.waitFor()
+      assert(
+        (await silence.inputValue()) === String(beforeB.audioInput.silenceStopMs),
+        'Áudio de B com o valor dele'
       )
-      await shot(B, '12-audio-sincronizado')
+      await shot(B, '12-audio-local-do-dispositivo')
       await B.page.keyboard.press('Escape')
       // chat em B: marcadores e selo de ditado; aba Voz do painel com a chamada desligada
       await openChatUi(B, 'Projeto compartilhado')

@@ -24,14 +24,17 @@ import { REMOTE_FS_LIMITS } from '../src/shared/remoteFs'
 import { SCHEMA } from '../src/main/dbSchema'
 import { ensureMemorySchema } from '../src/main/memory/schema'
 import { ensureSearchIndex } from '../src/main/searchIndex'
-import { ensureSyncSchema } from '../src/main/sync/schema'
+import { ensureSyncSchema, setTracking } from '../src/main/sync/schema'
 import {
   applyRemote,
   buildLocal,
+  DEVICE_VOICE_SETTING_IDS,
+  listLocalIds,
   merge3,
   rowMessage,
   sameJson,
   sameRecordPlain,
+  SETTINGS_BACKFILL,
   usesLocalTools
 } from '../src/main/sync/records'
 import { outdatedHosts, SyncEngine } from '../src/main/sync/engine'
@@ -327,7 +330,7 @@ test('1.5.0: voice do chat/persona sincroniza (ida e volta, com cwd local)', () 
   assert.equal(cfgB.voice, undefined)
 })
 
-test('legado: `interjections` recebido (chat/persona/voiceCallDefaults) é ignorado e nunca reenviado (§4.3.6)', () => {
+test('legado: `interjections` recebido (chat/persona) é ignorado e nunca reenviado (§4.3.6); voiceCallDefaults é local (1.9.0)', () => {
   const a = newDb()
   const legacyPolicy = {
     enabled: true,
@@ -371,6 +374,8 @@ test('legado: `interjections` recebido (chat/persona/voiceCallDefaults) é ignor
     fillers: { enabled: true, prompt: null, delayMs: 250, pool: null },
     endCall: false
   }
+  // `voiceCallDefaults` de um app ≤ 1.8.x: local do dispositivo desde 1.9.0 — o registro inteiro é
+  // ignorado (com ou sem o campo legado)
   applyRemote(a, 'setting', 'voiceCallDefaults', {
     sv: 1,
     value: { ...vcd, interjections: legacyPolicy }
@@ -382,7 +387,7 @@ test('legado: `interjections` recebido (chat/persona/voiceCallDefaults) é ignor
     )
   assert.deepEqual(stored('chats', chatId).voice, voice, 'chat: interjections ignorado')
   assert.deepEqual(stored('presets', 'pv').voice, voice, 'persona: interjections ignorado')
-  assert.deepEqual(getSetting(a, 'voiceCallDefaults'), vcd, 'global: interjections ignorado')
+  assert.equal(getSetting(a, 'voiceCallDefaults'), undefined, 'global: registro ignorado (1.9.0)')
   // nunca reenviado — nem quando o banco local ainda o guarda (dado de uma versão anterior)
   a.prepare('UPDATE chats SET config_json = ? WHERE id = ?').run(
     JSON.stringify({ ...stored('chats', chatId), voice: { ...voice, interjections: null } }),
@@ -391,14 +396,13 @@ test('legado: `interjections` recebido (chat/persona/voiceCallDefaults) é ignor
   putSetting(a, 'voiceCallDefaults', { ...vcd, interjections: legacyPolicy })
   for (const [type, id] of [
     ['chat', chatId],
-    ['preset', 'pv'],
-    ['setting', 'voiceCallDefaults']
+    ['preset', 'pv']
   ] as const) {
     const out = JSON.stringify(buildLocal(a, type, id)!.plain)
     assert.ok(!out.includes('interjections'), `${type}: o campo legado não sai (${out})`)
   }
   assert.deepEqual((buildLocal(a, 'chat', chatId)!.plain.config as any).voice, voice)
-  assert.deepEqual(buildLocal(a, 'setting', 'voiceCallDefaults')!.plain.value, vcd)
+  assert.equal(buildLocal(a, 'setting', 'voiceCallDefaults'), null, 'global: nunca sai (1.9.0)')
   // o normalizador também o descarta (a leitura da app nunca o vê)
   assert.ok(
     !(
@@ -408,167 +412,187 @@ test('legado: `interjections` recebido (chat/persona/voiceCallDefaults) é ignor
   )
 })
 
-test('1.5.0: settings de áudio — partes do dispositivo nunca saem e sobrevivem ao recebido', () => {
+test('1.9.0: settings de voz são locais do dispositivo — nunca saem; o registro de um app antigo é ignorado', () => {
   const a = newDb()
-  const b = newDb()
-  putSetting(a, 'audioInput', {
-    deviceId: 'mic-usb-de-A',
-    pttEnabled: true,
-    pttKey: 'Ctrl+Shift+Space',
-    silenceStopEnabled: true,
-    silenceStopMs: 3000,
-    language: 'en-US'
-  })
-  putSetting(a, 'sttSettings', {
-    mode: 'gpu',
-    api: { providerId: 'p1', model: 'whisper-large-v3-turbo', apiKey: 'sk-vazada', baseUrl: 'x' },
-    local: { engine: 'whisper.cpp', model: 'ggml-small', installed: true },
-    livePartials: false,
-    reusePartialFinal: true,
-    gpu: { engine: 'whisper-large-v3-turbo', params: { beam_size: 3 } }
-  })
-  putSetting(a, 'ttsSettings', {
-    backend: 'api',
-    api: { providerId: 'p2', model: 'eleven_flash_v2_5', voice: 'v1', elevenLabsWs: false },
-    local: { engine: 'kokoro', voice: 'pm_alex', installed: true },
-    gpu: { engine: 'xtts-v2', voice: 'user:minha-voz', params: { 'xtts-v2': { speed: 1.2 } } }
-  })
-  const vcd = {
-    enabled: true,
-    fillers: {
-      enabled: true,
-      prompt: null,
-      delayMs: 250,
-      pool: [{ text: 'Já vejo.', contexts: [] }]
+  const local: Record<string, unknown> = {
+    audioInput: {
+      deviceId: 'mic-usb-de-A',
+      activationDb: -50,
+      pttEnabled: true,
+      pttKey: 'Ctrl+Shift+Space',
+      silenceStopEnabled: true,
+      silenceStopMs: 3000,
+      language: 'en-US'
     },
-    turn: {
-      silenceStopMs: null,
-      adaptive: true,
-      speculativeAtMs: 250,
-      completeSilenceMs: 600,
-      statementSilenceMs: 1200,
-      unfinishedSilenceMs: 1500,
-      speculativeApi: false
+    sttSettings: {
+      mode: 'gpu',
+      api: { providerId: 'p1', model: 'whisper-large-v3-turbo' },
+      local: { engine: 'whisper.cpp', model: 'ggml-small', installed: true },
+      livePartials: false,
+      reusePartialFinal: true,
+      gpu: { engine: 'whisper-large-v3-turbo', params: { beam_size: 3 } }
     },
-    model: { providerId: 'p1', model: 'call/m', params: { max_tokens: 200 } },
-    basePromptEnabled: true,
-    basePrompt: 'curto',
-    endCall: false
+    ttsSettings: {
+      backend: 'api',
+      api: { providerId: 'p2', model: 'eleven_flash_v2_5', voice: 'v1', elevenLabsWs: false },
+      local: { engine: 'kokoro', voice: 'pm_alex', installed: true }
+    },
+    voiceCallDefaults: {
+      enabled: false,
+      model: { providerId: 'p1', model: 'call/m', params: { max_tokens: 200 } },
+      basePromptEnabled: true,
+      basePrompt: 'curto',
+      endCall: false
+    }
   }
-  putSetting(a, 'voiceCallDefaults', vcd)
-  const out = (id: string): any => buildLocal(a, 'setting', id)!.plain.value
-  assert.equal(out('audioInput').deviceId, undefined, 'microfone fica local')
-  assert.equal(out('audioInput').language, 'en-US')
-  const stt = out('sttSettings')
-  assert.equal(stt.mode, 'api', "modo 'gpu' não sai (sem online → padrão)")
-  assert.equal(stt.gpu, undefined)
-  assert.deepEqual(stt.api, { providerId: 'p1', model: 'whisper-large-v3-turbo' }, 'sem chave/url')
-  assert.deepEqual(stt.local, { engine: 'whisper.cpp', model: 'ggml-small' }, 'sem installed')
-  const tts = out('ttsSettings')
-  assert.equal(tts.backend, 'api')
-  assert.equal(tts.gpu, undefined)
-  assert.equal(tts.api.elevenLabsWs, false, 'opção da ElevenLabs sincroniza')
-  assert.deepEqual(out('voiceCallDefaults'), vcd, 'padrões da chamada sobem inteiros')
-  assert.doesNotMatch(JSON.stringify(stt) + JSON.stringify(tts), /sk-vazada/)
-  // modo gpu com valor online: vai o online (nunca 'gpu')
+  for (const [k, v] of Object.entries(local)) putSetting(a, k, v)
+  assert.deepEqual([...DEVICE_VOICE_SETTING_IDS].sort(), Object.keys(local).sort())
+  const listed = listLocalIds(a, 'setting')
+  for (const id of DEVICE_VOICE_SETTING_IDS) {
+    assert.equal(buildLocal(a, 'setting', id), null, `${id}: nunca vira registro`)
+    assert.ok(!listed.includes(id), `${id}: fora do envio do merge`)
+    assert.ok(!(SETTINGS_BACKFILL.ids as readonly string[]).includes(id), `${id}: fora da passada`)
+    // registro de um app ≤ 1.8.x: ignorado inteiro (o valor local fica; nada recarrega)
+    const r = applyRemote(a, 'setting', id, {
+      sv: 1,
+      value: { enabled: true, mode: 'api', backend: 'api', language: 'de-DE', deviceId: 'mic-X' }
+    })
+    assert.deepEqual(getSetting(a, id), local[id], `${id}: valor local intacto`)
+    assert.equal(r.scopes.size, 0, `${id}: nada mudou aqui`)
+    applyRemote(a, 'setting', id, { sv: 1, value: null })
+    assert.deepEqual(getSetting(a, id), local[id], `${id}: null recebido não apaga`)
+  }
+  // dispositivo sem as settings: o registro antigo também não as cria
+  const b = newDb()
+  applyRemote(b, 'setting', 'sttSettings', { sv: 1, value: { mode: 'api' } })
+  assert.equal(getSetting(b, 'sttSettings'), undefined)
+  // as preferências que sincronizam continuam (1.4.0)
+  putSetting(a, 'toolOutputSpillChars', 9000)
+  assert.equal(buildLocal(a, 'setting', 'toolOutputSpillChars')!.plain.value, 9000)
+  // rastreamento ligado: mudar uma setting de voz não marca nada; uma que sincroniza marca
   ensureSyncSchema(a)
-  a.prepare(
-    "INSERT INTO sync_records (type, id, scope, rev, seq, deleted, base) VALUES ('setting', 'sttSettings', NULL, 1, 1, 0, ?)"
-  ).run(JSON.stringify({ sv: 1, value: { mode: 'hybrid' } }))
-  assert.equal(out('sttSettings').mode, 'hybrid')
-
-  // B: GPU local + outro microfone + Kokoro com outro motor instalado
-  putSetting(b, 'audioInput', { deviceId: 'mic-de-B', language: 'pt-BR' })
-  putSetting(b, 'sttSettings', {
-    mode: 'gpu',
-    api: { providerId: null, model: 'x' },
-    local: { engine: 'vosk', model: 'small-pt', installed: true },
-    gpu: { engine: 'whisper-large-v3-turbo' }
-  })
-  putSetting(b, 'ttsSettings', {
-    backend: 'local',
-    api: { providerId: null, model: '', voice: null },
-    local: { engine: 'kokoro', voice: 'pf_dora', installed: true }
-  })
-  for (const id of ['audioInput', 'sttSettings', 'ttsSettings', 'voiceCallDefaults'])
-    applyRemote(b, 'setting', id, buildLocal(a, 'setting', id)!.plain)
-  assert.equal(getSetting(b, 'audioInput').deviceId, 'mic-de-B')
-  assert.equal(getSetting(b, 'audioInput').language, 'en-US')
-  const sb = getSetting(b, 'sttSettings')
-  assert.equal(sb.mode, 'gpu', 'B continua na GPU dele')
-  assert.deepEqual(sb.gpu, { engine: 'whisper-large-v3-turbo' }, 'bloco gpu de B intacto')
-  assert.equal(sb.api.providerId, 'p1')
-  assert.equal(sb.local.engine, 'whisper.cpp')
-  assert.equal(sb.local.installed, false, 'outro motor → não instalado em B')
-  assert.equal(sb.livePartials, false)
-  const tb = getSetting(b, 'ttsSettings')
-  assert.equal(tb.backend, 'api', 'escolha sem GPU sincroniza')
-  assert.equal(tb.gpu, undefined, 'bloco gpu de A não chega')
-  assert.equal(tb.local.voice, 'pm_alex')
-  assert.equal(tb.local.installed, true, 'mesmo motor → instalado de B mantido')
-  assert.deepEqual(getSetting(b, 'voiceCallDefaults'), vcd)
-  // 'gpu' recebido (escritor fora do contrato) nunca é aplicado; chave recebida é descartada
-  applyRemote(b, 'setting', 'ttsSettings', {
-    sv: 1,
-    value: { backend: 'gpu', api: { providerId: 'p2', model: 'm', voice: null, apiKey: 'sk' } }
-  })
-  assert.equal(getSetting(b, 'ttsSettings').backend, 'api')
-  assert.equal(getSetting(b, 'ttsSettings').api.apiKey, undefined)
-  // remover (null) mantém só as partes do dispositivo
-  applyRemote(b, 'setting', 'audioInput', { sv: 1, value: null })
-  assert.deepEqual(getSetting(b, 'audioInput'), { deviceId: 'mic-de-B' })
-  applyRemote(b, 'setting', 'sttSettings', { sv: 1, value: null })
-  assert.deepEqual(getSetting(b, 'sttSettings'), {
-    mode: 'gpu',
-    gpu: { engine: 'whisper-large-v3-turbo' }
-  })
-  assert.equal(buildLocal(b, 'setting', 'audioInput')!.plain.value, null)
+  setTracking(a, true)
+  a.prepare('DELETE FROM sync_dirty').run()
+  for (const id of DEVICE_VOICE_SETTING_IDS) putSetting(a, id, { mudou: id })
+  a.prepare("DELETE FROM settings WHERE key = 'audioInput'").run()
+  const dirtyIds = (): string[] =>
+    (a.prepare("SELECT id FROM sync_dirty WHERE type = 'setting'").all() as any[]).map((r) => r.id)
+  assert.deepEqual(dirtyIds(), [], 'settings de voz não marcam envio')
+  putSetting(a, 'toolOutputSpillChars', 12000)
+  assert.deepEqual(dirtyIds(), ['toolOutputSpillChars'])
 })
 
-test('1.5.0: parâmetros dos modelos remotos (api.params) sincronizam; os da GPU continuam locais', () => {
+test('1.9.0: voz da persona/chat (voice.tts/voice.stt) vai e volta; endereço/chave e parâmetros da GPU nunca saem nem entram', () => {
   const a = newDb()
   const b = newDb()
-  const ttsParams = {
-    elevenlabs: { output_format: 'pcm_44100', stability: 0.4, speed: 1.1, auto_mode: true },
-    openrouter: { speed: 1.15 }
-  }
-  const sttParams = { openai: { temperature: 0.2, prompt: 'ClearChat, OpenRouter' } }
-  putSetting(a, 'ttsSettings', {
+  const ttsApi = {
     backend: 'api',
-    api: { providerId: 'xi', model: 'eleven_flash_v2_5', voice: 'v1', params: ttsParams },
-    local: { engine: 'kokoro', voice: 'pf_dora', installed: true },
-    gpu: { engine: 'xtts-v2', voice: null, params: { 'xtts-v2': { speed: 1.3 } } }
-  })
-  putSetting(a, 'sttSettings', {
-    mode: 'api',
-    api: { providerId: 'groq', model: 'whisper-large-v3-turbo', params: sttParams },
-    local: null,
-    livePartials: true,
-    gpu: { engine: 'whisper-large-v3-turbo', params: { beam_size: 3 } }
-  })
-  const out = (id: string): any => buildLocal(a, 'setting', id)!.plain.value
-  assert.deepEqual(out('ttsSettings').api.params, ttsParams, 'params remotos sobem inteiros')
-  assert.equal(out('ttsSettings').gpu, undefined, 'parâmetros da GPU não sobem')
-  assert.deepEqual(out('sttSettings').api.params, sttParams)
-  assert.equal(out('sttSettings').gpu, undefined)
-  // B (GPU própria com parâmetros dela) recebe: params remotos de A + bloco gpu de B intacto
-  putSetting(b, 'ttsSettings', {
-    backend: 'gpu',
-    api: { providerId: null, model: '', voice: null },
-    local: null,
-    gpu: { engine: 'omnivoice', voice: 'cc0-faber', params: { omnivoice: { speed: 0.9 } } }
-  })
-  for (const id of ['ttsSettings', 'sttSettings'])
-    applyRemote(b, 'setting', id, buildLocal(a, 'setting', id)!.plain)
-  const tb = getSetting(b, 'ttsSettings')
-  assert.deepEqual(tb.api.params, ttsParams, 'params remotos chegam em B')
-  assert.equal(tb.backend, 'gpu', 'B continua na GPU dele')
-  assert.deepEqual(tb.gpu.params, { omnivoice: { speed: 0.9 } }, 'parâmetros da GPU de B intactos')
-  assert.deepEqual(getSetting(b, 'sttSettings').api.params, sttParams)
-  // e voltam pela normalização do app (nada é descartado no caminho)
-  const { normalizeTtsSettings, normalizeSttSettings } = voiceNormalizers
-  assert.deepEqual(normalizeTtsSettings(tb).api.params, ttsParams)
-  assert.deepEqual(normalizeSttSettings(getSetting(b, 'sttSettings')).api.params, sttParams)
+    api: {
+      providerId: 'xi',
+      model: 'eleven_flash_v2_5',
+      voice: 'rachel',
+      elevenLabsWs: false,
+      params: { elevenlabs: { output_format: 'pcm_44100', stability: 0.4, speed: 1.1 } }
+    }
+  }
+  const sttApi = {
+    mode: 'hybrid',
+    api: {
+      providerId: 'groq',
+      model: 'whisper-large-v3-turbo',
+      params: { openai: { temperature: 0.2, prompt: 'ClearChat' } }
+    },
+    local: { engine: 'whisper.cpp', model: 'ggml-base' },
+    language: 'en-US'
+  }
+  const ttsGpu = { backend: 'gpu', gpu: { engine: 'xtts-v2', voice: 'user:minha-voz' } }
+  const sttGpu = { mode: 'gpu', gpu: { engine: 'whisper-large-v3-turbo', model: null } }
+  const chatVoice = {
+    enabled: true,
+    model: null,
+    tools: null,
+    voicePrompt: null,
+    fillers: null,
+    tts: ttsApi,
+    stt: sttApi
+  }
+  const personaVoice = {
+    enabled: null,
+    model: null,
+    tools: null,
+    voicePrompt: 'oi',
+    fillers: null,
+    tts: ttsGpu,
+    stt: sttGpu
+  }
+  // no banco local (defensivo — o normalizador do app já não grava isso): campos de runtime do
+  // endpoint e as partes do dispositivo da GPU
+  const dirty = (v: any): any => {
+    const out = JSON.parse(JSON.stringify(v))
+    if (out.tts.api)
+      Object.assign(out.tts.api, {
+        apiKey: 'sk-vazada',
+        baseUrl: 'https://api.elevenlabs.io',
+        providerKind: 'elevenlabs',
+        extraBody: { x: 1 }
+      })
+    if (out.tts.gpu)
+      Object.assign(out.tts.gpu, { steps: 32, params: { 'xtts-v2': { speed: 1.2 } } })
+    if (out.stt.api) Object.assign(out.stt.api, { apiKey: 'sk-vazada', baseUrl: 'https://groq' })
+    if (out.stt.gpu) out.stt.gpu.params = { beam_size: 3 }
+    return out
+  }
+  const { chatId } = addChat(a, 'Narrador')
+  a.prepare('UPDATE chats SET config_json = ? WHERE id = ?').run(
+    JSON.stringify({ ...chatCfg(a, chatId), voice: dirty(chatVoice) }),
+    chatId
+  )
+  a.prepare(
+    'INSERT INTO presets (id, name, description, icon, config_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+  ).run(
+    'pv',
+    'Narradora',
+    '',
+    'mic',
+    JSON.stringify({ model: 'x', voice: dirty(personaVoice) }),
+    1,
+    2
+  )
+  addChat(b, 'Narrador', chatId)
+  for (const [type, id, expected] of [
+    ['chat', chatId, chatVoice],
+    ['preset', 'pv', personaVoice]
+  ] as const) {
+    const out = buildLocal(a, type, id)!
+    const sent = (out.plain.config as any).voice
+    assert.deepEqual(sent, expected, `${type}: voice.tts/stt saem limpos`)
+    assert.doesNotMatch(
+      JSON.stringify(out.plain),
+      /sk-vazada|baseUrl|providerKind|extraBody|steps|beam_size/
+    )
+    applyRemote(b, type, id, JSON.parse(JSON.stringify(out.plain)), { defaultCwd: () => '/p' })
+    const stored = type === 'chat' ? chatCfg(b, id).voice : presetCfg(b, id).voice
+    assert.deepEqual(stored, expected, `${type}: voice.tts/stt aplicados`)
+    // e voltam pelo normalizador do app sem perder nada
+    const n = voiceNormalizers.normalizeVoiceCallConfig(stored)
+    assert.deepEqual(n.tts, expected.tts)
+    assert.deepEqual(n.stt, expected.stt)
+  }
+  // escritor fora do contrato mandando chave/endereço dentro da escolha: descartados ao aplicar
+  const plain = buildLocal(a, 'chat', chatId)!.plain as any
+  plain.config.voice = dirty(chatVoice)
+  applyRemote(b, 'chat', chatId, plain, { defaultCwd: () => '/p' })
+  assert.deepEqual(chatCfg(b, chatId).voice, chatVoice, 'runtime recebido não entra')
+  // registro sem voice.tts (persona editada num app < 1.9.0 — o normalizador antigo descarta a
+  // chave): LWW por chave da config → a escolha some (documentado no protocolo §4.3.6)
+  const old = buildLocal(a, 'preset', 'pv')!.plain as any
+  const { tts: _t, stt: _s, ...rest } = old.config.voice
+  void _t
+  void _s
+  old.config.voice = rest
+  applyRemote(b, 'preset', 'pv', old)
+  assert.equal(presetCfg(b, 'pv').voice.tts, undefined)
+  assert.equal(presetCfg(b, 'pv').voice.voicePrompt, 'oi')
 })
 
 test('1.5.0: provedor ElevenLabs — kind vai e volta; o "openai" de app antigo é reparado', () => {
@@ -2683,7 +2707,39 @@ const onlinePlain = (d: Dev, email: string, type: string, id: string): any => {
   return c && !c.deleted ? d.eng.decryptChange(c) : null
 }
 
-test('1.5.0: settings de áudio, voice do chat/persona e provedor ElevenLabs vão e voltam entre dois dispositivos', async () => {
+/**
+ * Um app ≤ 1.8.x gravando um registro de setting de voz na conta (o servidor não filtra ids): push
+ * cru, cifrado com a chave da conta pelo motor de `d` (sem passar pelo `buildLocal` — que não os
+ * monta mais).
+ */
+async function oldAppPushSetting(d: Dev, email: string, id: string, value: unknown): Promise<void> {
+  const cur = srv
+    .records(srv.userIdOf(email)!)
+    .find((r: any) => r.type === 'setting' && r.id === id)
+  const baseRev = cur?.rev ?? 0
+  const rev = baseRev + 1
+  await d.eng.http.post('/api/v1/sync/push', {
+    push_id: randomUUID(),
+    items: [
+      {
+        type: 'setting',
+        id,
+        scope: null,
+        base_rev: baseRev,
+        rev,
+        deleted: false,
+        env: d.eng.encryptRecord('setting', id, null, rev, { sv: 1, value }),
+        blobs: []
+      }
+    ]
+  })
+}
+
+const VOICE_IDS = ['audioInput', 'sttSettings', 'ttsSettings', 'voiceCallDefaults']
+const onlineVoiceIds = (email: string): string[] =>
+  settingIdsOnline(email).filter((id) => VOICE_IDS.includes(id))
+
+test('1.9.0: entre dois dispositivos — settings de voz ficam em cada um; voice (com tts/stt) do chat/persona, provedor ElevenLabs e marcadores vão e voltam', async () => {
   const email = await newAccount()
   const A = device('A')
   const pid = addProvider(A.conn, { name: 'OR', apiKey: 'k' })
@@ -2693,42 +2749,65 @@ test('1.5.0: settings de áudio, voice do chat/persona e provedor ElevenLabs vã
     kind: 'elevenlabs',
     apiKey: 'xi-k'
   })
-  putSetting(A.conn, 'audioInput', { deviceId: 'mic-A', pttKey: 'F8', language: 'es-ES' })
-  putSetting(A.conn, 'sttSettings', {
-    mode: 'api',
-    api: { providerId: pid, model: 'whisper-large-v3-turbo' },
-    local: null,
-    livePartials: true,
-    reusePartialFinal: false
-  })
-  putSetting(A.conn, 'ttsSettings', {
-    backend: 'gpu',
-    api: { providerId: xi, model: 'eleven_flash_v2_5', voice: 'voz-1' },
-    local: { engine: 'kokoro', voice: 'pf_dora', installed: true },
-    gpu: { engine: 'omnivoice', voice: null, steps: 32 }
-  })
-  putSetting(A.conn, 'voiceCallDefaults', {
-    enabled: true,
-    model: { providerId: pid, model: 'call/m', params: {} },
-    endCall: false
-  })
+  const settingsA: Record<string, unknown> = {
+    audioInput: { deviceId: 'mic-A', pttKey: 'F8', language: 'es-ES' },
+    sttSettings: {
+      mode: 'api',
+      api: { providerId: pid, model: 'whisper-large-v3-turbo' },
+      local: null,
+      livePartials: true,
+      reusePartialFinal: false
+    },
+    ttsSettings: {
+      backend: 'gpu',
+      api: { providerId: xi, model: 'eleven_flash_v2_5', voice: 'voz-1' },
+      local: { engine: 'kokoro', voice: 'pf_dora', installed: true },
+      gpu: { engine: 'omnivoice', voice: null, steps: 32 }
+    },
+    voiceCallDefaults: {
+      enabled: true,
+      model: { providerId: pid, model: 'call/m', params: {} },
+      endCall: false
+    }
+  }
+  for (const [k, v] of Object.entries(settingsA)) putSetting(A.conn, k, v)
   const { chatId, sessionId } = addChat(A.conn, 'Chamada')
   const voice = {
     enabled: true,
     model: { providerId: pid, model: 'voz/m', params: { temperature: 0.2 } },
     tools: { enabledTools: ['web_search'], maxToolOutputChars: null },
     voicePrompt: null,
-    fillers: null
+    fillers: null,
+    tts: {
+      backend: 'api',
+      api: {
+        providerId: xi,
+        model: 'eleven_flash_v2_5',
+        voice: 'voz-rachel',
+        elevenLabsWs: false,
+        params: { elevenlabs: { stability: 0.5 } }
+      }
+    },
+    stt: {
+      mode: 'api',
+      api: { providerId: pid, model: 'whisper-large-v3-turbo' },
+      language: 'en-US'
+    }
   }
   A.conn
     .prepare('UPDATE chats SET config_json = ? WHERE id = ?')
     .run(JSON.stringify({ ...chatCfg(A.conn, chatId), voice }), chatId)
   const presetId = randomUUID()
+  const personaVoice = {
+    enabled: false,
+    tts: { backend: 'local', local: { engine: 'kokoro', voice: 'pm_alex' } },
+    stt: { mode: 'local', local: { engine: 'whisper.cpp', model: 'ggml-base' } }
+  }
   A.conn
     .prepare(
       'INSERT INTO presets (id, name, description, icon, config_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
     )
-    .run(presetId, 'Voz', '', 'mic', JSON.stringify({ voice: { enabled: false } }), 1, 1)
+    .run(presetId, 'Voz', '', 'mic', JSON.stringify({ voice: personaVoice }), 1, 1)
   // mensagens com meta de voz e marcadores de chamada (MessageMeta.voice / voiceCall)
   const insertMsg = (role: string, content: string, meta: unknown): string => {
     const id = addMessage(A.conn, sessionId, role, content)
@@ -2772,38 +2851,38 @@ test('1.5.0: settings de áudio, voice do chat/persona e provedor ElevenLabs vã
   const m4 = insertMsg('assistant', 'Chamada encerrada · 4 min 12 s · pelo agente', endMeta)
   await login(A, email)
   await settled(A)
-  // o que está online: sem partes do dispositivo, sem 'gpu', sem chave
-  const ttsOnline = onlinePlain(A, email, 'setting', 'ttsSettings').value
-  assert.equal(ttsOnline.backend, 'local', "modo 'gpu' de A não sobe (padrão sem online)")
-  assert.equal(ttsOnline.gpu, undefined)
-  assert.equal(ttsOnline.local.installed, undefined)
-  assert.equal(onlinePlain(A, email, 'setting', 'audioInput').value.deviceId, undefined)
+  // online: nenhuma setting de voz (o upload inicial não as leva); a voice do chat/persona sim
+  assert.deepEqual(onlineVoiceIds(email), [], 'settings de voz não sobem')
   assert.equal(onlinePlain(A, email, 'provider', xi).kind, 'elevenlabs')
   assert.deepEqual(onlinePlain(A, email, 'chat', chatId).config.voice, voice)
+  assert.deepEqual(onlinePlain(A, email, 'preset', presetId).config.voice, personaVoice)
   assert.equal(
     onlinePlain(A, email, 'message', m1).meta.kind,
     'memory-extraction',
     'marcador no fio'
   )
 
+  // B tem as settings DELE: nada chega, nada muda
   const B = device('B')
-  putSetting(B.conn, 'audioInput', { deviceId: 'mic-B', language: 'pt-BR' })
+  const settingsB: Record<string, unknown> = {
+    audioInput: { deviceId: 'mic-B', language: 'pt-BR' },
+    ttsSettings: {
+      backend: 'local',
+      api: { providerId: null, model: '', voice: null },
+      local: null
+    }
+  }
+  for (const [k, v] of Object.entries(settingsB)) putSetting(B.conn, k, v)
   await login(B, email)
   await settled(B)
   assert.equal(
     (B.conn.prepare('SELECT kind FROM providers WHERE id = ?').get(xi) as any).kind,
     'elevenlabs'
   )
-  assert.equal(getSetting(B.conn, 'audioInput').deviceId, 'mic-B', 'microfone de B intacto')
-  assert.equal(getSetting(B.conn, 'audioInput').pttKey, 'F8')
-  assert.equal(getSetting(B.conn, 'sttSettings').reusePartialFinal, false)
-  const ttsB = getSetting(B.conn, 'ttsSettings')
-  assert.equal(ttsB.backend, 'local')
-  assert.equal(ttsB.api.providerId, xi)
-  assert.equal(ttsB.local.installed, false, 'Kokoro não foi baixado em B')
-  assert.equal(getSetting(B.conn, 'voiceCallDefaults').endCall, false)
-  assert.deepEqual(chatCfg(B.conn, chatId).voice, voice)
-  assert.deepEqual(presetCfg(B.conn, presetId).voice, { enabled: false })
+  for (const id of VOICE_IDS)
+    assert.deepEqual(getSetting(B.conn, id), settingsB[id], `${id}: B fica com o dele`)
+  assert.deepEqual(chatCfg(B.conn, chatId).voice, voice, 'voice do chat (com tts/stt) chega')
+  assert.deepEqual(presetCfg(B.conn, presetId).voice, personaVoice, 'voice da persona chega')
   const meta = (id: string): any =>
     JSON.parse(
       (B.conn.prepare('SELECT meta_json FROM messages WHERE id = ?').get(id) as any).meta_json
@@ -2813,103 +2892,158 @@ test('1.5.0: settings de áudio, voice do chat/persona e provedor ElevenLabs vã
   assert.deepEqual(meta(m3), asstMeta, 'campos desconhecidos do meta preservados')
   assert.deepEqual(meta(m4), endMeta)
 
-  // edição em B → A (A continua na GPU dele; a escolha sem GPU e a API sincronizam)
+  // edições em B: as settings de voz não marcam nada; a voz da persona/chat vai para A
   A.events.length = 0
-  putSetting(B.conn, 'ttsSettings', {
-    ...ttsB,
-    backend: 'api',
-    api: { ...ttsB.api, voice: 'voz-2', elevenLabsWs: false }
-  })
-  putSetting(B.conn, 'audioInput', { ...getSetting(B.conn, 'audioInput'), silenceStopMs: 0 })
+  putSetting(B.conn, 'ttsSettings', { ...(settingsB.ttsSettings as object), backend: 'api' })
+  putSetting(B.conn, 'voiceCallDefaults', { enabled: false })
+  assert.deepEqual(
+    (B.conn.prepare("SELECT id FROM sync_dirty WHERE type = 'setting'").all() as any[]).map(
+      (r) => r.id
+    ),
+    [],
+    'settings de voz não marcam envio'
+  )
+  const voice2 = { ...voice, tts: { ...voice.tts, api: { ...voice.tts.api, voice: 'voz-2' } } }
   B.conn
     .prepare('UPDATE chats SET config_json = ? WHERE id = ?')
-    .run(
-      JSON.stringify({ ...chatCfg(B.conn, chatId), voice: { ...voice, enabled: false } }),
-      chatId
-    )
-  B.conn
-    .prepare('UPDATE presets SET config_json = ? WHERE id = ?')
-    .run(JSON.stringify({ voice: { enabled: true, voicePrompt: 'oi' } }), presetId)
-  await synced(B, A)
-  await waitFor(() => getSetting(A.conn, 'ttsSettings').api.voice === 'voz-2', 'A recebe a voz')
-  const ttsA = getSetting(A.conn, 'ttsSettings')
-  assert.equal(ttsA.backend, 'gpu', 'A continua na GPU')
-  assert.deepEqual(ttsA.gpu, { engine: 'omnivoice', voice: null, steps: 32 })
-  assert.equal(ttsA.local.installed, true, 'Kokoro de A continua instalado')
-  assert.equal(ttsA.api.elevenLabsWs, false)
-  assert.equal(onlinePlain(A, email, 'setting', 'ttsSettings').value.backend, 'api')
-  await waitFor(() => getSetting(A.conn, 'audioInput').silenceStopMs === 0, 'A recebe silêncio')
-  assert.equal(getSetting(A.conn, 'audioInput').deviceId, 'mic-A')
-  await waitFor(() => chatCfg(A.conn, chatId).voice?.enabled === false, 'A recebe voice do chat')
-  assert.equal(chatCfg(A.conn, chatId).cwd, '/home/teste/proj')
-  await waitFor(() => presetCfg(A.conn, presetId).voice?.voicePrompt === 'oi', 'A recebe a persona')
-  const scopes = A.events.flatMap((e: any) => (e.type === 'sync-data-changed' ? e.scopes : []))
-  assert.ok(scopes.includes('voice') && scopes.includes('settings'), String(scopes))
-  // A troca só o microfone: nada sobe (parte do dispositivo)
-  const before = srv.records(srv.userIdOf(email)!).find((r: any) => r.id === 'audioInput').rev
-  putSetting(A.conn, 'audioInput', { ...getSetting(A.conn, 'audioInput'), deviceId: 'mic-A2' })
-  await synced(A, B)
-  assert.equal(
-    srv.records(srv.userIdOf(email)!).find((r: any) => r.id === 'audioInput').rev,
-    before
+    .run(JSON.stringify({ ...chatCfg(B.conn, chatId), voice: voice2 }), chatId)
+  B.conn.prepare('UPDATE presets SET config_json = ? WHERE id = ?').run(
+    JSON.stringify({
+      voice: { ...personaVoice, stt: { ...personaVoice.stt, language: 'fr-FR' } }
+    }),
+    presetId
   )
-  // remover (value null) propaga; o microfone de cada um fica
-  B.conn.prepare("DELETE FROM settings WHERE key IN ('voiceCallDefaults', 'audioInput')").run()
+  // marca velha (de antes da atualização) de uma setting de voz: descartada sem envio
+  B.conn
+    .prepare(
+      "INSERT INTO sync_dirty (type, id, scope, mark) VALUES ('setting', 'ttsSettings', NULL, 3)"
+    )
+    .run()
   await synced(B, A)
-  await waitFor(() => getSetting(A.conn, 'voiceCallDefaults') === undefined, 'A remove os padrões')
   await waitFor(
-    () => sameJson(getSetting(A.conn, 'audioInput'), { deviceId: 'mic-A2' }),
-    'A fica só com o microfone'
+    () => chatCfg(A.conn, chatId).voice?.tts?.api?.voice === 'voz-2',
+    'A recebe a voz do chat'
+  )
+  assert.equal(chatCfg(A.conn, chatId).cwd, '/home/teste/proj')
+  await waitFor(
+    () => presetCfg(A.conn, presetId).voice?.stt?.language === 'fr-FR',
+    'A recebe a transcrição da persona'
+  )
+  assert.deepEqual(onlineVoiceIds(email), [], 'nada de settings de voz online')
+  assert.equal(
+    (B.conn.prepare("SELECT COUNT(*) AS n FROM sync_dirty WHERE type = 'setting'").get() as any).n,
+    0,
+    'marca velha descartada'
+  )
+  for (const id of VOICE_IDS)
+    assert.deepEqual(getSetting(A.conn, id), settingsA[id], `${id}: A intacto`)
+  const scopes = A.events.flatMap((e: any) => (e.type === 'sync-data-changed' ? e.scopes : []))
+  assert.ok(scopes.includes('presets') && scopes.includes('chats'), String(scopes))
+  assert.ok(!scopes.includes('voice'), `nenhuma setting de voz chegou (${scopes})`)
+  A.eng.destroy()
+  B.eng.destroy()
+})
+
+test('1.9.0: registros de settings de voz gravados por um app antigo ficam no servidor e são ignorados (pull e merge)', async () => {
+  const email = await newAccount()
+  const A = device('A')
+  putSetting(A.conn, 'audioInput', { deviceId: 'mic-A', language: 'pt-BR' })
+  await login(A, email)
+  await settled(A)
+  // um app ≤ 1.8.x na mesma conta grava os 4 ids (o servidor não filtra)
+  const old: Record<string, unknown> = {
+    audioInput: { pttEnabled: false, language: 'de-DE' },
+    sttSettings: { mode: 'api', api: { providerId: 'p-velho', model: 'w' } },
+    ttsSettings: { backend: 'api', api: { providerId: 'p-velho', model: 'm', voice: 'v' } },
+    voiceCallDefaults: { enabled: false }
+  }
+  for (const [id, v] of Object.entries(old)) await oldAppPushSetting(A, email, id, v)
+  assert.deepEqual(onlineVoiceIds(email), [...VOICE_IDS].sort())
+  const revs = (): Record<string, number> =>
+    Object.fromEntries(
+      srv
+        .records(srv.userIdOf(email)!)
+        .filter((r: any) => r.type === 'setting' && VOICE_IDS.includes(r.id))
+        .map((r: any) => [r.id, r.rev])
+    )
+  const before = revs()
+  // pull em A (o próprio dispositivo) e num B novo: ignorados, valores locais intactos
+  await synced(A)
+  assert.deepEqual(getSetting(A.conn, 'audioInput'), { deviceId: 'mic-A', language: 'pt-BR' })
+  for (const id of ['sttSettings', 'ttsSettings', 'voiceCallDefaults'])
+    assert.equal(getSetting(A.conn, id), undefined, `${id}: não criado em A`)
+  const B = device('B')
+  putSetting(B.conn, 'sttSettings', { mode: 'local' })
+  await login(B, email)
+  await settled(B)
+  assert.deepEqual(getSetting(B.conn, 'sttSettings'), { mode: 'local' })
+  for (const id of ['audioInput', 'ttsSettings', 'voiceCallDefaults'])
+    assert.equal(getSetting(B.conn, id), undefined, `${id}: não criado em B`)
+  // merge do primeiro login (as duas prioridades): também ignorados; nada é enviado nem apagado
+  for (const priority of ['online', 'local'] as const) {
+    const C = device(`C-${priority}`)
+    putSetting(C.conn, 'ttsSettings', {
+      backend: 'local',
+      local: { engine: 'kokoro', voice: 'pm_alex' }
+    })
+    addChat(C.conn, `Chat de C ${priority}`)
+    await C.eng.init()
+    await C.eng.requestCode(email)
+    await C.eng.verifyCode(email, srv.lastCode(email)!)
+    await C.eng.unlock(PASSWORD, true)
+    assert.equal(C.eng.phase(), 'merge')
+    await C.eng.resolveMerge(priority)
+    await settled(C)
+    assert.deepEqual(getSetting(C.conn, 'ttsSettings'), {
+      backend: 'local',
+      local: { engine: 'kokoro', voice: 'pm_alex' }
+    })
+    assert.equal(getSetting(C.conn, 'audioInput'), undefined)
+    C.eng.destroy()
+  }
+  await synced(A, B)
+  assert.deepEqual(
+    revs(),
+    before,
+    'registros antigos ficam como estão (nem regravados nem apagados)'
   )
   A.eng.destroy()
   B.eng.destroy()
 })
 
-test('1.5.0: dispositivo que já sincronizava envia as settings de áudio e a voice local uma vez (o online vence)', async () => {
+test('1.9.0: dispositivo que já sincronizava: a passada única envia a voice local, nunca as settings de voz', async () => {
   const email = await newAccount()
   const A = device('A')
   const { chatId } = addChat(A.conn, 'Antigo')
   await login(A, email)
   await settled(A)
-  const B = device('B')
-  await login(B, email)
-  await settled(B)
-  // simula o app < 1.5.0: settings de áudio e voice gravadas sem ir ao servidor
-  const legacy = (d: Dev, lang: string, voiceOn: boolean): void => {
-    d.eng.stop()
-    d.conn.prepare("DELETE FROM sync_flags WHERE k = 'on'").run()
-    putSetting(d.conn, 'audioInput', { deviceId: `mic-${d.name}`, language: lang })
-    putSetting(d.conn, 'voiceCallDefaults', { enabled: voiceOn })
-    d.conn
-      .prepare('UPDATE chats SET config_json = ? WHERE id = ?')
-      .run(JSON.stringify({ ...chatCfg(d.conn, chatId), voice: { enabled: voiceOn } }), chatId)
-    d.conn.prepare("UPDATE sync_state SET value = '1.4.0' WHERE key = 'settings_backfill'").run()
-    d.conn.prepare('DELETE FROM sync_dirty').run()
-  }
-  legacy(A, 'fr-FR', false)
-  legacy(B, 'de-DE', true)
+  // simula o app < 1.5.0: settings de áudio e voice gravadas sem ir ao servidor, passada pendente
+  A.eng.stop()
+  A.conn.prepare("DELETE FROM sync_flags WHERE k = 'on'").run()
+  putSetting(A.conn, 'audioInput', { deviceId: 'mic-A', language: 'fr-FR' })
+  putSetting(A.conn, 'voiceCallDefaults', { enabled: false })
+  putSetting(A.conn, 'toolOutputSpillChars', 7777)
+  A.conn
+    .prepare('UPDATE chats SET config_json = ? WHERE id = ?')
+    .run(JSON.stringify({ ...chatCfg(A.conn, chatId), voice: { enabled: false } }), chatId)
+  A.conn.prepare("UPDATE sync_state SET value = '1.4.0' WHERE key = 'settings_backfill'").run()
+  A.conn.prepare('DELETE FROM sync_dirty').run()
   A.eng.start()
   await settled(A)
   await A.eng.syncNow()
   await settled(A)
-  assert.ok(settingIdsOnline(email).includes('audioInput'), 'A enviou depois do pull')
+  assert.ok(settingIdsOnline(email).includes('toolOutputSpillChars'), 'preferência de 1.4.0 vai')
+  assert.deepEqual(onlineVoiceIds(email), [], 'settings de voz não vão')
   assert.deepEqual(onlinePlain(A, email, 'chat', chatId).config.voice, { enabled: false })
-  B.eng.start()
-  await synced(B, A)
-  assert.equal(getSetting(B.conn, 'audioInput').language, 'fr-FR', 'o de A (online) vence')
-  assert.equal(getSetting(B.conn, 'audioInput').deviceId, 'mic-B')
-  assert.equal(getSetting(B.conn, 'voiceCallDefaults').enabled, false)
-  assert.deepEqual(chatCfg(B.conn, chatId).voice, { enabled: false })
   assert.equal(
-    (B.conn.prepare("SELECT value FROM sync_state WHERE key = 'settings_backfill'").get() as any)
+    (A.conn.prepare("SELECT value FROM sync_state WHERE key = 'settings_backfill'").get() as any)
       .value,
-    '1.5.0'
+    SETTINGS_BACKFILL.version
   )
   A.eng.destroy()
-  B.eng.destroy()
 })
 
-test('1.5.0: merge do primeiro login remapeia o provedor da transcrição, da fala e do modelo da chamada', async () => {
+test('1.9.0: merge do primeiro login remapeia o provedor da voz da persona/chat (tts/stt), do modelo da chamada e das settings locais', async () => {
   const email = await newAccount()
   const A = device('A')
   const pidA = addProvider(A.conn, { name: 'OpenRouter', apiKey: 'k-a' })
@@ -2929,6 +3063,7 @@ test('1.5.0: merge do primeiro login remapeia o provedor da transcrição, da fa
     kind: 'elevenlabs',
     apiKey: 'xi-c'
   })
+  // settings locais de C (não sincronizam, mas apontam para os provedores daqui)
   putSetting(C.conn, 'sttSettings', { mode: 'api', api: { providerId: pidC, model: 'w' } })
   putSetting(C.conn, 'ttsSettings', {
     backend: 'api',
@@ -2937,13 +3072,22 @@ test('1.5.0: merge do primeiro login remapeia o provedor da transcrição, da fa
   putSetting(C.conn, 'voiceCallDefaults', {
     model: { providerId: pidC, model: 'call', params: {} }
   })
+  const tts = (p: string): unknown => ({
+    backend: 'api',
+    api: { providerId: p, model: 'eleven_flash_v2_5', voice: 'v' }
+  })
+  const stt = (p: string): unknown => ({ mode: 'api', api: { providerId: p, model: 'w' } })
   const { chatId } = addChat(C.conn, 'Chat de C')
   C.conn.prepare('UPDATE chats SET config_json = ? WHERE id = ?').run(
     JSON.stringify({
       providerId: pidC,
       model: 'x',
       cwd: '/c',
-      voice: { model: { providerId: pidC, model: 'voz', params: {} } }
+      voice: {
+        model: { providerId: pidC, model: 'voz', params: {} },
+        tts: tts(xiC),
+        stt: stt(pidC)
+      }
     }),
     chatId
   )
@@ -2957,7 +3101,13 @@ test('1.5.0: merge do primeiro login remapeia o provedor da transcrição, da fa
       'Voz de C',
       '',
       'mic',
-      JSON.stringify({ voice: { model: { providerId: pidC, model: 'p', params: {} } } }),
+      JSON.stringify({
+        voice: {
+          model: { providerId: pidC, model: 'p', params: {} },
+          tts: tts(xiC),
+          stt: stt(pidC)
+        }
+      }),
       1,
       1
     )
@@ -2971,30 +3121,43 @@ test('1.5.0: merge do primeiro login remapeia o provedor da transcrição, da fa
   assert.equal(getSetting(C.conn, 'sttSettings').api.providerId, pidA)
   assert.equal(getSetting(C.conn, 'ttsSettings').api.providerId, xiA)
   assert.equal(getSetting(C.conn, 'voiceCallDefaults').model.providerId, pidA)
-  assert.equal(chatCfg(C.conn, chatId).voice.model.providerId, pidA)
-  assert.equal(presetCfg(C.conn, presetId).voice.model.providerId, pidA)
+  for (const v of [chatCfg(C.conn, chatId).voice, presetCfg(C.conn, presetId).voice]) {
+    assert.equal(v.model.providerId, pidA)
+    assert.equal(v.tts.api.providerId, xiA, 'voice.tts remapeado')
+    assert.equal(v.stt.api.providerId, pidA, 'voice.stt remapeado')
+  }
   await waitFor(
-    () => getSetting(A.conn, 'ttsSettings')?.api?.providerId === xiA,
-    'A recebe a fala com o id que existe lá'
+    () => chatCfg(A.conn, chatId)?.voice?.tts?.api?.providerId === xiA,
+    'A recebe a voz do chat com o id que existe lá'
   )
-  assert.equal(getSetting(A.conn, 'sttSettings').api.providerId, pidA)
-  await waitFor(() => chatCfg(A.conn, chatId)?.voice?.model?.providerId === pidA, 'A recebe o chat')
+  assert.equal(chatCfg(A.conn, chatId).voice.stt.api.providerId, pidA)
+  await waitFor(
+    () => presetCfg(A.conn, presetId)?.voice?.tts?.api?.providerId === xiA,
+    'A recebe a persona'
+  )
+  assert.equal(getSetting(A.conn, 'ttsSettings'), undefined, 'settings de C não chegam em A')
+  assert.deepEqual(onlineVoiceIds(email), [])
   A.eng.destroy()
   C.eng.destroy()
 })
 
-test('1.5.0: cliente antigo — id de setting e campos que ele não conhece não quebram nada', () => {
-  // leitor 1.5.0 recebendo coisas de um escritor mais novo: ignora o id desconhecido e preserva campos
+test('cliente antigo — id de setting e campos que ele não conhece não quebram nada', () => {
+  // leitor 1.9.0 recebendo coisas de um escritor mais novo: ignora o id desconhecido e preserva campos
   const a = newDb()
   const r = applyRemote(a, 'setting', 'settingDoFuturo', { sv: 1, value: { x: 1 } })
   assert.equal(getSetting(a, 'settingDoFuturo'), undefined, 'id desconhecido não vira setting')
   assert.ok(r.scopes.has('settings'))
-  applyRemote(a, 'setting', 'voiceCallDefaults', {
+  applyRemote(a, 'setting', 'autoTitle', {
     sv: 1,
-    value: { enabled: true, campoNovo: { y: 2 } }
+    value: { providerId: null, model: null, campoNovo: { y: 2 } }
   })
-  assert.deepEqual(getSetting(a, 'voiceCallDefaults'), { enabled: true, campoNovo: { y: 2 } })
-  // leitor < 1.5.0 (simulado com a regra dele: só os ids que conhece) ignora os ids de áudio
+  assert.deepEqual(getSetting(a, 'autoTitle'), {
+    providerId: null,
+    model: null,
+    campoNovo: { y: 2 }
+  })
+  // leitor < 1.5.0 (simulado com a regra dele: só os ids que conhece) ignorava os ids de áudio;
+  // desde 1.9.0 ninguém mais os envia
   const OLD_IDS = [
     'defaultModel',
     'defaultSystemPrompt',
@@ -3008,26 +3171,29 @@ test('1.5.0: cliente antigo — id de setting e campos que ele não conhece não
     'autoTitle',
     'toolOutputSpillChars'
   ]
-  for (const id of ['audioInput', 'sttSettings', 'ttsSettings', 'voiceCallDefaults'])
+  for (const id of DEVICE_VOICE_SETTING_IDS)
     assert.ok(!OLD_IDS.includes(id), `${id} é novo para clientes < 1.5.0`)
   // merge por campo de um cliente antigo (não conhece voice, só mudou o título): voice fica
   const server = {
     sv: 1,
     title: 'T',
-    config: { model: 'm', voice: { enabled: false } },
+    config: { model: 'm', voice: { enabled: false, tts: { backend: 'local' } } },
     updatedAt: 2
   }
   const oldBase = {
     sv: 1,
     title: 'T',
-    config: { model: 'm', voice: { enabled: false } },
+    config: { model: 'm', voice: { enabled: false, tts: { backend: 'local' } } },
     updatedAt: 1
   }
   const oldLocal = {
     sv: 1,
     title: 'T2',
-    config: { model: 'm', voice: { enabled: false } },
+    config: { model: 'm', voice: { enabled: false, tts: { backend: 'local' } } },
     updatedAt: 3
   }
-  assert.deepEqual((merge3(server, oldBase, oldLocal).config as any).voice, { enabled: false })
+  assert.deepEqual((merge3(server, oldBase, oldLocal).config as any).voice, {
+    enabled: false,
+    tts: { backend: 'local' }
+  })
 })

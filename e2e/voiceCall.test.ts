@@ -247,6 +247,61 @@ test('splitSentences: decimais, listas numeradas e abreviações não cortam', (
   ])
 })
 
+test('splitSentences: mês/dia abreviado só em contexto de data — "o mar." é palavra e corta', () => {
+  const cut = (t: string): string[] => splitSentences(t, { final: true }).sentences
+  // palavras comuns que também são abreviações de mês/dia: cortam
+  assert.deepEqual(cut('Fomos ao mar. Depois voltamos.'), ['Fomos ao mar.', 'Depois voltamos.'])
+  assert.deepEqual(cut('Você precisa ter. Depois conversamos.'), [
+    'Você precisa ter.',
+    'Depois conversamos.'
+  ])
+  assert.deepEqual(cut('Comprei um set. Ficou ótimo.'), ['Comprei um set.', 'Ficou ótimo.'])
+  assert.deepEqual(cut('Ele saiu, ficou de out. Voltou depois.'), [
+    'Ele saiu, ficou de out.',
+    'Voltou depois.'
+  ])
+  assert.deepEqual(cut('Ele tem um dom. Usa bem.'), ['Ele tem um dom.', 'Usa bem.'])
+  // contexto de data: não corta
+  assert.deepEqual(cut('A reunião é em 15 mar. 2026 às 10h. Até lá.'), [
+    'A reunião é em 15 mar. 2026 às 10h.',
+    'Até lá.'
+  ])
+  assert.deepEqual(cut('Vence em mar. de 2026. Ok.'), ['Vence em mar. de 2026.', 'Ok.'])
+  assert.deepEqual(cut('Desde 3 de nov. 2025 está assim. Certo.'), [
+    'Desde 3 de nov. 2025 está assim.',
+    'Certo.'
+  ])
+  assert.deepEqual(cut('Pago em mar./2026 sem juros. Pronto.'), [
+    'Pago em mar./2026 sem juros.',
+    'Pronto.'
+  ])
+  assert.deepEqual(cut('Atendemos de seg. a sex. das 9h às 18h. Ligue.'), [
+    'Atendemos de seg. a sex. das 9h às 18h.',
+    'Ligue.'
+  ])
+  assert.deepEqual(cut('Entre set. e out. de 2025 choveu. Fim.'), [
+    'Entre set. e out. de 2025 choveu.',
+    'Fim.'
+  ])
+  // streaming: sem o texto seguinte ainda, "mar." espera; com ele, decide
+  assert.deepEqual(splitSentences('Fomos ao mar. '), { sentences: [], rest: 'Fomos ao mar. ' })
+  assert.deepEqual(splitSentences('Fomos ao mar. Depois'), {
+    sentences: ['Fomos ao mar.'],
+    rest: 'Depois'
+  })
+  assert.deepEqual(splitSentences('Vence em 15 mar. '), {
+    sentences: [],
+    rest: 'Vence em 15 mar. '
+  })
+  // fim da resposta: corta mesmo sem o seguinte
+  assert.deepEqual(cut('Fomos ao mar.'), ['Fomos ao mar.'])
+  // as abreviações de sempre continuam
+  assert.deepEqual(cut('Veja o Dr. Silva, p.ex. amanhã. Etc.'), [
+    'Veja o Dr. Silva, p.ex. amanhã.',
+    'Etc.'
+  ])
+})
+
 test('splitSentences: ordinais (2.º/N.º), reticências e marcas com fecho cortam certo', () => {
   assert.deepEqual(splitSentences('O 2.º andar. N.º 25.', { final: true }).sentences, [
     'O 2.º andar.',

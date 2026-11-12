@@ -204,8 +204,13 @@ export interface VoiceCallDeps {
   classifyError?(e: unknown, source: VoiceFailureSource): VoiceFailure | null
   /** A chamada terminou (por qualquer motivo): o IPC derruba os streams de TTS em curso. */
   onCallEnded?(): void
-  /** Settings de voz completas (lidas a cada uso — a tela de Configurações pode mudá-las). */
-  settings(): {
+  /**
+   * Settings de voz completas (lidas a cada uso — a tela de Configurações pode mudá-las). Com
+   * `chatId` (a chamada sempre passa o do chat dela): a fala/transcrição EFETIVAS daquele chat — a
+   * voz da persona/chat quando disponível neste dispositivo, senão a daqui (protocolo 1.9.0,
+   * `resolveTtsVoice`/`resolveSttVoice` em `@shared/voice`).
+   */
+  settings(chatId?: string | null): {
     defaults: VoiceCallDefaults
     audioInput: AudioInputSettings
     stt: SttSettings
@@ -447,7 +452,7 @@ export class VoiceCallManager {
     const info = this.#deps.sessionInfo(sessionId)
     if (!info) throw new Error('Sessão não encontrada.')
     if (info.depth > 0) throw new Error('A chamada de voz é só em sessões principais.')
-    const { defaults, audioInput } = this.#deps.settings()
+    const { defaults, audioInput } = this.#deps.settings(info.chatId)
     // resolve com o chat da sessão (this.#chatId ainda não está setado aqui)
     const resolved = this.#resolvedFor(info.chatId)
     if (!resolved.enabled) throw new Error('Chamada de voz desativada para este chat.')
@@ -812,7 +817,7 @@ export class VoiceCallManager {
 
   /** A voz da chamada (settings de fala atuais) interpreta tags de voz? */
   #tagsSupported(): boolean {
-    return safeCall(() => ttsSupportsAudioTags(this.#deps.settings().tts), false)
+    return safeCall(() => ttsSupportsAudioTags(this.#deps.settings(this.#chatId).tts), false)
   }
 
   /**
@@ -831,7 +836,7 @@ export class VoiceCallManager {
   #resolvedFor(chatId: string | null): ResolvedVoiceCall {
     const cfg = chatId ? this.#deps.chatConfig(chatId) : null
     const persona = chatId ? (this.#deps.personaVoice?.(chatId) ?? null) : null
-    return resolveVoiceCallConfig(cfg?.voice ?? null, this.#deps.settings().defaults, persona)
+    return resolveVoiceCallConfig(cfg?.voice ?? null, this.#deps.settings(chatId).defaults, persona)
   }
 
   // ---------------- turno continuado / barge-in (histórico só com o ouvido) ----------------
@@ -1997,7 +2002,7 @@ export class VoiceCallManager {
   /** Começa a medição e grava o marcador de início. */
   #beginMeter(sessionId: string): void {
     this.#flushPendingEnd() // marcador de fim de uma chamada anterior ainda adiado: grava antes
-    const { stt, tts } = this.#deps.settings()
+    const { stt, tts } = this.#deps.settings(this.#chatId)
     const callId = this.#deps.newCallId?.() ?? crypto.randomUUID()
     const startedAt = this.#now()
     const sttModel =
