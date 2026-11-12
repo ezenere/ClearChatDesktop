@@ -15,6 +15,7 @@ import type { VoiceCallTimelineEvent } from '@shared/ipc'
 import {
   DEFAULT_AUDIO_INPUT,
   DEFAULT_DELAY_PHRASES,
+  DEFAULT_FILLER_DELAY_MS,
   DEFAULT_STT_SETTINGS,
   DEFAULT_TOOL_PHRASE_POOL,
   DEFAULT_TOOL_PHRASES,
@@ -408,7 +409,7 @@ const clipText = (u: string): string => {
   return POOL[n - 1]?.text ?? '?'
 }
 
-/** Fala → turno (síncrono: o preâmbulo usa um timer real e ainda não saiu). */
+/** Fala → turno (síncrono: o preâmbulo usa o timer do relógio falso e ainda não saiu). */
 function userTurn(h: Harness, text = LONG_Q): void {
   h.m.speechBegin()
   h.m.speechEnd()
@@ -465,10 +466,11 @@ async function answer(h: Harness, text: string, done = true): Promise<void> {
 const toolDecisions = (h: Harness): VoiceCallTimelineEvent[] =>
   h.timeline.filter((e) => e.kind === 'decision' && e.class === 'TOOL')
 
-/** Espera (tempo real) o preâmbulo sair — timer real de 0 ms. */
-async function waitFiller(h: Harness): Promise<void> {
+/** Espera o preâmbulo sair (espera configurada no harness; timers do relógio falso). */
+async function waitFiller(h: Harness, ms = 0): Promise<void> {
+  if (ms) await h.clock.advance(ms)
   for (let i = 0; i < 50 && !h.emitted.some((u) => u.kind === 'filler'); i++)
-    await new Promise((r) => setTimeout(r, 2))
+    await h.clock.advance(0)
   assert.ok(
     h.emitted.some((u) => u.kind === 'filler'),
     'preâmbulo tocou'
@@ -536,6 +538,68 @@ test('anunciada: o assistente falou uma frase antes da tool → pulada (motivo n
   h.m.stop()
 })
 
+// ---------------- preâmbulo só quando a resposta demora (padrão 2,5 s — 2026-11-12) ----------------
+
+const fillersOf = (h: Harness): VoiceCallUtterance[] => h.emitted.filter((u) => u.kind === 'filler')
+
+test('preâmbulo (espera padrão 2,5 s): resposta em 1,2 s → nenhum preâmbulo', async () => {
+  assert.equal(DEFAULT_FILLER_DELAY_MS, 2500)
+  const h = harness({ fillerDelayMs: DEFAULT_FILLER_DELAY_MS })
+  userTurn(h)
+  await h.clock.advance(1200)
+  await answer(h, 'Resposta rápida.')
+  await h.clock.advance(5000)
+  assert.equal(fillersOf(h).length, 0, 'resposta rápida dispensa o preâmbulo')
+  assert.equal(h.emitted[0]?.kind, 'sentence')
+  const d = h.timeline.filter((e) => e.kind === 'decision' && e.class === 'FILLER')
+  assert.deepEqual(
+    d.map((e) => e.reason),
+    ['fast-answer']
+  )
+  h.m.stop()
+})
+
+test('preâmbulo: resposta em 4 s → UM preâmbulo aos 2,5 s (antes da 1ª frase)', async () => {
+  const h = harness({ fillerDelayMs: DEFAULT_FILLER_DELAY_MS })
+  userTurn(h)
+  const t0 = h.clock.now
+  await h.clock.advance(2499)
+  assert.equal(fillersOf(h).length, 0, 'antes da espera: nada')
+  await h.clock.advance(1)
+  assert.equal(fillersOf(h).length, 1, 'aos 2,5 s: o preâmbulo')
+  assert.equal(h.emittedAt.get(fillersOf(h)[0].id)! - t0, 2500)
+  await h.clock.advance(1500)
+  await answer(h, 'Demorei, mas cheguei.')
+  await h.clock.advance(5000)
+  assert.equal(fillersOf(h).length, 1, 'no máximo 1 por turno')
+  assert.equal(h.emitted.at(-1)?.kind, 'sentence', 'a resposta vem depois dele')
+  h.m.stop()
+})
+
+test('preâmbulo: tool aos 1 s → só a frase de ferramenta (nenhum preâmbulo, nem depois de 2,5 s)', async () => {
+  const h = harness({ fillerDelayMs: DEFAULT_FILLER_DELAY_MS })
+  userTurn(h)
+  await h.clock.advance(1000)
+  callTools(h, ['web_search'])
+  await flush()
+  assert.equal(h.tools().length, 1, 'a frase de ferramenta no lugar do preâmbulo')
+  await h.clock.advance(10_000)
+  assert.equal(fillersOf(h).length, 0, 'sem preâmbulo neste turno')
+  // frases de ferramenta desligadas: a tool NÃO antecipa o preâmbulo — ele espera os 2,5 s
+  const g = harness({ fillerDelayMs: DEFAULT_FILLER_DELAY_MS, toolPhrases: { enabled: false } })
+  userTurn(g)
+  const t0 = g.clock.now
+  await g.clock.advance(1000)
+  callTools(g, ['web_search'])
+  await flush()
+  assert.equal(fillersOf(g).length, 0, 'tool rodando não dispara o preâmbulo na hora')
+  await g.clock.advance(1500)
+  assert.equal(fillersOf(g).length, 1, 'resposta lenta: o preâmbulo aos 2,5 s')
+  assert.equal(g.emittedAt.get(fillersOf(g)[0].id)! - t0, 2500)
+  h.m.stop()
+  g.m.stop()
+})
+
 test('desligada (global ou persona/chat ★): nada toca; o preâmbulo segue normal', async () => {
   const h = harness({ toolPhrases: { enabled: false } })
   userTurn(h)
@@ -553,7 +617,7 @@ test('preâmbulo ainda não tocou: a frase de ferramenta fica NO LUGAR dele (nen
   callTools(h, ['shell'])
   await flush()
   assert.equal(h.tools().length, 1)
-  await new Promise((r) => setTimeout(r, 450)) // o timer real do preâmbulo teria disparado
+  await h.clock.advance(450) // o timer do preâmbulo teria disparado
   await flush()
   assert.equal(h.emitted.filter((u) => u.kind === 'filler').length, 0, 'sem preâmbulo')
   const f = h.timeline.filter((e) => e.kind === 'decision' && e.class === 'FILLER')

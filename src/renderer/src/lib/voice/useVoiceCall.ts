@@ -8,10 +8,11 @@
 //
 // Os eventos de fronteira vão ao main pelos canais `voice:call:*` (o main é o dono do turno e do
 // envio): `speech-begin`/`speech-end` → `turn(text)` com a transcrição final. Fala do usuário
-// enquanto uma FRASE da resposta toca: com histerese (`PlaybackDuck`) — o áudio do assistente
-// ABAIXA (ducking) e continua; quem insiste (voz/palavras/"para") vira barge-in (cancela a fala com
-// fade e manda as frases ouvidas — o main trunca o histórico); o que para antes (tosse, "uhum")
-// devolve o volume e é descartado.
+// enquanto uma FRASE da resposta toca: com histerese (`PlaybackDuck`) — depois de voz sustentada
+// (onset, `turn.duckOnsetMs`; ruído curto nunca) o áudio do assistente ABAIXA (ducking) e
+// continua; quem insiste (voz/palavras/"para") vira barge-in (cancela a fala com fade e manda as
+// frases ouvidas — o main trunca o histórico); o que para antes (tosse, "uhum") devolve o volume
+// e é descartado.
 // Fala com só clipes tocando (preâmbulo/frase de demora) ou nada ouvido ainda: os clipes saem na
 // hora (fade curto, sem sobrepor o usuário) e o main decide o turno continuado. Meia-duplex: nada
 // do assistente toca durante a fala do usuário.
@@ -381,16 +382,24 @@ export function useVoiceCall(): void {
      */
     const restoreDuck = (): void => {
       const ms = Math.round(hold.voicedMs)
+      // ruído curto que nem chegou ao onset: o volume nunca abaixou — nada a devolver nem registrar
+      const ducked = hold.ducked
       hold.reset()
-      queueRef.current?.setDuck(1, DUCK_FADE_MS)
+      if (ducked) queueRef.current?.setDuck(1, DUCK_FADE_MS)
       speakingRef.current = false
       prerollRef.current = []
       gate.reset()
       dropSession()
       voicedRef.current.reset()
       setLive('', null)
+      if (!ducked) return
       timeline({ kind: 'duck-restore', speechMs: ms })
       void api.voice?.call.backchannel({ ms }).catch(() => {})
+    }
+    /** A voz por cima passou do onset (voz sustentada): o áudio do assistente ABAIXA e continua. */
+    const duckNow = (): void => {
+      queueRef.current?.setDuck(hold.cfg.duckGain, DUCK_FADE_MS)
+      timeline({ kind: 'duck', speechMs: Math.round(hold.voicedMs) })
     }
     onDuckTextRef.current = (text: string): void => {
       if (disposed || !hold.open) return
@@ -468,11 +477,10 @@ export function useVoiceCall(): void {
         const mainSpeaking = useStore.getState().voiceCall.phase === 'speaking'
         const heard = startedRef.current.size > 0
         if (queue && (sentencePlaying || (heard && mainSpeaking))) {
-          // fala do usuário durante a resposta já ouvida: o áudio do assistente ABAIXA e continua
-          // (nada é cancelado até o usuário insistir — voz/palavras/"para")
-          hold.start(rms, FRAME_MS, SPEECH)
-          queue.setDuck(hold.cfg.duckGain, DUCK_FADE_MS)
-          timeline({ kind: 'duck', speechMs: Math.round(hold.voicedMs) })
+          // fala do usuário durante a resposta já ouvida: o episódio abre SEM mexer no volume — o
+          // áudio do assistente só ABAIXA depois do onset (voz sustentada; ruído curto nunca) e
+          // nada é cancelado até o usuário insistir — voz/palavras/"para"
+          if (hold.start(rms, FRAME_MS, SPEECH) === 'duck') duckNow()
         } else {
           // nada da resposta foi ouvido (só preâmbulo/frase de demora, ou frases ainda na fila):
           // tudo sai com fade e o main decide o turno continuado
@@ -500,7 +508,8 @@ export function useVoiceCall(): void {
       }
       if (hold.open) {
         const ev = hold.frame(rms, FRAME_MS, SPEECH)
-        if (ev === 'barge-in') commitBargeIn(hold.reason ?? 'voiced')
+        if (ev === 'duck') duckNow()
+        else if (ev === 'barge-in') commitBargeIn(hold.reason ?? 'voiced')
         else if (ev === 'restore') restoreDuck()
       }
     }

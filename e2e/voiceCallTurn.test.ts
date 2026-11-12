@@ -695,12 +695,12 @@ test('overrides do modo voz: voice.model/voice.tools/voicePrompt só nas request
     'system prompt do chat primeiro'
   )
   assert.ok(
-    textOf(req.body.messages[0].content).includes('\n\nFale em frases curtas.'),
-    'voicePrompt somado ao system prompt (depois do prompt-base do modo voz)'
+    textOf(req.body.messages[0].content).includes('persona base\n\nFale em frases curtas.'),
+    'voicePrompt somado logo depois do system prompt (o app não acrescenta prompt próprio)'
   )
   assert.ok(
-    textOf(req.body.messages[0].content).includes('conversa por voz'),
-    'prompt-base do modo voz'
+    !textOf(req.body.messages[0].content).includes('conversa por voz'),
+    'sem prompt-base oculto do modo voz'
   )
   assert.equal(req.body.max_tokens, undefined, 'a chamada não impõe teto de tokens')
   const after = JSON.parse(JSON.stringify(repo.chatsRepo.get(chatId)!.config))

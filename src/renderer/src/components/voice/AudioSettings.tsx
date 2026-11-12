@@ -23,11 +23,14 @@ import {
   BARGE_IN_RANGES,
   DEFAULT_AUDIO_INPUT,
   DEFAULT_BARGE_IN,
+  DEFAULT_FILLER_DELAY_MS,
+  FILLER_DELAY_MS_RANGE,
   DEFAULT_STT_SETTINGS,
   DEFAULT_TTS_SETTINGS,
   DEFAULT_TURN_SILENCE_MS,
   DEFAULT_VOICE_CALL_DEFAULTS,
-  resolveBargeIn
+  resolveBargeIn,
+  voicePromptLayout
 } from '@shared/voice'
 import type { AudioInputSettings } from '@shared/voice'
 import { api, errorMessage } from '../../lib/api'
@@ -51,6 +54,7 @@ import { ToolPhrasesSettings } from './ToolPhrasesSettings'
 import { LocalModelsScreen } from './LocalModelsScreen'
 import { MicActivationLevel } from './MicActivationLevel'
 import { AudioTagsField } from './AudioTagsField'
+import { VoicePromptPreview } from './VoiceCallConfigSection'
 import { DEFAULT_AUDIO_TAGS_PROMPT } from '@shared/audioTags'
 import type { ProviderOption } from '../../lib/voice/voiceSettingsHelpers'
 import { useInputDeviceList } from '../../lib/voice/useInputDevices'
@@ -661,7 +665,7 @@ export function AudioSettings(): React.JSX.Element | null {
         <SubHeading>Falar por cima da resposta</SubHeading>
         <NumberRow
           label="Volume ao falar por cima"
-          help={`Quando você fala enquanto o assistente responde, a voz dele ABAIXA para esta fração do volume (e continua tocando) em vez de parar na hora — uma tosse, um “uhum” ou um barulho não interrompem nada. 0 = mudo; 1 = não abaixa. Padrão ${Math.round(DEFAULT_BARGE_IN.duckGain * 100)} %.`}
+          help={`Quando você fala por cima da resposta (por “Abaixar a voz depois de”), a voz do assistente ABAIXA para esta fração do volume (e continua tocando) em vez de parar na hora — uma tosse, um “uhum” ou um barulho não interrompem nada. 0 = mudo; 1 = não abaixa. Padrão ${Math.round(DEFAULT_BARGE_IN.duckGain * 100)} %.`}
           value={Math.round(bargeIn.duckGain * 100)}
           min={0}
           max={100}
@@ -672,8 +676,20 @@ export function AudioSettings(): React.JSX.Element | null {
           onCommit={(v) => saveCallDefaults({ turn: { ...turn, duckGain: v / 100 } })}
         />
         <NumberRow
+          label="Abaixar a voz depois de"
+          help={`Quanto tempo de voz SEGUIDA por cima da resposta (acima do nível de ativação do microfone) até a voz do assistente abaixar. Pausas curtas entre as palavras não zeram a contagem; um silêncio maior, sim — clique, pancada na mesa, tosse curta ou barulho isolado nunca abaixam nada. Padrão ${DEFAULT_BARGE_IN.onsetMs} ms.`}
+          value={bargeIn.onsetMs}
+          min={BARGE_IN_RANGES.onsetMs.min}
+          max={BARGE_IN_RANGES.onsetMs.max}
+          step={50}
+          unit="ms"
+          testId="voice-call-duck-onset"
+          ariaLabel="Abaixar a voz depois de (ms de voz seguida)"
+          onCommit={(v) => saveCallDefaults({ turn: { ...turn, duckOnsetMs: v } })}
+        />
+        <NumberRow
           label="Interromper depois de falar"
-          help={`Se você continuar falando por cima por este tempo (só o tempo com voz conta), o assistente para de falar e a sua fala vira o próximo turno (barge-in). Também interrompe na hora com ${DEFAULT_BARGE_IN.words}+ palavras reconhecidas na transcrição ao vivo (palavras abaixo) ou com um pedido curto de parada (“para”, “espera”, “chega”, “peraí”). Padrão ${DEFAULT_BARGE_IN.voicedMs} ms.`}
+          help={`Se você continuar falando por cima por este tempo (só o tempo com voz conta, desde o começo da fala por cima), o assistente para de falar e a sua fala vira o próximo turno (barge-in). Também interrompe com ${DEFAULT_BARGE_IN.words}+ palavras reconhecidas na transcrição ao vivo (palavras abaixo) ou com um pedido curto de parada (“para”, “espera”, “chega”, “peraí”) — sempre só depois de a voz ter abaixado. Padrão ${DEFAULT_BARGE_IN.voicedMs} ms.`}
           value={bargeIn.voicedMs}
           min={BARGE_IN_RANGES.voicedMs.min}
           max={BARGE_IN_RANGES.voicedMs.max}
@@ -716,6 +732,23 @@ export function AudioSettings(): React.JSX.Element | null {
           onChange={(v) => saveCallDefaults({ audioTags: v ?? false })}
           onPromptChange={(audioTagsPrompt) => saveCallDefaults({ audioTagsPrompt })}
         />
+        {/* transparência: o que uma chamada sem prompt próprio na persona/chat muda no prompt */}
+        <VoicePromptPreview
+          layout={voicePromptLayout({
+            voicePrompt: null,
+            promptMode: 'append',
+            audioTags: callDefaults.audioTags,
+            audioTagsPrompt: callDefaults.audioTagsPrompt ?? DEFAULT_AUDIO_TAGS_PROMPT,
+            audioTagsActive: true
+          })}
+          voiceFrom={null}
+          tagsFrom="padrão deste dispositivo"
+        />
+        <p className="text-[11.5px] text-subtle" data-testid="voice-call-no-hidden-prompt">
+          O app não acrescenta prompt próprio na chamada: o único texto a mais é o “Prompt do modo
+          voz” de cada persona/chat (aba Voz — vazio por padrão) e, com as tags de voz ligadas, a
+          instrução delas.
+        </p>
         <DelayPhrasesSettings
           value={callDefaults.delayPhrases}
           onChange={(delayPhrases) => saveCallDefaults({ delayPhrases })}
@@ -758,15 +791,15 @@ export function AudioSettings(): React.JSX.Element | null {
           label="Preâmbulos"
           checked={callDefaults.fillers.enabled}
           onChange={(v) => saveCallDefaults({ fillers: { ...callDefaults.fillers, enabled: v } })}
-          help='Preâmbulo curto logo depois da sua fala ("Hum, deixa eu ver aqui.", "Beleza, só um minutinho.") escolhido pelo tipo de pedido, enquanto a resposta não começa. No máximo 1 por turno; a resposta espera ele terminar. Fala muito curta ("sim", "valeu") não ganha preâmbulo.'
+          help='Preâmbulo curto ("Hum, deixa eu ver aqui.", "Beleza, só um minutinho.") escolhido pelo tipo de pedido, só quando a resposta DEMORA (veja "Espera do preâmbulo"). No máximo 1 por turno; a resposta espera ele terminar. Fala muito curta ("sim", "valeu") não ganha preâmbulo; quando o assistente usa uma ferramenta, a frase de ferramenta ("Vou pesquisar isso.") fica no lugar dele.'
         />
         <NumberRow
-          label="Preâmbulo após"
-          help='Espera entre o fim da sua fala e o preâmbulo ("Hum, deixa eu ver…"). Se a 1ª frase da resposta ficar pronta antes, o preâmbulo nem sai. 0 = já.'
+          label="Espera do preâmbulo"
+          help={`Falar “deixa eu ver…” só se a resposta demorar mais que isto depois da sua fala: se a 1ª frase da resposta (ou a frase de ferramenta) sair antes, o preâmbulo nem toca. 0 = sempre, logo depois da sua fala. Padrão ${DEFAULT_FILLER_DELAY_MS / 1000} s.`}
           value={callDefaults.fillers.delayMs}
-          min={0}
-          max={5000}
-          step={50}
+          min={FILLER_DELAY_MS_RANGE.min}
+          max={FILLER_DELAY_MS_RANGE.max}
+          step={100}
           unit="ms"
           testId="voice-call-filler-delay"
           ariaLabel="Espera do preâmbulo (ms)"

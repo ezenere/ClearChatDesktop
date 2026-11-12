@@ -925,6 +925,34 @@ app.on('window-all-closed', () => app.quit())
   )
 
   await step(
+    'sem prompt oculto: persona intocada → "Nada" na prévia; "Usar sugestão" põe o texto NO campo e a prévia mostra',
+    async () => {
+      await openPersonaVoice('chat', 'Revisor de código')
+      const preview = dialog().getByTestId('voice-call-prompt-preview')
+      await preview.scrollIntoViewIfNeeded()
+      assert.equal(await preview.getAttribute('data-parts'), '', 'nada acrescentado')
+      assert.match(await preview.innerText(), /Nada: a chamada manda exatamente o system prompt/)
+      const field = dialog().getByTestId('voice-call-prompt')
+      assert.equal(await field.inputValue(), '', 'prompt do modo voz vazio por padrão')
+      await dialog().getByTestId('voice-call-prompt-suggest').click()
+      await waitFor(async () => (await field.inputValue()).length > 0, 3000, 'sugestão no campo')
+      assert.match(await field.inputValue(), /conversa por voz/)
+      await waitFor(
+        async () => (await preview.getAttribute('data-parts')) === 'voice',
+        3000,
+        'prévia com o prompt do modo voz'
+      )
+      assert.match(await preview.innerText(), /Prompt do modo voz — desta persona/)
+      await shot('persona-voice-prompt-preview')
+      await page.keyboard.press('Escape')
+      await page.keyboard.press('Escape')
+      await dialog()
+        .waitFor({ state: 'detached' })
+        .catch(() => undefined)
+    }
+  )
+
+  await step(
     'persona com voz de outro dispositivo: "Não disponível neste dispositivo — usa o padrão deste dispositivo: <motivo>"',
     async () => {
       await openPersonaVoice('voice-persona-fallback', 'Narradora')

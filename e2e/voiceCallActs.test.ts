@@ -21,6 +21,7 @@ import {
 } from '@shared/voice'
 import {
   DUCK_FADE_MS,
+  DUCK_ONSET_GAP_MS,
   EMPTY_FILLER_STATE,
   FILLER_DELAY_MS,
   FILLER_MIN_SPEECH_MS,
@@ -180,8 +181,8 @@ function speakTurn(h: Harness, text: string): void {
 
 // ---------------- política pura: fillers ----------------
 
-test('fillerShouldFire: limiar de FILLER_DELAY_MS (250 ms; 0 = já), tools disparam já, 1 por turno', () => {
-  assert.equal(FILLER_DELAY_MS, 250, 'preâmbulo logo depois do turno: ~250 ms')
+test('fillerShouldFire: só depois de FILLER_DELAY_MS (2,5 s; 0 = já) — tool NÃO antecipa — 1 por turno', () => {
+  assert.equal(FILLER_DELAY_MS, 2500, 'preâmbulo só quando a resposta demora: 2,5 s')
   const base: FillerState = {
     ...EMPTY_FILLER_STATE,
     turnStartedAt: 1000,
@@ -190,7 +191,12 @@ test('fillerShouldFire: limiar de FILLER_DELAY_MS (250 ms; 0 = já), tools dispa
   }
   assert.equal(fillerShouldFire(base, 1000 + FILLER_DELAY_MS - 1), false, 'antes do limiar')
   assert.equal(fillerShouldFire(base, 1000 + FILLER_DELAY_MS), true, 'no limiar')
-  assert.equal(fillerShouldFire({ ...base, toolsRunning: true }, 1001), true, 'tools: já')
+  assert.equal(
+    fillerShouldFire({ ...base, toolsRunning: true }, 1001),
+    false,
+    'tool rodando não antecipa (a frase de ferramenta cobre a tool)'
+  )
+  assert.equal(fillerShouldFire({ ...base, toolsRunning: true }, 1000 + FILLER_DELAY_MS), true)
   assert.equal(
     fillerShouldFire({ ...base, usedThisTurn: true }, 1000 + FILLER_DELAY_MS),
     false,
@@ -284,14 +290,12 @@ test('filler: fala curta ("valeu") não ganha preâmbulo; delay 0 sai já', asyn
   h.m.stop()
 })
 
-test('filler: tools em execução disparam o filler já (sem esperar o limiar) — com as frases de ferramenta desligadas', async () => {
+test('filler: tool em execução NÃO antecipa o preâmbulo (frases de ferramenta desligadas); ligadas, a frase de ferramenta fica no lugar dele', async () => {
   const h = harness({ fillerDelayMs: 5000, toolPhrases: false })
   speakTurn(h, LONG)
   h.emit(toolRunning(true))
-  await waitFor(() => h.emitted.length > 0, 2000, 'filler emitido no tool-running')
-  assert.equal(h.emitted[0].kind, 'filler')
-  await sleep(60)
-  assert.equal(h.emitted.filter((u) => u.kind === 'filler').length, 1, 'máx. 1 por turno')
+  await sleep(80)
+  assert.equal(h.emitted.length, 0, 'nada na hora: o preâmbulo só depois da espera')
   h.m.stop()
   // ligadas (padrão): a frase de ferramenta toca NO LUGAR do preâmbulo
   const t = harness({ fillerDelayMs: 5000 })
@@ -443,88 +447,152 @@ function duckFrames(d: PlaybackDuck, ...parts: ['voz' | 'sil', number][]): strin
 }
 
 test('barge-in com histerese: padrões e normalização dos limiares (voiceCallDefaults.turn)', () => {
-  assert.deepEqual(DEFAULT_BARGE_IN, { duckGain: 0.3, voicedMs: 700, words: 3, restoreMs: 450 })
+  assert.deepEqual(DEFAULT_BARGE_IN, {
+    duckGain: 0.3,
+    voicedMs: 1200,
+    words: 3,
+    restoreMs: 450,
+    onsetMs: 500
+  })
   assert.equal(DUCK_FADE_MS, 80)
+  assert.equal(DUCK_ONSET_GAP_MS, 120)
   assert.deepEqual(resolveBargeIn(null), DEFAULT_BARGE_IN)
   assert.deepEqual(resolveBargeIn({ duckGain: 'x', bargeInVoicedMs: NaN }), DEFAULT_BARGE_IN)
   assert.deepEqual(
-    resolveBargeIn({ duckGain: 2, bargeInVoicedMs: 50, bargeInWords: 99.6, duckRestoreMs: 10 }),
+    resolveBargeIn({
+      duckGain: 2,
+      bargeInVoicedMs: 50,
+      bargeInWords: 99.6,
+      duckRestoreMs: 10,
+      duckOnsetMs: 5000
+    }),
     {
       duckGain: BARGE_IN_RANGES.duckGain.max,
       voicedMs: BARGE_IN_RANGES.voicedMs.min,
       words: BARGE_IN_RANGES.words.max,
-      restoreMs: BARGE_IN_RANGES.restoreMs.min
+      restoreMs: BARGE_IN_RANGES.restoreMs.min,
+      onsetMs: BARGE_IN_RANGES.onsetMs.max
     },
     'fora da faixa → preso no limite'
   )
+  assert.equal(resolveBargeIn({ duckOnsetMs: 10 }).onsetMs, 100, 'onset mínimo 100 ms')
   assert.equal(resolveBargeIn({ duckGain: 0 }).duckGain, 0, '0 = mudo (válido)')
+  // o padrão ANTIGO exato (700 ms) migra para 1200; outros valores escolhidos ficam
+  assert.equal(resolveBargeIn({ bargeInVoicedMs: 700 }).voicedMs, 1200)
+  assert.equal(resolveBargeIn({ bargeInVoicedMs: 750 }).voicedMs, 750)
+  assert.equal(normalizeVoiceCallTurn({ bargeInVoicedMs: 700 }).bargeInVoicedMs, 1200)
   // no turno normalizado (aditivo: ausente → padrões) e no TurnTiming que vai ao renderer
-  const t = normalizeVoiceCallTurn({ bargeInVoicedMs: 900, duckGain: 0.25 })
+  const t = normalizeVoiceCallTurn({ bargeInVoicedMs: 900, duckGain: 0.25, duckOnsetMs: 650 })
   assert.equal(t.bargeInVoicedMs, 900)
   assert.equal(t.duckGain, 0.25)
   assert.equal(t.bargeInWords, 3)
   assert.equal(t.duckRestoreMs, 450)
+  assert.equal(t.duckOnsetMs, 650)
+  assert.equal(normalizeVoiceCallTurn(null).duckOnsetMs, 500)
   assert.deepEqual(resolveTurnTiming(t).bargeIn, {
     duckGain: 0.25,
     voicedMs: 900,
     words: 3,
-    restoreMs: 450
+    restoreMs: 450,
+    onsetMs: 650
   })
   assert.deepEqual(resolveTurnTiming(null).bargeIn, DEFAULT_BARGE_IN)
 })
 
-test('PlaybackDuck: tosse/"uhum" curto → volume volta depois do silêncio e o som é descartado', () => {
+/** Abre o episódio (como o renderer no início da fala por cima) e devolve o evento do 1º quadro. */
+const openDuck = (d: PlaybackDuck): string => d.start(0.2, 50, 0.01)
+
+test('PlaybackDuck: ruído/tosse curta (300 ms) NUNCA abaixa o volume; o episódio fecha calado', () => {
   const d = new PlaybackDuck(DEFAULT_BARGE_IN)
-  d.start(0.2, 50, 0.01)
-  assert.equal(d.open, true, 'abaixou (o chamador aplica o duckGain)')
-  // 250 ms de voz (contando o start) e silêncio: aos 450 ms de silêncio volta
-  const ev = duckFrames(d, ['voz', 200], ['sil', 400])
+  assert.equal(openDuck(d), 'pending', 'abrir o episódio não abaixa nada')
+  assert.equal(d.open, true)
+  assert.equal(d.ducked, false)
+  // 300 ms de voz (contando o 1º quadro) e silêncio: aos 450 ms de silêncio o episódio fecha
+  const ev = duckFrames(d, ['voz', 250], ['sil', 400])
   assert.ok(
     ev.every((e) => e === 'pending'),
-    'nada antes do restore'
+    `nada antes do fechamento: ${ev}`
   )
   assert.equal(d.frame(0.001, 50, 0.01), 'restore')
-  assert.equal(d.open, false)
+  assert.equal(d.ducked, false, 'o volume nunca abaixou (o chamador não mexe nele)')
   assert.equal(d.reason, null, 'não virou barge-in')
-  assert.equal(d.voicedMs, 250)
-  // pausas curtas no meio da fala NÃO devolvem o volume (o silêncio é contínuo)
-  const e = new PlaybackDuck(DEFAULT_BARGE_IN)
-  e.start(0.2, 50, 0.01)
-  assert.ok(
-    duckFrames(e, ['voz', 100], ['sil', 300], ['voz', 100], ['sil', 300]).every(
-      (x) => x === 'pending'
-    )
-  )
-  assert.equal(e.open, true)
+  assert.equal(d.voicedMs, 300)
+  // um clique isolado (1 quadro) também não
+  const c = new PlaybackDuck(DEFAULT_BARGE_IN)
+  openDuck(c)
+  assert.ok(!duckFrames(c, ['sil', 450]).includes('duck'))
 })
 
-test('PlaybackDuck: o usuário insiste (700 ms de voz no episódio) → barge-in uma vez', () => {
+test('PlaybackDuck: 600 ms de fala → abaixa no onset (500 ms) e volta depois do silêncio', () => {
   const d = new PlaybackDuck(DEFAULT_BARGE_IN)
-  d.start(0.2, 50, 0.01)
-  // voz com pausas curtas: a voz do EPISÓDIO soma (50 + 300 + 350 = 700 ms)
-  const ev = duckFrames(d, ['voz', 300], ['sil', 200], ['voz', 350], ['voz', 200])
-  assert.equal(ev.filter((x) => x === 'barge-in').length, 1, 'uma única transição')
+  openDuck(d)
+  const ev = duckFrames(d, ['voz', 550])
+  // o onset cai no 10º quadro (50 + 450 = 500 ms de voz seguida)
+  assert.equal(ev.indexOf('duck'), 8, `abaixa exatamente no onset: ${ev}`)
+  assert.equal(ev.filter((e) => e === 'duck').length, 1, 'uma vez só')
+  assert.equal(d.ducked, true)
+  const rest = duckFrames(d, ['sil', 450])
+  assert.equal(rest.at(-1), 'restore', 'volume volta depois de 450 ms de silêncio')
+  assert.equal(d.reason, null)
+  assert.equal(d.ducked, true, 'o chamador devolve o volume (tinha abaixado)')
+  // lacunas curtas (≤ 120 ms) entre as palavras não zeram a contagem do onset
+  const g = new PlaybackDuck(DEFAULT_BARGE_IN)
+  openDuck(g)
+  assert.ok(duckFrames(g, ['voz', 250], ['sil', 100], ['voz', 250]).includes('duck'))
+})
+
+test('PlaybackDuck: 1,4 s de fala → abaixa e depois interrompe (1200 ms de voz no episódio)', () => {
+  const d = new PlaybackDuck(DEFAULT_BARGE_IN)
+  openDuck(d)
+  const ev = duckFrames(d, ['voz', 1350])
+  const duckAt = ev.indexOf('duck')
+  const bargeAt = ev.indexOf('barge-in')
+  assert.ok(duckAt >= 0 && bargeAt > duckAt, `abaixa antes de interromper: ${ev}`)
+  // janela real entre abaixar (500 ms) e parar (1200 ms): 700 ms de voz
+  assert.equal((bargeAt - duckAt) * 50, 700)
+  assert.equal(ev.filter((e) => e === 'barge-in').length, 1, 'uma única transição')
   assert.equal(d.reason, 'voiced')
   assert.equal(d.open, false, 'o episódio fecha: a fala segue como turno normal')
   assert.equal(d.frame(0.2, 50, 0.01), 'pending', 'fechado não decide mais')
-  // limiar configurável
+  // a voz do episódio soma pausas curtas e longas (desde o início dele), mas só depois do onset
   const fast = new PlaybackDuck({ ...DEFAULT_BARGE_IN, voicedMs: 300 })
-  fast.start(0.2, 50, 0.01)
-  assert.ok(duckFrames(fast, ['voz', 250]).includes('barge-in'))
+  openDuck(fast)
+  const f = duckFrames(fast, ['voz', 600])
+  assert.ok(f.indexOf('duck') >= 0 && f.indexOf('barge-in') > f.indexOf('duck'), `${f}`)
 })
 
-test('PlaybackDuck: palavras reais na parcial e ordem de parada interrompem já; backchannel não', () => {
+test('PlaybackDuck: rajadas separadas por mais que a lacuna não se somam no onset', () => {
   const d = new PlaybackDuck(DEFAULT_BARGE_IN)
-  d.start(0.2, 50, 0.01)
+  openDuck(d)
+  // 300 + 300 + 300 ms de voz com pausas de 200 ms (> 120): nenhuma sequência chega a 500 ms
+  const ev = duckFrames(d, ['voz', 250], ['sil', 200], ['voz', 300], ['sil', 200], ['voz', 300])
+  assert.ok(!ev.includes('duck'), `não abaixou: ${ev}`)
+  assert.equal(d.voicedMs, 900, 'a voz do episódio soma (para o barge-in), o onset não')
+  assert.ok(!ev.includes('barge-in'), 'sem onset não há barge-in')
+  assert.equal(d.open, true)
+})
+
+test('PlaybackDuck: palavras/ordem de parada interrompem só depois do onset; alucinação do STT não', () => {
+  const d = new PlaybackDuck(DEFAULT_BARGE_IN)
+  openDuck(d)
+  // antes do onset: nem palavras nem "para" (pode ser transcrição de ruído)
+  assert.equal(d.transcript('não, mas eu queria'), 'pending')
+  assert.equal(d.transcript('para'), 'pending')
+  assert.ok(duckFrames(d, ['voz', 450]).includes('duck'))
   assert.equal(d.transcript('uhum'), 'pending')
   assert.equal(d.transcript('sim, tá'), 'pending', 'backchannel não conta')
   assert.equal(d.transcript('não, mas'), 'pending', '2 palavras < 3')
+  // alucinação conhecida do whisper com pouca voz (texto demais para 500 ms): não conta
+  assert.equal(d.transcript('Legendas pela comunidade Amara.org'), 'pending')
+  assert.equal(d.transcript('Obrigado por assistir.'), 'pending')
   assert.equal(d.transcript('não, mas eu queria'), 'barge-in')
   assert.equal(d.reason, 'words')
-  // ordem de parada (atalho): mesmo curta
+  // ordem de parada (atalho): mesmo curta — depois do onset
   for (const t of ['para', 'Pare!', 'espera aí', 'chega', 'Peraí.', 'para, para', 'stop']) {
     const s = new PlaybackDuck(DEFAULT_BARGE_IN)
-    s.start(0.2, 50, 0.01)
+    openDuck(s)
+    duckFrames(s, ['voz', 450])
+    assert.equal(s.ducked, true)
     assert.equal(s.transcript(t), 'barge-in', t)
     assert.equal(s.reason, 'stop-word', t)
   }

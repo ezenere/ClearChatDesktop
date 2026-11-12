@@ -15,7 +15,7 @@ import {
   DEFAULT_VOICE_CALL_DEFAULTS,
   DEFAULT_FILLER_POOL,
   DEFAULT_TURN_TIMING,
-  DEFAULT_VOICE_BASE_PROMPT,
+  SUGGESTED_VOICE_PROMPT,
   FILLER_POOL_MAX,
   normalizeFillerPool,
   resolveFillerPool,
@@ -263,7 +263,7 @@ test('voiceCallDefaults: parcial completa com os padrões; nested normalizado', 
   })
   assert.deepEqual(d, {
     enabled: true,
-    fillers: { enabled: true, prompt: 'fale "ãh"', delayMs: 250, pool: null },
+    fillers: { enabled: true, prompt: 'fale "ãh"', delayMs: 2500, pool: null },
     turn: {
       silenceStopMs: null,
       adaptive: true,
@@ -273,13 +273,12 @@ test('voiceCallDefaults: parcial completa com os padrões; nested normalizado', 
       unfinishedSilenceMs: 1500,
       speculativeApi: false,
       duckGain: 0.3,
-      bargeInVoicedMs: 700,
+      bargeInVoicedMs: 1200,
       bargeInWords: 3,
-      duckRestoreMs: 450
+      duckRestoreMs: 450,
+      duckOnsetMs: 500
     },
     model: null,
-    basePromptEnabled: true,
-    basePrompt: null,
     endCall: true,
     // frases de demora (aditivo): ausente = os padrões
     delayPhrases: {
@@ -347,7 +346,7 @@ test('resolveTurnTiming: padrões e coerência (completa ≤ afirmação ≤ ina
     statementMs: 1200,
     unfinishedMs: 1500,
     fallbackMs: 1000,
-    bargeIn: { duckGain: 0.3, voicedMs: 700, words: 3, restoreMs: 450 }
+    bargeIn: { duckGain: 0.3, voicedMs: 1200, words: 3, restoreMs: 450, onsetMs: 500 }
   })
   // silenceStopMs alto (2 s) puxa o teto; completo nunca passa do fallback
   const t = resolveTurnTiming({
@@ -396,21 +395,30 @@ test('pool de preâmbulos: normalização (texto aparado, contextos filtrados, t
   // pool global normalizado nos padrões; 0 de espera é válido
   const d = normalizeVoiceCallDefaults({ fillers: { delayMs: 0, pool: [{ text: 'Tá.' }] } })
   assert.equal(d.fillers.delayMs, 0)
+  // espera do preâmbulo (2026-11-12): padrão 2500; o padrão ANTIGO exato (250) migra; o resto fica
+  const delay = (v: unknown): number =>
+    normalizeVoiceCallDefaults({ fillers: { delayMs: v } }).fillers.delayMs
+  assert.equal(delay(undefined), 2500)
+  assert.equal(delay(250), 2500, '250 (padrão antigo) → 2500')
+  assert.equal(delay(251), 251)
+  assert.equal(delay(1800), 1800)
+  assert.equal(delay(60_000), 10_000, 'preso em 10 s')
+  assert.equal(delay(-3), 2500)
+  assert.equal(delay('x'), 2500)
   assert.deepEqual(d.fillers.pool, [{ text: 'Tá.', contexts: [] }])
 })
 
-test('applyVoiceCallChat: prompt-base do modo voz + voicePrompt; a chamada não impõe max_tokens', () => {
+test('applyVoiceCallChat: só o voicePrompt (nada do app); a chamada não impõe max_tokens', () => {
   const chat = {
     id: 'c1',
     config: { systemPrompt: 'Você é útil.', params: {} }
   } as unknown as Parameters<typeof applyVoiceCallChat>[0]
   const base = resolveVoiceCallConfig({ voicePrompt: 'Fale como pirata.' } as never, null)
   const out = applyVoiceCallChat(chat, base)
-  assert.equal(
-    out.config.systemPrompt,
-    `Você é útil.\n\n${DEFAULT_VOICE_BASE_PROMPT}\n\nFale como pirata.`
-  )
-  assert.match(DEFAULT_VOICE_BASE_PROMPT, /SRC/)
+  assert.equal(out.config.systemPrompt, 'Você é útil.\n\nFale como pirata.')
+  // a sugestão do campo existe, mas só entra se o usuário a inseriu no "Prompt do modo voz"
+  assert.match(SUGGESTED_VOICE_PROMPT, /SRC/)
+  assert.ok(!out.config.systemPrompt?.includes('SRC'))
   // sem teto próprio: max_tokens só vem dos params (do modelo da chamada / do chat)
   assert.equal(out.config.params?.max_tokens, undefined)
   const own = applyVoiceCallChat(
@@ -424,11 +432,14 @@ test('applyVoiceCallChat: prompt-base do modo voz + voicePrompt; a chamada não 
     false,
     'maxTokens saiu dos padrões da chamada'
   )
-  // prompt-base desligado → só o voicePrompt
-  const off = resolveVoiceCallConfig({ voicePrompt: 'X.' } as never, {
-    ...DEFAULT_VOICE_CALL_DEFAULTS,
-    basePromptEnabled: false
-  })
+  // campos legados do prompt-base: ignorados (só o voicePrompt)
+  const off = resolveVoiceCallConfig(
+    { voicePrompt: 'X.' } as never,
+    {
+      ...DEFAULT_VOICE_CALL_DEFAULTS,
+      basePromptEnabled: true
+    } as never
+  )
   const o2 = applyVoiceCallChat(chat, off)
   assert.equal(o2.config.systemPrompt, 'Você é útil.\n\nX.')
   assert.equal(o2.config.params?.max_tokens, undefined)

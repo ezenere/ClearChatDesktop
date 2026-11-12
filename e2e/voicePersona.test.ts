@@ -887,3 +887,85 @@ test('textos: tooltips do mic/telefone esmaecidos, aviso do fallback, rótulos e
   assert.deepEqual((own.voice as any).tts, KOKORO_MALE)
   assert.deepEqual(t.withInheritedVoice({ model: 'x' }, null), { model: 'x' })
 })
+
+// ---------------- sem prompt oculto: o único texto a mais é o "Prompt do modo voz" ----------------
+
+test('chamada de uma persona intocada: a request tem EXATAMENTE o system prompt de um turno de texto', async () => {
+  const { buildRequest } = await import('../src/main/agent/request.ts')
+  const {
+    applyVoiceCallChat,
+    resolveVoiceCallConfig,
+    voicePromptLayout,
+    DEFAULT_VOICE_CALL_DEFAULTS: D
+  } = await import('../src/shared/voice.ts')
+  const provider = {
+    id: 'p1',
+    name: 'OR',
+    baseUrl: 'https://openrouter.ai/api/v1',
+    apiKey: 'sk-x',
+    headers: {},
+    createdAt: 0
+  }
+  const chat = {
+    id: 'c1',
+    title: '',
+    mainSessionId: 's1',
+    createdAt: 0,
+    updatedAt: 0,
+    config: DEFAULT_CHAT_CONFIG('/w', {
+      providerId: 'p1',
+      model: 'm',
+      systemPrompt: 'Você é a Diana.'
+    })
+  }
+  const hist = [
+    {
+      id: 'u1',
+      sessionId: 's1',
+      seq: 1,
+      message: { role: 'user', content: 'oi' },
+      meta: {},
+      createdAt: 0
+    }
+  ] as any
+  const env = { os: 'Linux', shell: 'bash' }
+  const system = (c: any): unknown =>
+    (buildRequest(c, { depth: 0, model: 'm' }, hist, provider as any, env).body as any).messages[0]
+  /** O texto do system prompt da request, sem o bloco de ambiente que o app sempre põe no fim. */
+  const sysText = (c: any): string => {
+    const m = system(c) as any
+    const text = Array.isArray(m.content) ? m.content.map((p: any) => p.text).join('') : m.content
+    return String(text).split('\n\n<environment>')[0]
+  }
+  // persona/chat intocados + os padrões deste dispositivo: nada do app entra
+  assert.equal('basePromptEnabled' in D, false, 'não existe prompt-base')
+  const call = resolveVoiceCallConfig(null, D, null)
+  assert.deepEqual(voicePromptLayout(call), { replacesSystem: false, parts: [] })
+  assert.deepEqual(system(applyVoiceCallChat(chat as any, call)), system(chat))
+  // persona com prompt do modo voz: só ele muda — complementar / substituto / nenhum
+  const persona = voice({ voicePrompt: 'Fale curto.' })
+  const append = resolveVoiceCallConfig(null, D, persona)
+  assert.equal(sysText(applyVoiceCallChat(chat as any, append)), 'Você é a Diana.\n\nFale curto.')
+  assert.deepEqual(voicePromptLayout(append).parts, [{ kind: 'voice', text: 'Fale curto.' }])
+  const replace = resolveVoiceCallConfig(voice({ promptMode: 'replace' }), D, persona)
+  assert.equal(sysText(applyVoiceCallChat(chat as any, replace)), 'Fale curto.')
+  assert.equal(voicePromptLayout(replace).replacesSystem, true)
+  const none = resolveVoiceCallConfig(voice({ promptMode: 'none' }), D, persona)
+  assert.deepEqual(system(applyVoiceCallChat(chat as any, none)), system(chat))
+  assert.deepEqual(voicePromptLayout(none).parts, [])
+  // tags de voz: só com o opt-in E a voz interpretando — e aparecem na prévia (mesmo cálculo)
+  const tags = {
+    ...resolveVoiceCallConfig(voice({ audioTags: true }), D, null),
+    audioTagsActive: true
+  }
+  assert.deepEqual(
+    voicePromptLayout(tags).parts.map((p) => p.kind),
+    ['tags']
+  )
+  assert.ok(sysText(applyVoiceCallChat(chat as any, tags)).length > sysText(chat).length)
+  assert.deepEqual(
+    voicePromptLayout({ ...tags, audioTagsActive: false }).parts,
+    [],
+    'voz sem tags: nada'
+  )
+})

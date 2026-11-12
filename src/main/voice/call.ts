@@ -348,7 +348,7 @@ export class VoiceCallManager {
   #carry: { awaiting: boolean; text: string } | null = null
   // ---- preâmbulo pós-turno (1 por turno; nunca cortado pela resposta) ----
   #filler: FillerState = { ...EMPTY_FILLER_STATE }
-  #fillerTimer: ReturnType<typeof setTimeout> | null = null
+  #fillerTimer: unknown = null
   #fillerUttId: string | null = null
   /** Geração do filler (async): reset/stop/barge-in descartam a carga de clip em voo. */
   #fillerGen = 0
@@ -1088,11 +1088,11 @@ export class VoiceCallManager {
       // quando ele ainda não tocou (a regra de frase única do turno decide antes do preâmbulo)
       this.#onFirstTool(e.toolCallId)
       if (this.#turn) this.#turn.toolsRan = true
-      // tools em execução no turno: a espera tende a longa → o preâmbulo sai já (1 por turno)
+      // tool em execução: NÃO antecipa o preâmbulo (a frase de ferramenta cobre a tool); se ele
+      // ainda sair (resposta lenta, frase de ferramenta pulada), é uma frase de "comando"
       this.#filler.toolsRunning = true
       if (this.#filler.turnStartedAt != null && this.#fillerContext === 'generic')
         this.#fillerContext = 'command'
-      void this.#tryFiller()
     }
   }
 
@@ -1250,9 +1250,8 @@ export class VoiceCallManager {
         // 1ª frase pronta: o preâmbulo não sai mais (se já está tocando, a frase ESPERA ele terminar
         // na fila do renderer — nunca corta no meio da palavra)
         this.#filler.spokenThisTurn = true
-        if (this.#fillerTimer) {
-          clearTimeout(this.#fillerTimer)
-          this.#fillerTimer = null
+        if (this.#fillerTimer != null) {
+          this.#clearFillerTimer()
           // a resposta ficou pronta antes da espera do preâmbulo: dispensado
           this.#emitTimeline({
             ts: this.#now(),
@@ -1342,8 +1341,9 @@ export class VoiceCallManager {
   }
 
   /**
-   * Arma o preâmbulo do turno: depois de `delayMs` (padrão 250 ms) sem a 1ª frase da resposta
-   * pronta — ou já, com tools em execução — toca UM clipe `FILLER` escolhido pelo contexto da fala
+   * Arma o preâmbulo do turno: só quando a resposta DEMORA — depois de `delayMs` (padrão 2500 ms)
+   * sem a 1ª frase da resposta pronta nem outra frase curta no lugar (a frase de ferramenta
+   * substitui; uma frase de demora também) — toca UM clipe `FILLER` escolhido pelo contexto da fala
    * (pergunta/comando/correção/pedido longo), sem repetir os últimos usados. Fala curta demais
    * ("oi", "valeu") ou com menos VOZ que `FILLER_MIN_SPEECH_MS` (`voicedMs` — tempo com voz, sem o
    * silêncio do fim de turno) não ganha preâmbulo.
@@ -1387,21 +1387,30 @@ export class VoiceCallManager {
       return
     }
     const delay = this.#fillerDelay()
-    this.#fillerTimer = setTimeout(() => this.#onFillerTimer(), delay)
+    this.#fillerTimer = this.#setDelayTimer(() => this.#onFillerTimer(), delay)
+  }
+
+  /** Cancela o timer do preâmbulo (timers injetáveis — os mesmos das frases de demora). */
+  #clearFillerTimer(): void {
+    const t = this.#fillerTimer
+    this.#fillerTimer = null
+    if (t == null) return
+    if (this.#deps.timers) this.#deps.timers.clear(t)
+    else clearTimeout(t as ReturnType<typeof setTimeout>)
   }
 
   /**
    * Timer do filler disparou: timers podem sair ~1 ms adiantados (Node) — o atraso ainda não
-   * cumprido é reagendado; cumprido (ou com tool em execução), tenta disparar.
+   * cumprido é reagendado; cumprido, tenta disparar.
    */
   #onFillerTimer(): void {
     this.#fillerTimer = null
     const delay = this.#fillerDelay()
     const started = this.#filler.turnStartedAt
-    if (started != null && !this.#filler.toolsRunning) {
+    if (started != null) {
       const remaining = started + delay - this.#now()
       if (remaining > 0) {
-        this.#fillerTimer = setTimeout(() => this.#onFillerTimer(), remaining)
+        this.#fillerTimer = this.#setDelayTimer(() => this.#onFillerTimer(), remaining)
         return
       }
     }
@@ -1467,10 +1476,7 @@ export class VoiceCallManager {
 
   /** Zera o filler do turno (timer/carga em voo); `cancelPlaying` cancela o clipe tocando. */
   #resetFiller(cancelPlaying: boolean): void {
-    if (this.#fillerTimer) {
-      clearTimeout(this.#fillerTimer)
-      this.#fillerTimer = null
-    }
+    this.#clearFillerTimer()
     this.#fillerGen++
     this.#filler = { ...EMPTY_FILLER_STATE }
     const id = this.#fillerUttId
@@ -1520,10 +1526,7 @@ export class VoiceCallManager {
     // o preâmbulo ainda não tocou: a frase de ferramenta fica no lugar dele (timer/carga descartados)
     const preamblePending =
       this.#filler.turnStartedAt != null && this.#filler.enabled && !this.#filler.usedThisTurn
-    if (this.#fillerTimer) {
-      clearTimeout(this.#fillerTimer)
-      this.#fillerTimer = null
-    }
+    this.#clearFillerTimer()
     this.#fillerGen++
     this.#filler.usedThisTurn = true
     if (preamblePending)

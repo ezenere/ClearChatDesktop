@@ -4,8 +4,11 @@
 // prompt (complementar/substituto/nenhum) e o prompt do modo voz. Usada no painel do chat (aba
 // Chat) e no editor de personas (aba Chat); precedência chat > persona > global (campos null do
 // chat seguem a persona ao vivo). Os preâmbulos (fillers) ficam no painel da chamada.
+// Transparência (2026-11-12 — "o ClearChat não pode colocar prompts de sistema ou configurações
+// ocultas"): o ÚNICO texto que a chamada muda é o "Prompt do modo voz" + a instrução das tags (só
+// com o opt-in) — e a prévia `voice-call-prompt-preview` mostra exatamente o que entra, com a origem.
 import { useState } from 'react'
-import { TOOL_LABELS, TOOL_NAMES } from '@shared/tools'
+import { TOOL_DEFINITIONS, TOOL_LABELS, TOOL_NAMES } from '@shared/tools'
 import type { ChatConfig, ToolName } from '@shared/types'
 import {
   DEFAULT_VOICE_CALL_CONFIG,
@@ -13,6 +16,8 @@ import {
   normalizeVoiceCallConfig,
   resolveVoiceCallConfig,
   resolveVoiceCallEnabled,
+  SUGGESTED_VOICE_PROMPT,
+  voicePromptLayout,
   type VoiceCallConfig,
   type VoiceCallPromptMode
 } from '@shared/voice'
@@ -20,7 +25,7 @@ import { cn } from '../../lib/format'
 import { useVoiceSettings } from '../../lib/voice/voiceSettings'
 import { useStore } from '../../store'
 import { CollapsibleSection, ToggleRow } from '../panel/fields'
-import { AutoTextarea, Switch } from '../ui/controls'
+import { AutoTextarea, Button, Switch } from '../ui/controls'
 import { InheritChoice } from '../ui/InheritChoice'
 import { AudioTagsField } from './AudioTagsField'
 import { DEFAULT_AUDIO_TAGS_PROMPT } from '@shared/audioTags'
@@ -54,6 +59,8 @@ export function VoiceCallConfigSection({
     : DEFAULT_VOICE_CALL_CONFIG
   const set = (p: Partial<VoiceCallConfig>): void => patch({ voice: { ...voice, ...p } })
   const where = scope === 'chat' ? 'neste chat' : 'nesta persona'
+  /** Origem de um valor deste nível na prévia do prompt ("deste chat"/"desta persona"). */
+  const own = scope === 'chat' ? 'deste chat' : 'desta persona'
   const { enabled, source } = resolveVoiceCallEnabled(voice, personaVoice, defaults)
   const resolved = resolveVoiceCallConfig(voice, defaults, personaVoice)
   // o que o "★" herda neste nível (persona no chat; global na persona)
@@ -209,7 +216,6 @@ export function VoiceCallConfigSection({
               inheritedFrom={
                 scope === 'chat' && personaVoice?.promptMode ? 'Padrão da persona' : 'Padrão global'
               }
-              basePromptOn={defaults.basePromptEnabled}
               onChange={(promptMode) => set({ promptMode })}
             />
             <AudioTagsField
@@ -232,6 +238,23 @@ export function VoiceCallConfigSection({
               }
               onChange={(audioTags) => set({ audioTags })}
               onPromptChange={(audioTagsPrompt) => set({ audioTagsPrompt })}
+            />
+            <VoicePromptPreview
+              layout={voicePromptLayout({ ...resolved, audioTagsActive: true })}
+              voiceFrom={
+                voice.voicePrompt
+                  ? own
+                  : personaVoice?.voicePrompt
+                    ? `da persona “${persona?.name ?? ''}”`
+                    : null
+              }
+              tagsFrom={
+                voice.audioTags != null
+                  ? own
+                  : scope === 'chat' && personaVoice?.audioTags != null
+                    ? `da persona “${persona?.name ?? ''}”`
+                    : 'padrão deste dispositivo (Configurações → Áudio)'
+              }
             />
             {resolved.promptMode !== 'none' && (
               <VoicePromptField
@@ -276,6 +299,16 @@ function EndCallField({
             Quando você se despede ou pede para desligar, o agente diz uma despedida curta e
             encerra: a chamada cai depois de a despedida tocar. Se você voltar a falar antes, ela
             continua.
+          </p>
+          <p>
+            Ligado, a tool vai na lista de tools dos turnos de voz com esta descrição (nenhuma
+            instrução extra no prompt):
+          </p>
+          <p
+            className="font-mono text-[11px] whitespace-pre-wrap"
+            data-testid="end-call-description"
+          >
+            {TOOL_DEFINITIONS.end_call.function.description}
           </p>
         </ApiInfo>
       </span>
@@ -347,7 +380,7 @@ const PROMPT_MODE_LABEL: Record<VoiceCallPromptMode, string> = {
 const PROMPT_MODE_HELP: Record<VoiceCallPromptMode, string> = {
   append: 'System prompt normal + o prompt do modo voz no fim (padrão).',
   replace: 'Na chamada, o prompt do modo voz SUBSTITUI o system prompt normal.',
-  none: 'Sem prompt de voz: só o system prompt normal (nem o prompt-base global de voz).'
+  none: 'Sem prompt de voz: só o system prompt normal.'
 }
 
 /** Como o prompt do modo voz compõe com o system prompt (★ no modo herdado da persona/padrão). */
@@ -355,13 +388,11 @@ function VoicePromptModeField({
   value,
   inherited,
   inheritedFrom,
-  basePromptOn,
   onChange
 }: {
   value: VoiceCallPromptMode | null
   inherited: VoiceCallPromptMode
   inheritedFrom: string
-  basePromptOn: boolean
   onChange: (mode: VoiceCallPromptMode | null) => void
 }): React.JSX.Element {
   const effective = value ?? inherited
@@ -371,18 +402,18 @@ function VoicePromptModeField({
         <span className="text-xs font-medium text-muted">Prompt na chamada</span>
         <ApiInfo title="Como o prompt do modo voz entra nas requests da chamada">
           <p>
-            <b>Complementar</b>: system prompt normal + prompt-base de voz + prompt do modo voz.
+            <b>Complementar</b>: system prompt normal + prompt do modo voz no fim.
           </p>
           <p>
-            <b>Substituto</b>: prompt-base de voz + prompt do modo voz NO LUGAR do system prompt
-            normal (prompt do modo voz vazio = nada a pôr no lugar → como complementar).
+            <b>Substituto</b>: o prompt do modo voz NO LUGAR do system prompt normal (prompt do modo
+            voz vazio = nada a pôr no lugar → como complementar).
           </p>
           <p>
-            <b>Nenhum</b>: só o system prompt normal — sem o prompt-base global nem o do modo voz.
+            <b>Nenhum</b>: só o system prompt normal.
           </p>
           <p>
-            O prompt-base global (respostas curtas, sem markdown) está{' '}
-            {basePromptOn ? 'ligado' : 'desligado'} em Configurações → Áudio → Chamada de voz.
+            O app não acrescenta prompt próprio: além do prompt do modo voz, só a instrução das tags
+            de voz, quando você as liga (veja a prévia “O que a chamada muda no prompt”).
           </p>
         </ApiInfo>
       </div>
@@ -480,7 +511,7 @@ function VoicePromptField({
         >
           <p>
             {mode === 'replace'
-              ? 'Vai NO LUGAR do system prompt do chat (depois do prompt-base de voz)'
+              ? 'Vai NO LUGAR do system prompt do chat'
               : 'Vai no fim do system prompt do chat, separado por uma linha em branco,'}{' '}
             em TODAS as requests feitas durante a chamada (inclusive respostas a mensagens digitadas
             enquanto a chamada está ativa). Fora da chamada nada muda.
@@ -488,7 +519,25 @@ function VoicePromptField({
           <p>
             Ex.: <C>Responda em frases curtas e naturais, sem markdown nem listas.</C>
           </p>
+          <p>
+            Vazio (padrão) = a chamada manda exatamente o system prompt normal. “Usar sugestão”
+            insere um texto sugerido NESTE campo, onde você o vê e edita — só ele vai à request.
+          </p>
         </ApiInfo>
+        {!(draft ?? value).trim() && (
+          <Button
+            size="sm"
+            variant="ghost"
+            className="ml-auto h-6 px-2 text-[11px]"
+            data-testid="voice-call-prompt-suggest"
+            onClick={() => {
+              setDraft(null)
+              onCommit(SUGGESTED_VOICE_PROMPT)
+            }}
+          >
+            Usar sugestão
+          </Button>
+        )}
       </div>
       <AutoTextarea
         value={draft ?? value}
@@ -508,6 +557,60 @@ function VoicePromptField({
         }}
         className="field w-full px-2.5 py-1.5 text-[12.5px] leading-5"
       />
+    </div>
+  )
+}
+
+/**
+ * Prévia do que a chamada muda no prompt (transparência — o MESMO cálculo da request,
+ * `voicePromptLayout`): se o system prompt do chat fica ou é substituído e cada texto acrescentado,
+ * com a origem. Nada acrescentado → "a chamada manda exatamente o system prompt normal".
+ */
+export function VoicePromptPreview({
+  layout,
+  voiceFrom,
+  tagsFrom
+}: {
+  layout: ReturnType<typeof voicePromptLayout>
+  /** De onde vem o prompt do modo voz ("deste chat", "da persona “X”"). */
+  voiceFrom: string | null
+  /** De onde vem a escolha das tags de voz. */
+  tagsFrom: string
+}): React.JSX.Element {
+  const label = (kind: 'voice' | 'tags'): string =>
+    kind === 'voice'
+      ? `Prompt do modo voz${voiceFrom ? ` — ${voiceFrom}` : ''}`
+      : `Instrução das tags de voz — ${tagsFrom} (só quando a voz da chamada interpreta tags: ElevenLabs v3/v4, Fish Audio Drama 3/S2)`
+  return (
+    <div
+      data-testid="voice-call-prompt-preview"
+      data-parts={layout.parts.map((p) => p.kind).join(',')}
+      data-replaces={layout.replacesSystem || undefined}
+      className="space-y-1.5 rounded-lg border border-border bg-bg/40 px-2.5 py-2"
+    >
+      <div className="text-xs font-medium text-muted">O que a chamada muda no prompt</div>
+      {!layout.parts.length ? (
+        <p className="text-[11.5px] text-subtle">
+          Nada: a chamada manda exatamente o system prompt normal deste chat (o app não acrescenta
+          prompt próprio).
+        </p>
+      ) : (
+        <>
+          <p className="text-[11.5px] text-subtle">
+            {layout.replacesSystem
+              ? 'O system prompt do chat SAI nos turnos de voz; entra no lugar dele:'
+              : 'System prompt normal do chat e, depois dele, separado por linha em branco:'}
+          </p>
+          {layout.parts.map((p) => (
+            <div key={p.kind} data-testid={`voice-call-prompt-preview-${p.kind}`}>
+              <div className="text-[11px] text-subtle">{label(p.kind)}</div>
+              <pre className="mt-0.5 max-h-40 overflow-auto rounded-md bg-surface/60 px-2 py-1 font-sans text-[12px] leading-5 whitespace-pre-wrap text-fg/90">
+                {p.text}
+              </pre>
+            </div>
+          ))}
+        </>
+      )}
     </div>
   )
 }

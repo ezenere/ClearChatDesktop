@@ -460,10 +460,10 @@ function harness(opts: HarnessOpts = {}): Harness {
 
 const LONG_Q = 'me explica com calma como funciona a fotossíntese nas plantas'
 
-/** Espera (tempo real) o preâmbulo sair — ele usa um timer real de 0 ms. */
+/** Espera o preâmbulo sair — o timer dele (espera 0) é do relógio falso (os mesmos timers). */
 async function waitFiller(h: Harness): Promise<void> {
   for (let i = 0; i < 50 && !h.emitted.some((u) => u.kind === 'filler'); i++)
-    await new Promise((r) => setTimeout(r, 2))
+    await h.clock.advance(0)
   assert.ok(
     h.emitted.some((u) => u.kind === 'filler'),
     'preâmbulo tocou'
@@ -984,7 +984,7 @@ async function spokenTurn(
   h.m.speechEnd()
   h.m.noteTranscript({ text, model: 'whisper', backend: 'api', audioMs })
   h.m.turn(text, { speechMs: voicedSpanOf(speech) })
-  await new Promise((r) => setTimeout(r, 30)) // o preâmbulo usa timer real de 0 ms
+  await h.clock.advance(0) // o preâmbulo (espera 0) usa o timer do relógio falso
 }
 const fillerDecision = (h: Harness): VoiceCallTimelineEvent | undefined =>
   h.timeline.find((e) => e.kind === 'decision' && e.class === 'FILLER')
@@ -1042,7 +1042,7 @@ test('mensagem digitada na chamada (sem medida de voz): a fala mínima não se a
       createdAt: 1
     }
   })
-  await new Promise((r) => setTimeout(r, 30))
+  await h.clock.advance(0)
   assert.equal(h.emitted.filter((u) => u.kind === 'filler').length, 1)
 })
 

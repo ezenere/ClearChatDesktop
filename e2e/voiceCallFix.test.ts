@@ -22,11 +22,11 @@ import {
   DEFAULT_AUDIO_INPUT,
   DEFAULT_STT_SETTINGS,
   DEFAULT_TTS_SETTINGS,
-  DEFAULT_VOICE_BASE_PROMPT,
   DEFAULT_VOICE_CALL_DEFAULTS,
   applyVoiceCallChat,
   layerVoiceCallConfig,
   normalizeVoiceCallConfig,
+  normalizeVoiceCallDefaults,
   resolveVoiceCallConfig,
   resolveVoiceCallEnabled,
   voiceSystemPrompt,
@@ -681,31 +681,25 @@ const cfg = (v: Partial<VoiceCallConfig>): VoiceCallConfig => ({
   ...v
 })
 
-test('prompt na chamada: complementar (padrão) / substituto / nenhum e o prompt-base global', () => {
+test('prompt na chamada: complementar (padrão) / substituto / nenhum — só o prompt do modo voz muda', () => {
   const sys = 'Você é a Diana.'
   const append = resolveVoiceCallConfig(
     cfg({ voicePrompt: 'Fale curto.' }),
     DEFAULT_VOICE_CALL_DEFAULTS
   )
   assert.equal(append.promptMode, 'append')
-  assert.equal(
-    applyVoiceCallChat(chatOf(sys), append).config.systemPrompt,
-    `${sys}\n\n${DEFAULT_VOICE_BASE_PROMPT}\n\nFale curto.`
-  )
+  assert.equal(applyVoiceCallChat(chatOf(sys), append).config.systemPrompt, `${sys}\n\nFale curto.`)
   const replace = resolveVoiceCallConfig(
     cfg({ voicePrompt: 'Você é a Diana ao telefone.', promptMode: 'replace' }),
     DEFAULT_VOICE_CALL_DEFAULTS
   )
   assert.equal(
     applyVoiceCallChat(chatOf(sys), replace).config.systemPrompt,
-    `${DEFAULT_VOICE_BASE_PROMPT}\n\nVocê é a Diana ao telefone.`,
+    'Você é a Diana ao telefone.',
     'substituto: o system prompt normal sai'
   )
   // substituto sem prompt de voz = nada a pôr no lugar → como complementar
-  assert.equal(
-    voiceSystemPrompt(sys, { basePrompt: null, voicePrompt: null, promptMode: 'replace' }),
-    sys
-  )
+  assert.equal(voiceSystemPrompt(sys, { voicePrompt: null, promptMode: 'replace' }), sys)
   const none = resolveVoiceCallConfig(
     cfg({ voicePrompt: 'ignorado', promptMode: 'none' }),
     DEFAULT_VOICE_CALL_DEFAULTS
@@ -715,12 +709,19 @@ test('prompt na chamada: complementar (padrão) / substituto / nenhum e o prompt
     sys,
     'nenhum: só o normal'
   )
-  // prompt-base desligado no global: substituto = só o prompt de voz
-  const noBase = resolveVoiceCallConfig(cfg({ voicePrompt: 'Só isto.', promptMode: 'replace' }), {
+  // campos LEGADOS do prompt-base (até 2026-11-12) gravados no dispositivo: ignorados
+  const legacy = normalizeVoiceCallDefaults({
     ...DEFAULT_VOICE_CALL_DEFAULTS,
-    basePromptEnabled: false
-  })
-  assert.equal(applyVoiceCallChat(chatOf(sys), noBase).config.systemPrompt, 'Só isto.')
+    basePromptEnabled: true,
+    basePrompt: 'texto antigo'
+  } as never)
+  assert.ok(!('basePromptEnabled' in legacy) && !('basePrompt' in legacy))
+  const withLegacy = resolveVoiceCallConfig(cfg({}), {
+    ...DEFAULT_VOICE_CALL_DEFAULTS,
+    basePromptEnabled: true,
+    basePrompt: 'texto antigo'
+  } as never)
+  assert.equal(applyVoiceCallChat(chatOf(sys), withLegacy).config.systemPrompt, sys)
   // valores antigos (sem promptMode) seguem complementares; lixo → herda
   assert.equal(normalizeVoiceCallConfig({ voicePrompt: 'x' }).promptMode, undefined)
   assert.equal(normalizeVoiceCallConfig({ promptMode: 'bogus' }).promptMode, undefined)

@@ -6,7 +6,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  DEFAULT_VOICE_BASE_PROMPT,
   DEFAULT_TURN_SILENCE_MS,
   DEFAULT_VOICE_CALL_DEFAULTS,
   applyVoiceCallChat,
@@ -43,7 +42,7 @@ test('resolveVoiceCallConfig: null/ausente herda tudo (enabled/fillers do global
     enabled: DEFAULT_VOICE_CALL_DEFAULTS.fillers.enabled,
     prompt: DEFAULT_VOICE_CALL_DEFAULTS.fillers.prompt
   })
-  assert.equal(r.basePrompt, DEFAULT_VOICE_BASE_PROMPT)
+  assert.ok(!('basePrompt' in r), 'sem prompt-base (o app não põe prompt próprio na chamada)')
   assert.equal(r.promptMode, 'append', 'prompt do modo voz complementar por padrão')
   assert.ok(!('interjections' in r), 'sem interjeições (legado)')
 })
@@ -171,8 +170,8 @@ test('applyVoiceCallChat: voicePrompt/params/tools aplicados na CÓPIA; sem over
   const eff = applyVoiceCallChat(base, r)
   assert.equal(
     eff.config.systemPrompt,
-    `persona\n\n${DEFAULT_VOICE_BASE_PROMPT}\n\nfale em frases curtas`,
-    'prompt-base do modo voz + voicePrompt, nessa ordem'
+    'persona\n\nfale em frases curtas',
+    'system prompt + o prompt do modo voz (nada do app)'
   )
   assert.deepEqual(
     eff.config.params,
@@ -190,11 +189,8 @@ test('applyVoiceCallChat: voicePrompt/params/tools aplicados na CÓPIA; sem over
   )
   assert.deepEqual(
     plain.config,
-    {
-      ...base.config,
-      systemPrompt: `persona\n\n${DEFAULT_VOICE_BASE_PROMPT}`
-    },
-    'sem overrides: a config do chat + prompt-base do modo voz (sem teto de tokens)'
+    base.config,
+    'sem overrides: EXATAMENTE a config do chat — o mesmo system prompt de um turno de texto'
   )
 })
 

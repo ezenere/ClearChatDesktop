@@ -364,8 +364,8 @@ export const FILLER_POOL_MAX = 16
 /**
  * Pool padrão de preâmbulos (~0,6–1,4 s cada, pronunciáveis por Kokoro e ElevenLabs — o benchmark
  * mostrou que "Hum, deixa eu ver." funciona nos dois e "Hum…"/"Hmm" soltos não). A chamada toca UM
- * logo depois do turno (ponte até a 1ª frase da resposta), escolhido pelo contexto, sem repetir
- * nenhum dos últimos `FILLER_RECENT_WINDOW` usados.
+ * só quando a resposta DEMORA (nada falado em `fillers.delayMs` — 2,5 s — depois do turno: ponte até
+ * a 1ª frase), escolhido pelo contexto, sem repetir nenhum dos últimos `FILLER_RECENT_WINDOW` usados.
  */
 export const DEFAULT_FILLER_POOL: readonly FillerPhrase[] = [
   { text: 'Hum, deixa eu ver aqui.', contexts: ['question', 'generic'] },
@@ -385,16 +385,35 @@ export const DEFAULT_FILLER_POOL: readonly FillerPhrase[] = [
 /** Padrões GLOBAIS dos fillers (`voiceCallDefaults.fillers`): o pool e o tempo valem para todos os chats. */
 export interface VoiceFillerDefaults extends VoiceFillers {
   /**
-   * Espera entre o turno enviado e o preâmbulo (ms; padrão 250, 0 = já): se a 1ª frase da resposta
-   * ficar pronta antes disso, o preâmbulo nem sai.
+   * Espera entre o turno enviado e o preâmbulo (ms; padrão 2500, faixa 0–10000, 0 = já): o
+   * "deixa eu ver…" só sai quando a resposta DEMORA — se a 1ª frase da resposta (ou a frase de
+   * ferramenta/de demora) sair antes disso, o preâmbulo nem toca. Local do dispositivo (1.9.0).
    */
   delayMs: number
   /** Pool de preâmbulos; null = `DEFAULT_FILLER_POOL` (mudou → os clipes são regerados). */
   pool: FillerPhrase[] | null
 }
 
-/** Espera padrão do preâmbulo depois do turno enviado (ms). */
-export const DEFAULT_FILLER_DELAY_MS = 250
+/**
+ * Espera padrão do preâmbulo depois do turno enviado (ms): só uma resposta lenta de verdade ganha o
+ * "deixa eu ver…" (com 250 ms saía em quase todo turno e soava desconectado — 2026-11-12).
+ */
+export const DEFAULT_FILLER_DELAY_MS = 2500
+/** Padrão ANTIGO da espera do preâmbulo (até 2026-11-12): o valor gravado igual a ele migra. */
+export const LEGACY_FILLER_DELAY_MS = 250
+/** Faixa da espera do preâmbulo (ms; fora dela é preso no limite — 0 = já). */
+export const FILLER_DELAY_MS_RANGE = { min: 0, max: 10_000 } as const
+
+/**
+ * Espera do preâmbulo normalizada: inteiro em `FILLER_DELAY_MS_RANGE` (0 válido = já); lixo/
+ * negativo → o padrão; o padrão antigo EXATO (250) migra para o novo (2500) — outros valores
+ * escolhidos pelo usuário ficam como estão.
+ */
+export function normalizeFillerDelayMs(v: unknown): number {
+  const n = typeof v === 'number' && Number.isFinite(v) ? Math.round(v) : NaN
+  if (Number.isNaN(n) || n < 0 || n === LEGACY_FILLER_DELAY_MS) return DEFAULT_FILLER_DELAY_MS
+  return Math.min(FILLER_DELAY_MS_RANGE.max, n)
+}
 
 /**
  * Categoria da ferramenta para a frase falada quando o assistente usa uma tool na chamada
@@ -654,12 +673,13 @@ export interface VoiceSttChoice {
 }
 
 /**
- * Composição do prompt nos turnos de voz (o prompt-base global entra em `append` e `replace`,
- * salvo desligado em Configurações → Áudio; nunca em `none`):
- * - `append` (complementar, padrão): system prompt do chat + prompt-base + prompt do modo voz;
- * - `replace` (substituto): prompt-base + prompt do modo voz NO LUGAR do system prompt do chat
- *   (prompt do modo voz vazio → nada a pôr no lugar: vale como `append`);
- * - `none` (nenhum): só o system prompt do chat — sem prompt-base nem prompt do modo voz.
+ * Composição do prompt nos turnos de voz — o ÚNICO texto que a chamada muda é o "Prompt do modo
+ * voz" (`voicePrompt`) da persona/chat (o app não põe prompt próprio; vazio = a chamada manda
+ * exatamente o system prompt normal):
+ * - `append` (complementar, padrão): system prompt do chat + prompt do modo voz;
+ * - `replace` (substituto): o prompt do modo voz NO LUGAR do system prompt do chat (prompt do modo
+ *   voz vazio → nada a pôr no lugar: vale como `append`);
+ * - `none` (nenhum): só o system prompt do chat — sem o prompt do modo voz.
  */
 export type VoiceCallPromptMode = 'append' | 'replace' | 'none'
 export const VOICE_CALL_PROMPT_MODES: readonly VoiceCallPromptMode[] = ['append', 'replace', 'none']
@@ -683,10 +703,6 @@ export interface VoiceCallDefaults {
    * params), como qualquer parâmetro do modelo — a chamada não impõe teto próprio.
    */
   model: VoiceCallModelConfig | null
-  /** Prompt-base do modo voz somado ao system prompt (ligado por padrão). */
-  basePromptEnabled: boolean
-  /** Texto do prompt-base; null = `DEFAULT_VOICE_BASE_PROMPT`. */
-  basePrompt: string | null
   /** "O agente pode encerrar a chamada" (tool `end_call` nos turnos da chamada; padrão true). */
   endCall: boolean
   /**
@@ -735,16 +751,22 @@ export interface VoiceCallTurnConfig {
   speculativeApi: boolean
   /**
    * Barge-in com histerese ("ducking" — aditivo; ausente = os padrões): a fala do usuário por cima
-   * da resposta primeiro ABAIXA o áudio do assistente para `duckGain` (0–1; padrão 0.3) e ele
-   * continua tocando; só vira barge-in (para a resposta) com `bargeInVoicedMs` de voz no episódio
-   * (padrão 700) ou `bargeInWords` palavras reais na transcrição parcial (padrão 3; "uhum"/"sim"
-   * não contam) — ou uma palavra de parada ("para", "espera"…). Parou antes disso: depois de
-   * `duckRestoreMs` de silêncio (padrão 450) o volume volta e o som curto é descartado.
+   * da resposta só ABAIXA o áudio do assistente para `duckGain` (0–1; padrão 0.3) depois de
+   * `duckOnsetMs` de voz SUSTENTADA acima do nível de ativação (padrão 500; lacunas curtas ≤
+   * `DUCK_ONSET_GAP_MS` dentro da sequência são toleradas, uma pausa maior zera a contagem — clique,
+   * pancada e ruído curto nunca abaixam); abaixada, ela continua tocando e só vira barge-in (para a
+   * resposta) com `bargeInVoicedMs` de voz no episódio (padrão 1200 — contados desde o início dele)
+   * ou `bargeInWords` palavras reais na transcrição parcial (padrão 3; "uhum"/"sim" e alucinações
+   * do STT não contam) — ou uma palavra de parada ("para", "espera"…) —, sempre só depois do
+   * `duckOnsetMs`. Parou antes disso: depois de `duckRestoreMs` de silêncio (padrão 450) o volume
+   * volta e o som curto é descartado.
    */
   duckGain?: number
   bargeInVoicedMs?: number
   bargeInWords?: number
   duckRestoreMs?: number
+  /** Voz sustentada (ms) por cima da resposta antes de abaixar o volume (padrão 500; 100–3000). */
+  duckOnsetMs?: number
 }
 
 /** Limiares do barge-in com histerese (resolvidos de `VoiceCallTurnConfig` — `resolveBargeIn`). */
@@ -757,21 +779,34 @@ export interface BargeInConfig {
   words: number
   /** Silêncio (ms) que devolve o volume e descarta o som curto. */
   restoreMs: number
+  /**
+   * Voz SUSTENTADA (ms) por cima da resposta antes de abaixar o volume (onset): ruído curto não
+   * abaixa nada. Aditivo — ausente = `DEFAULT_BARGE_IN.onsetMs`.
+   */
+  onsetMs?: number
 }
 
-export const DEFAULT_BARGE_IN: BargeInConfig = {
+export const DEFAULT_BARGE_IN: Required<BargeInConfig> = {
   duckGain: 0.3,
-  voicedMs: 700,
+  voicedMs: 1200,
   words: 3,
-  restoreMs: 450
+  restoreMs: 450,
+  onsetMs: 500
 }
+
+/**
+ * Padrão ANTIGO de `bargeInVoicedMs` (até 2026-11-12): o valor gravado EXATAMENTE igual migra para o
+ * novo (1200 — uma janela de verdade entre abaixar e parar); outros valores ficam como estão.
+ */
+export const LEGACY_BARGE_IN_VOICED_MS = 700
 
 /** Faixas aceitas dos limiares do barge-in (fora delas o valor é preso no limite). */
 export const BARGE_IN_RANGES = {
   duckGain: { min: 0, max: 1 },
   voicedMs: { min: 200, max: 5000 },
   words: { min: 1, max: 10 },
-  restoreMs: { min: 150, max: 3000 }
+  restoreMs: { min: 150, max: 3000 },
+  onsetMs: { min: 100, max: 3000 }
 } as const
 
 /** Silêncio de turno padrão da chamada sem transcrição especulativa (ms). */
@@ -788,21 +823,22 @@ export const DEFAULT_VOICE_CALL_TURN: VoiceCallTurnConfig = {
   duckGain: DEFAULT_BARGE_IN.duckGain,
   bargeInVoicedMs: DEFAULT_BARGE_IN.voicedMs,
   bargeInWords: DEFAULT_BARGE_IN.words,
-  duckRestoreMs: DEFAULT_BARGE_IN.restoreMs
+  duckRestoreMs: DEFAULT_BARGE_IN.restoreMs,
+  duckOnsetMs: DEFAULT_BARGE_IN.onsetMs
 }
 
 /**
- * Prompt-base do modo voz (somado ao system prompt nos turnos da chamada, antes do `voicePrompt`
- * do chat): respostas curtas, sem markdown, sem narrar falhas internas, e o aviso de que a fala
- * vem de transcrição automática (maiúsculas/acentos podem estar errados — "SRC" pode ser "src").
+ * SUGESTÃO para o campo "Prompt do modo voz" da persona/chat — o "Usar sugestão" do editor a
+ * INSERE no campo, onde o usuário a vê e edita; só vai à request porque passou a ser o conteúdo do
+ * campo. Nunca é enviada sozinha (não há prompt-base nem padrão oculto — 2026-11-12). A despedida
+ * com `end_call` está na descrição da própria tool (visível na aba Tools).
  */
-export const DEFAULT_VOICE_BASE_PROMPT = [
+export const SUGGESTED_VOICE_PROMPT = [
   'Você está numa conversa por voz: sua resposta será lida em voz alta.',
   'A primeira frase tem no máximo 10 palavras e vai direto ao ponto. No máximo 3 frases curtas no total.',
   'Sem markdown, listas, títulos, tabelas, emojis ou blocos de código — escreva como se fala.',
   'Não narre tentativas internas nem erros de ferramentas em detalhe: se algo falhar, diga em uma frase curta o que houve e o que vai fazer.',
-  'A fala do usuário vem de transcrição automática e pode ter maiúsculas, acentos ou palavras erradas (ex.: "SRC" pode ser a pasta "src"); interprete pela intenção e, em nomes de arquivos e pastas, tente a grafia em minúsculas antes de concluir que não existe.',
-  'Se o usuário se despedir ou pedir para desligar, responda com uma despedida curta e, se a ferramenta end_call estiver disponível, chame-a no mesmo turno.'
+  'A fala do usuário vem de transcrição automática e pode ter maiúsculas, acentos ou palavras erradas (ex.: "SRC" pode ser a pasta "src"); interprete pela intenção e, em nomes de arquivos e pastas, tente a grafia em minúsculas antes de concluir que não existe.'
 ].join(' ')
 
 export const DEFAULT_VOICE_CALL_DEFAULTS: VoiceCallDefaults = {
@@ -810,8 +846,6 @@ export const DEFAULT_VOICE_CALL_DEFAULTS: VoiceCallDefaults = {
   fillers: { enabled: true, prompt: null, delayMs: DEFAULT_FILLER_DELAY_MS, pool: null },
   turn: { ...DEFAULT_VOICE_CALL_TURN },
   model: null,
-  basePromptEnabled: true,
-  basePrompt: null,
   endCall: true,
   delayPhrases: { ...DEFAULT_DELAY_PHRASES },
   toolPhrases: { ...DEFAULT_TOOL_PHRASES },
@@ -1087,14 +1121,18 @@ export function normalizeVoiceCallTurn(v: unknown): VoiceCallTurnConfig {
         duckGain: b.duckGain,
         bargeInVoicedMs: b.voicedMs,
         bargeInWords: b.words,
-        duckRestoreMs: b.restoreMs
+        duckRestoreMs: b.restoreMs,
+        duckOnsetMs: b.onsetMs
       }
     })()
   }
 }
 
-/** Limiares do barge-in com histerese a partir do `turn` (ausente/lixo → `DEFAULT_BARGE_IN`). */
-export function resolveBargeIn(turn: unknown): BargeInConfig {
+/**
+ * Limiares do barge-in com histerese a partir do `turn` (ausente/lixo → `DEFAULT_BARGE_IN`; fora da
+ * faixa → preso no limite; `bargeInVoicedMs` igual ao padrão antigo — 700 — migra para 1200).
+ */
+export function resolveBargeIn(turn: unknown): Required<BargeInConfig> {
   const t = asObject(turn)
   const d = DEFAULT_BARGE_IN
   const r = BARGE_IN_RANGES
@@ -1108,11 +1146,13 @@ export function resolveBargeIn(turn: unknown): BargeInConfig {
     const n = int ? Math.round(v) : Math.round(v * 100) / 100
     return Math.min(range.max, Math.max(range.min, n))
   }
+  const voiced = t?.bargeInVoicedMs === LEGACY_BARGE_IN_VOICED_MS ? d.voicedMs : t?.bargeInVoicedMs
   return {
     duckGain: num(t?.duckGain, d.duckGain, r.duckGain, false),
-    voicedMs: num(t?.bargeInVoicedMs, d.voicedMs, r.voicedMs, true),
+    voicedMs: num(voiced, d.voicedMs, r.voicedMs, true),
     words: num(t?.bargeInWords, d.words, r.words, true),
-    restoreMs: num(t?.duckRestoreMs, d.restoreMs, r.restoreMs, true)
+    restoreMs: num(t?.duckRestoreMs, d.restoreMs, r.restoreMs, true),
+    onsetMs: num(t?.duckOnsetMs, d.onsetMs, r.onsetMs, true)
   }
 }
 
@@ -1288,16 +1328,16 @@ export function normalizeVoiceCallDefaults(v: unknown): VoiceCallDefaults {
     fillers: {
       enabled: boolOr(fillers?.enabled, d.fillers.enabled),
       prompt: promptOrNull(fillers?.prompt),
-      // 0 é válido (preâmbulo já, sem esperar)
-      delayMs: Math.min(5000, intOr(fillers?.delayMs, d.fillers.delayMs)),
+      // 0 é válido (preâmbulo já, sem esperar); 250 (padrão antigo) migra para 2500
+      delayMs: normalizeFillerDelayMs(fillers?.delayMs),
       pool: normalizeFillerPool(fillers?.pool)
     },
     turn: normalizeVoiceCallTurn(src?.turn),
     // `maxTokens` (teto antigo dos turnos de voz) saiu: o max_tokens vive nos params do modelo da
     // chamada — um valor gravado é descartado aqui
     model: normalizeVoiceCallModel(src?.model),
-    basePromptEnabled: boolOr(src?.basePromptEnabled, d.basePromptEnabled),
-    basePrompt: promptOrNull(src?.basePrompt),
+    // `basePromptEnabled`/`basePrompt` (o "prompt-base do modo voz", removido em 2026-11-12 — o
+    // ClearChat não põe prompt próprio na chamada) são legado: descartados aqui
     endCall: boolOr(src?.endCall, d.endCall),
     delayPhrases: normalizeDelayPhrases(src?.delayPhrases),
     toolPhrases: normalizeToolPhrases(src?.toolPhrases),
@@ -1489,8 +1529,6 @@ export interface ResolvedVoiceCall {
   promptMode: VoiceCallPromptMode
   /** Falas preenchidoras efetivas (consumidas pela chamada — ver SPEC → "Fillers"). */
   fillers: VoiceFillers
-  /** Prompt-base do modo voz (global); null = desligado. */
-  basePrompt: string | null
   /** O agente pode encerrar a chamada (tool `end_call`) — chat > persona > global (padrão true). */
   endCall: boolean
   /** Frases de ferramenta (chat > persona > global `toolPhrases.enabled`; padrão true). */
@@ -1531,7 +1569,6 @@ export function resolveVoiceCallConfig(
     voicePrompt: c.voicePrompt,
     promptMode: c.promptMode ?? 'append',
     fillers: c.fillers ?? { enabled: d.fillers.enabled, prompt: d.fillers.prompt },
-    basePrompt: d.basePromptEnabled ? (d.basePrompt ?? DEFAULT_VOICE_BASE_PROMPT) : null,
     endCall: c.endCall ?? d.endCall,
     audioTags: c.audioTags ?? d.audioTags,
     toolPhrases: c.toolPhrases ?? d.toolPhrases.enabled,
@@ -1541,24 +1578,53 @@ export function resolveVoiceCallConfig(
 
 /**
  * System prompt dos turnos de voz pelo modo (ver `VoiceCallPromptMode`): `append` = system +
- * prompt-base + prompt do modo voz; `replace` = prompt-base + prompt do modo voz no lugar do system
- * (sem prompt do modo voz → como `append`); `none` = só o system. Separados por linha em branco. A
+ * prompt do modo voz; `replace` = o prompt do modo voz no lugar do system (sem prompt do modo voz
+ * → como `append`); `none` = só o system. Separados por linha em branco. A
  * instrução das tags de voz entra no FIM (em qualquer modo — é um opt-in explícito) só com as tags
  * pedidas (`audioTags`) E a voz da chamada as interpretando (`audioTagsActive`).
  */
 export function voiceSystemPrompt(
   systemPrompt: string,
-  call: Pick<ResolvedVoiceCall, 'basePrompt' | 'voicePrompt' | 'promptMode'> &
+  call: Pick<ResolvedVoiceCall, 'voicePrompt' | 'promptMode'> &
     Partial<Pick<ResolvedVoiceCall, 'audioTags' | 'audioTagsPrompt' | 'audioTagsActive'>>
 ): string {
-  const join = (parts: (string | null | undefined)[]): string =>
-    parts.filter((x): x is string => !!x?.trim()).join('\n\n')
-  const tags = call.audioTags && call.audioTagsActive ? (call.audioTagsPrompt ?? null) : null
+  const layout = voicePromptLayout(call)
+  if (!layout.parts.length) return systemPrompt
+  const texts = layout.parts.map((p) => p.text)
+  return (layout.replacesSystem ? texts : [systemPrompt, ...texts])
+    .filter((x) => !!x?.trim())
+    .join('\n\n')
+}
+
+/** Uma parte que a chamada ACRESCENTA ao prompt (de onde vem: o prompt do modo voz ou as tags). */
+export interface VoicePromptPart {
+  kind: 'voice' | 'tags'
+  text: string
+}
+
+/**
+ * O que a chamada põe no prompt, na ordem (transparência — a prévia da aba Voz e de Configurações
+ * → Áudio usa o MESMO cálculo que a request): `replacesSystem` = o system prompt do chat sai
+ * (modo substituto com prompt do modo voz); `parts` = os textos acrescentados (vazios saem). O
+ * ÚNICO texto que a chamada muda é o "Prompt do modo voz" da persona/chat (+ a instrução das tags de
+ * voz, só com o opt-in e visível/editável) — o app não põe prompt próprio (2026-11-12).
+ */
+export function voicePromptLayout(
+  call: Pick<ResolvedVoiceCall, 'voicePrompt' | 'promptMode'> &
+    Partial<Pick<ResolvedVoiceCall, 'audioTags' | 'audioTagsPrompt' | 'audioTagsActive'>>
+): { replacesSystem: boolean; parts: VoicePromptPart[] } {
+  const part = (
+    kind: VoicePromptPart['kind'],
+    text: string | null | undefined
+  ): VoicePromptPart[] => (text?.trim() ? [{ kind, text }] : [])
+  const tags = part(
+    'tags',
+    call.audioTags && call.audioTagsActive ? (call.audioTagsPrompt ?? null) : null
+  )
   const mode = call.promptMode ?? 'append'
-  if (mode === 'none') return tags ? join([systemPrompt, tags]) : systemPrompt
-  if (mode === 'replace' && call.voicePrompt?.trim())
-    return join([call.basePrompt, call.voicePrompt, tags])
-  return join([systemPrompt, call.basePrompt, call.voicePrompt, tags])
+  if (mode === 'none') return { replacesSystem: false, parts: tags }
+  const parts = [...part('voice', call.voicePrompt), ...tags]
+  return { replacesSystem: mode === 'replace' && !!call.voicePrompt?.trim(), parts }
 }
 
 /**
