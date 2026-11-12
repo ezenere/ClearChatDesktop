@@ -1233,28 +1233,49 @@ app.on('window-all-closed', () => app.quit())
   })
 
   await step(
-    'Configurações → Áudio → Chamada de voz: "Frases de demora" (tempos + pools recolhidos)',
+    'Configurações → Áudio → Chamada de voz: "Frases de espera" (silêncio + agradecimento + pools recolhidos)',
     async () => {
       await open('chat', 'Ideias de nomes para o app')
       await openAudioSettings()
       const box = page.getByTestId('voice-call-delay-phrases')
       await box.scrollIntoViewIfNeeded()
-      const sw = box.getByRole('switch', { name: 'Frases de demora' })
+      const sw = box.getByRole('switch', { name: 'Frases de espera' })
       assert.equal(await sw.getAttribute('aria-checked'), 'true', 'ligadas por padrão')
-      // padrões espaçados (2026-11-12): "manter viva" após 8 s, desculpa só depois de 15 s
+      // "manter viva" após 8 s de silêncio; agradecer se a última frase foi há mais de 4,5 s
       assert.equal(await box.getByTestId('voice-call-keepalive-after').inputValue(), '8000')
-      assert.equal(await box.getByTestId('voice-call-apology-after').inputValue(), '15000')
+      assert.equal(await box.getByTestId('voice-call-thanks-after').inputValue(), '4500')
+      assert.equal(
+        await box.getByTestId('voice-call-apology-after').count(),
+        0,
+        'sem "Desculpa após"'
+      )
+      await box.getByText('Manter viva após (silêncio)').waitFor()
+      await box.getByText('Agradecer se a última frase foi há mais de').waitFor()
       const pools = box.getByTestId('voice-call-delay-pools')
       assert.equal(await pools.evaluate((d) => (d as HTMLDetailsElement).open), false, 'recolhido')
       await pools.locator('summary').click()
       const ka = box.getByTestId('voice-call-keepalive-pool')
       assert.match(await ka.inputValue(), /Só mais um instante…/)
+      assert.match(
+        await box.getByTestId('voice-call-keepalive-tool-pool').inputValue(),
+        /Ainda tô vendo isso aqui…/
+      )
+      const th = box.getByTestId('voice-call-thanks-pool')
+      assert.match(await th.inputValue(), /Obrigado por aguardar\./)
+      assert.doesNotMatch(await th.inputValue(), /[Dd]esculp/, 'agradece, não se desculpa')
       await ka.fill('Um segundinho só.\nJá volto.')
-      await box.getByTestId('voice-call-apology-after').click() // blur salva
+      await box.getByTestId('voice-call-thanks-after').click() // blur salva
       await box.getByTestId('voice-call-keepalive-pool-reset').waitFor()
+      await th.fill('Valeu por esperar.')
+      await box.getByTestId('voice-call-thanks-after').click()
+      await box.getByTestId('voice-call-thanks-pool-reset').waitFor()
+      assert.equal(await th.inputValue(), 'Valeu por esperar.', 'pool do obrigado salvo')
+      assert.equal(await ka.inputValue(), 'Um segundinho só.\nJá volto.', 'o outro pool intacto')
       await box.screenshot({ path: join(SHOTS, 'audio-delay-phrases.png') })
       await box.getByTestId('voice-call-keepalive-pool-reset').click()
       assert.match(await ka.inputValue(), /Só mais um instante…/, 'restaurado')
+      await box.getByTestId('voice-call-thanks-pool-reset').click()
+      assert.match(await th.inputValue(), /Obrigado por aguardar\./, 'restaurado')
       await sw.click()
       assert.equal(await sw.getAttribute('aria-checked'), 'false')
       assert.equal(await box.getByTestId('voice-call-keepalive-after').count(), 0, 'tempos somem')

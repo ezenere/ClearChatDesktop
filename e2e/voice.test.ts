@@ -284,9 +284,10 @@ test('voiceCallDefaults: parcial completa com os padrões; nested normalizado', 
     delayPhrases: {
       enabled: true,
       keepAliveAfterMs: 8000,
-      apologyAfterMs: 15_000,
+      thanksAfterMs: 4500,
       keepAlivePool: null,
-      apologyPool: null
+      keepAliveToolPool: null,
+      thanksPool: null
     },
     // tags de voz (aditivo; opt-in): desligadas, instrução padrão do app
     audioTags: false,

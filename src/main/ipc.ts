@@ -599,8 +599,8 @@ export function registerIpc(): void {
               { local: ttsLocalEngine(), signal: s }
             )
       ),
-    // frases de demora ("Só mais um instante…", "Desculpe a demora…"): mesma voz/backend, request à
-    // parte com os bytes completos — a ElevenLabs vai pelo REST, nunca no contexto WS da resposta
+    // frases de espera ("Só mais um instante…", "Obrigado por aguardar." sem clipe): mesma
+    // voz/backend, request à parte com os bytes completos — a ElevenLabs vai pelo REST, nunca no contexto WS da resposta
     synthPhrase: (text, signal) =>
       synthesizeBlock(
         { text, settings: callVoiceSettings().tts },
@@ -623,7 +623,8 @@ export function registerIpc(): void {
         v.voiceCallDefaults.fillers.pool,
         cls,
         n,
-        v.voiceCallDefaults.toolPhrases.pool
+        v.voiceCallDefaults.toolPhrases.pool,
+        v.voiceCallDefaults.delayPhrases.thanksPool
       )
     },
     // turno continuado/barge-in: para o turno e deixa no histórico só o que foi falado
@@ -1437,6 +1438,7 @@ export function registerIpc(): void {
         settings: v.tts,
         fillerPool: v.voiceCallDefaults.fillers.pool,
         toolPool: v.voiceCallDefaults.toolPhrases.pool,
+        thanksPool: v.voiceCallDefaults.delayPhrases.thanksPool,
         local: ttsLocalEngine(),
         onProgress: (e) => sendToWindows(VOICE_TTS_CLIPS_PROGRESS_CHANNEL, e)
       })
@@ -1453,7 +1455,8 @@ export function registerIpc(): void {
         m,
         v.tts,
         v.voiceCallDefaults.fillers.pool,
-        v.voiceCallDefaults.toolPhrases.pool
+        v.voiceCallDefaults.toolPhrases.pool,
+        v.voiceCallDefaults.delayPhrases.thanksPool
       )
       return {
         ...toClipsView(m),

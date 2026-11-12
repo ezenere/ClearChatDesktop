@@ -1,5 +1,6 @@
 // Atos de fala curta da chamada de voz — política PURA (sem Electron/UI/IPC/fS): regras dos
-// preâmbulos (fillers), das frases de demora e do backchannel × barge-in durante a reprodução,
+// preâmbulos (fillers), das frases de espera ("manter viva"/"obrigado por aguardar") e do
+// backchannel × barge-in durante a reprodução,
 // testáveis em `e2e/voiceCallActs.test.ts` e `e2e/voiceDelayPhrases.test.ts`. O consumo real:
 // `src/main/voice/call.ts` (preâmbulos/frases de demora) e `src/renderer/src/lib/voice/useVoiceCall.ts`
 // (barge-in). Ver SPEC.md → "Áudio → Chamada de voz (meia-duplex)" (subseções "Fillers" e "Frases
@@ -355,68 +356,58 @@ export function toolPhraseSkipReason(input: {
   return null
 }
 
-// ---------------- frases de demora (sintetizadas ao vivo — SPEC → "Frases de demora") ----------------
+// ---------------- frases de espera ("manter viva" + "obrigado por aguardar" — SPEC → "Frases de demora") ----------------
 
-/** No máximo N frases "manter viva" por turno. */
+/** No máximo N frases "manter viva" FALADAS por turno (as puladas não contam). */
 export const KEEPALIVE_MAX_PER_TURN = 2
-/**
- * Intervalo mínimo entre duas frases "manter viva" (ms): do FIM da anterior (o `playback-idle`
- * depois dela — a latência da síntese e a duração do áudio não comem o intervalo) ao início da
- * seguinte.
- */
-export const KEEPALIVE_COOLDOWN_MS = 15_000
-/**
- * Regra global de espaçamento (ms): silêncio mínimo entre o FIM de qualquer frase curta (preâmbulo,
- * "manter viva" ou desculpa) e o INÍCIO da próxima "manter viva" ou desculpa. A "manter viva" espera;
- * a desculpa que violaria a regra é PULADA (nunca adiada — a resposta não espera por ela).
- */
-export const DELAY_MIN_GAP_MS = 10_000
-/** Frase de demora não repete nenhuma das últimas N do mesmo pool (limitado a pool − 1). */
+/** Frase de espera não repete nenhuma das últimas N do mesmo pool (limitado a pool − 1). */
 export const DELAY_RECENT_WINDOW = 2
 
-/** Estado das frases de demora no turno em andamento (o `VoiceCallManager` guarda). */
+/** Estado das frases de espera no turno em andamento (o `VoiceCallManager` guarda). */
 export interface DelayPhraseState {
   /** Turno disparado em (ms); null = desarmado (sem turno esperando resposta). */
   turnStartedAt: number | null
-  /** Desde quando nada toca esperando a resposta (ms); null = algo audível agora. */
-  silentSince: number | null
-  /** Frases "manter viva" decididas neste turno. */
-  keepAlives: number
   /**
-   * Última "manter viva" (ms) — o cooldown conta daqui: o FIM da reprodução dela; enquanto ainda
-   * não terminou (ou se foi pulada depois da síntese), o momento da decisão.
+   * Desde quando NADA se ouve (ms): o fim da última fala — o `playback-idle` depois do preâmbulo,
+   * da frase de ferramenta, da "manter viva" anterior ou de uma frase da resposta — ou o envio do
+   * turno. null = algo tocando/sintetizando para tocar, o usuário falando ou a espera pausada.
    */
-  lastKeepAliveAt: number | null
+  silentSince: number | null
+  /** Frases "manter viva" FALADAS neste turno (emitidas para tocar). */
+  keepAlives: number
+  /** "Manter viva" faladas nesta ESPERA (desde a última frase da resposta) — o agradecimento exige ≥ 1. */
+  waitKeepAlives: number
   /**
-   * Fim da última frase curta tocada no turno (preâmbulo, "manter viva" ou desculpa — o
-   * `playback-idle` depois dela; ms); null = nenhuma. A regra de `DELAY_MIN_GAP_MS` conta daqui.
+   * Fim da última frase curta tocada no turno (preâmbulo, frase de ferramenta, "manter viva",
+   * agradecimento — o `playback-idle` depois dela; ms); null = nenhuma. O agradecimento conta daqui.
    */
   lastShortEndAt: number | null
-  /** A 1ª frase da resposta já ficou pronta (a desculpa não sai mais). */
+  /** Uma frase da resposta já ficou pronta neste turno (informativo). */
   answerSpoken: boolean
-  /** Há tool em execução agora (depois da 1ª frase, só aí volta a "manter viva"). */
+  /** Há tool em execução agora (escolhe o pool da "manter viva": ferramenta × pensando). */
   toolsRunning: boolean
-  /** A síntese da desculpa já foi pedida neste turno. */
-  apologyStarted: boolean
+  /** O "obrigado por aguardar" já tocou neste turno (no máx. 1). */
+  thanked: boolean
 }
 
 export const EMPTY_DELAY_STATE: DelayPhraseState = {
   turnStartedAt: null,
   silentSince: null,
   keepAlives: 0,
-  lastKeepAliveAt: null,
+  waitKeepAlives: 0,
   lastShortEndAt: null,
   answerSpoken: false,
   toolsRunning: false,
-  apologyStarted: false
+  thanked: false
 }
 
 /**
- * Momento (ms) em que a próxima frase "manter viva" fica devida; null = nenhuma neste turno (ou
- * enquanto algo toca). Regras: silêncio ≥ `keepAliveAfterMs` esperando a resposta — antes da 1ª
- * frase dela, ou depois dela só com tool rodando —, no máx. `KEEPALIVE_MAX_PER_TURN` por turno,
- * `KEEPALIVE_COOLDOWN_MS` desde o fim da anterior e `DELAY_MIN_GAP_MS` desde o fim de qualquer
- * frase curta (o preâmbulo inclusive).
+ * Momento (ms) em que a próxima frase "manter viva" fica devida; null = nenhuma agora. Regra ÚNICA
+ * (2026-11-12): `keepAliveAfterMs` de silêncio desde o fim da última fala (`silentSince`) — esse
+ * silêncio É o espaçamento (sem cooldown/gap à parte) — enquanto a resposta não está sendo falada
+ * (antes dela, com tool rodando e com o modelo pensando de novo depois da tool; quem chama bloqueia
+ * quando a resposta está sintetizando/tocando, o usuário fala ou o desligamento foi armado), no
+ * máx. `KEEPALIVE_MAX_PER_TURN` faladas por turno.
  */
 export function keepAliveDueAt(
   s: DelayPhraseState,
@@ -424,43 +415,48 @@ export function keepAliveDueAt(
 ): number | null {
   if (!cfg.enabled || s.turnStartedAt == null || s.silentSince == null) return null
   if (s.keepAlives >= KEEPALIVE_MAX_PER_TURN) return null
-  if (s.answerSpoken && !s.toolsRunning) return null
-  let due = s.silentSince + Math.max(0, cfg.keepAliveAfterMs)
-  if (s.lastKeepAliveAt != null) due = Math.max(due, s.lastKeepAliveAt + KEEPALIVE_COOLDOWN_MS)
-  if (s.lastShortEndAt != null) due = Math.max(due, s.lastShortEndAt + DELAY_MIN_GAP_MS)
-  return due
+  const after =
+    Number.isFinite(cfg.keepAliveAfterMs) && cfg.keepAliveAfterMs > 0 ? cfg.keepAliveAfterMs : 0
+  return s.silentSince + after
 }
 
-/** Momento (ms) em que a síntese da desculpa começa; null = não neste turno. */
-export function apologyDueAt(
-  s: DelayPhraseState,
-  cfg: { enabled: boolean; apologyAfterMs: number }
-): number | null {
-  if (!cfg.enabled || s.turnStartedAt == null || s.answerSpoken || s.apologyStarted) return null
-  return s.turnStartedAt + Math.max(0, cfg.apologyAfterMs)
+/** Contexto da "manter viva": uma tool rodando (`tool`) ou o modelo pensando (`thinking`). */
+export type KeepAliveContext = 'tool' | 'thinking'
+
+export function keepAliveContext(s: Pick<DelayPhraseState, 'toolsRunning'>): KeepAliveContext {
+  return s.toolsRunning ? 'tool' : 'thinking'
 }
 
-/** Por que a desculpa pronta NÃO toca antes da 1ª frase (null = toca). */
-export type ApologySkip = 'not-ready' | 'keepalive-playing' | 'clip-playing' | 'too-soon'
+/** Por que o "obrigado por aguardar" NÃO toca antes da frase da resposta (null = toca). */
+export type ThanksSkip = 'no-keepalive' | 'already' | 'too-soon' | 'not-ready'
 
 /**
- * A desculpa toca antes da 1ª frase da resposta? Só pronta (nunca se espera a síntese dela), sem
- * frase "manter viva" nem outro clipe tocando (a resposta já vai esperar ele terminar) e com pelo
- * menos `DELAY_MIN_GAP_MS` desde o FIM da última frase curta (`lastShortEndAt` — preâmbulo,
- * "manter viva"). Violaria a regra → pulada, nunca adiada.
+ * O "obrigado por aguardar" toca antes da frase da resposta que encerra a espera? Só se nesta espera
+ * ao menos uma "manter viva" foi falada (`no-keepalive`), uma vez por turno (`already`), a última
+ * frase de espera já TERMINOU há ≥ `thanksAfterMs` (`too-soon` — tocando agora ou recente: "falou
+ * 'só mais um instante' há 2 s e a resposta chegou → não precisa") e ele já está PRONTO (`not-ready`
+ * — clipe ou síntese em paralelo; a resposta nunca espera por ele).
  */
-export function apologySkipReason(input: {
+export function thanksSkipReason(input: {
+  waitKeepAlives: number
+  thanked: boolean
   ready: boolean
+  /** Uma frase curta tocando agora (o fim dela ainda não chegou). */
+  shortPlaying: boolean
+  /** Fim da última frase de espera (ms); null = nenhuma terminou. */
+  lastWaitEndAt: number | null
   now: number
-  keepAlivePlaying: boolean
-  lastShortEndAt: number | null
-  clipPlaying: boolean
-}): ApologySkip | null {
-  if (!input.ready) return 'not-ready'
-  if (input.keepAlivePlaying) return 'keepalive-playing'
-  if (input.clipPlaying) return 'clip-playing'
-  if (input.lastShortEndAt != null && input.now - input.lastShortEndAt < DELAY_MIN_GAP_MS)
+  thanksAfterMs: number
+}): ThanksSkip | null {
+  if (!(input.waitKeepAlives > 0)) return 'no-keepalive'
+  if (input.thanked) return 'already'
+  if (
+    input.shortPlaying ||
+    input.lastWaitEndAt == null ||
+    input.now - input.lastWaitEndAt < Math.max(0, input.thanksAfterMs)
+  )
     return 'too-soon'
+  if (!input.ready) return 'not-ready'
   return null
 }
 

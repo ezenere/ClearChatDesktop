@@ -65,7 +65,7 @@ type Clips = {
   error: string | null
   count: number | null
   stale: boolean
-  /** Só a classe `TOOL` está velha/ausente (os preâmbulos estão em dia). */
+  /** Só classes sem ser a `FILLER` velhas/ausentes (`TOOL`/`THANKS` — os preâmbulos em dia). */
   staleToolOnly: boolean
 }
 
@@ -136,8 +136,10 @@ export function TtsSettingsSection({
           ...c,
           count: m && !m.stale ? m.clips.length : 0,
           stale: !!m?.stale,
-          // só as frases de ferramenta faltam (cache de antes delas): os preâmbulos seguem tocando
-          staleToolOnly: !!m?.stale && m.staleClasses?.length === 1 && m.staleClasses[0] === 'TOOL'
+          // só as frases de ferramenta/o agradecimento faltam (cache de antes deles): os
+          // preâmbulos seguem tocando (e as que faltam são sintetizadas na hora)
+          staleToolOnly:
+            !!m?.stale && !!m.staleClasses?.length && !m.staleClasses.includes('FILLER')
         }))
       )
       .catch(() => void 0)
@@ -337,7 +339,7 @@ export function TtsSettingsSection({
       })
   }
 
-  /** "Gerar clipes de voz": pré-gera os preâmbulos e as frases de ferramenta com a voz atual. */
+  /** "Gerar clipes de voz": pré-gera os preâmbulos, as frases de ferramenta e o "obrigado por aguardar" com a voz atual. */
   const runClips = (): void => {
     setClips((c) => ({ ...c, busy: true, done: 0, total: 0, error: null }))
     void voiceApi.tts.clips
@@ -625,7 +627,7 @@ export function TtsSettingsSection({
         {!clips.busy && clips.count === 0 && (
           <span className="text-[11.5px] text-warning" data-testid="tts-clips-missing">
             {clips.staleToolOnly
-              ? `faltam os clipes das frases de ferramenta de “${currentVoiceLabel}” (os preâmbulos estão em dia) — gere de novo`
+              ? `faltam clipes de “${currentVoiceLabel}” (frases de ferramenta/“obrigado por aguardar” — os preâmbulos estão em dia; sem eles, essas frases saem sintetizadas na hora) — gere de novo`
               : clips.stale
                 ? `clipes de “${currentVoiceLabel}” desatualizados (frases ou modelo mudaram) — gere de novo`
                 : `sem clipes para “${currentVoiceLabel}”`}

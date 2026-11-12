@@ -1,42 +1,46 @@
-// Frases de demora da chamada de voz (SPEC → "Chamada de voz → Frases de demora"): "manter viva"
-// ("Só mais um instante…") e desculpa antes da resposta ("Desculpe a demora, vamos lá."),
-// sintetizadas AO VIVO (`synthPhrase` — request à parte da resposta), bem espaçadas: ≥ 10 s entre o
-// FIM de qualquer frase curta (preâmbulo/"manter viva"/desculpa) e o início da próxima "manter
-// viva"/desculpa, 15 s entre duas "manter viva". Política pura (`@shared/voicePolicy`) +
-// `VoiceCallManager` com relógio/timers FALSOS, síntese falsa, reprodução falsa (`autoPlay`) e
-// eventos do runner injetados. Nada pago, sem microfone.
+// Frases de espera da chamada de voz (SPEC → "Chamada de voz → Frases de demora"): "manter viva"
+// ("Só mais um instante…") depois de 8 s de SILÊNCIO desde o fim da última fala (preâmbulo, frase de
+// ferramenta, a "manter viva" anterior, uma frase da resposta), sempre que a resposta ainda não está
+// sendo falada — antes dela, com tool rodando e com o modelo pensando de novo depois da tool —, no
+// máx. 2 por turno; e "Obrigado por aguardar." logo antes da frase da resposta que encerra uma espera
+// com "manter viva", só se a última frase de espera terminou há ≥ 4,5 s e ele já está pronto (clipe
+// `THANKS_<n>` ou síntese em paralelo desde a 1ª "manter viva" — a resposta nunca espera por ele).
+// Política pura (`@shared/voicePolicy`) + `VoiceCallManager` com relógio/timers FALSOS, síntese
+// falsa, clipes falsos, reprodução falsa (`autoPlay`) e eventos do runner injetados. Nada pago, sem
+// microfone.
 // Rodar: node --import ./e2e/ts-hooks.mjs --test e2e/voiceDelayPhrases.test.ts
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { AgentEvent, ChatConfig, MessageMeta, StoredMessage } from '@shared/types'
 import type { VoiceCallTimelineEvent } from '@shared/ipc'
 import {
-  DEFAULT_APOLOGY_POOL,
   DEFAULT_AUDIO_INPUT,
   DEFAULT_DELAY_PHRASES,
   DEFAULT_KEEPALIVE_POOL,
+  DEFAULT_KEEPALIVE_TOOL_POOL,
   DEFAULT_STT_SETTINGS,
+  DEFAULT_THANKS_POOL,
   DEFAULT_TTS_SETTINGS,
   DEFAULT_VOICE_CALL_DEFAULTS,
+  LEGACY_APOLOGY_POOL,
   LEGACY_DELAY_PHRASE_DEFAULTS,
+  THANKS_AFTER_MS_RANGE,
   normalizeDelayPhrases,
   normalizeVoiceCallDefaults,
   resolveDelayPhrasePools,
   type VoiceDelayPhrases
 } from '@shared/voice'
 import {
-  DELAY_MIN_GAP_MS,
   FILLER_MIN_SPEECH_MS,
   VoicedSpan,
   fillerBelowMinSpeech,
   pickFillerPhrase,
   EMPTY_DELAY_STATE,
-  KEEPALIVE_COOLDOWN_MS,
   KEEPALIVE_MAX_PER_TURN,
-  apologyDueAt,
-  apologySkipReason,
+  keepAliveContext,
   keepAliveDueAt,
   pickDelayPhrase,
+  thanksSkipReason,
   type DelayPhraseState
 } from '@shared/voicePolicy'
 import { computeVoiceCallMetrics } from '@shared/voiceTimeline'
@@ -52,7 +56,7 @@ import type { TtsTextFeed } from '../src/main/voice/elevenlabsStream.ts'
 // política pura
 // =====================================================================================
 
-const CFG = { enabled: true, keepAliveAfterMs: 8000, apologyAfterMs: 15_000 }
+const CFG = { enabled: true, keepAliveAfterMs: 8000 }
 const st = (p: Partial<DelayPhraseState>): DelayPhraseState => ({
   ...EMPTY_DELAY_STATE,
   turnStartedAt: 0,
@@ -60,75 +64,86 @@ const st = (p: Partial<DelayPhraseState>): DelayPhraseState => ({
   ...p
 })
 
-test('espaçamento: padrões novos (8 s / 15 s), 15 s entre "manter viva", 10 s depois de qualquer frase curta', () => {
-  assert.equal(DEFAULT_DELAY_PHRASES.keepAliveAfterMs, 8000)
-  assert.equal(DEFAULT_DELAY_PHRASES.apologyAfterMs, 15_000)
-  assert.equal(KEEPALIVE_COOLDOWN_MS, 15_000)
+test('padrões: manter viva após 8 s de silêncio, obrigado se a última frase foi há ≥ 4,5 s, no máx. 2 por turno', () => {
+  assert.deepEqual(DEFAULT_DELAY_PHRASES, {
+    enabled: true,
+    keepAliveAfterMs: 8000,
+    thanksAfterMs: 4500,
+    keepAlivePool: null,
+    keepAliveToolPool: null,
+    thanksPool: null
+  })
   assert.equal(KEEPALIVE_MAX_PER_TURN, 2)
-  assert.equal(DELAY_MIN_GAP_MS, 10_000)
+  assert.deepEqual(THANKS_AFTER_MS_RANGE, { min: 1000, max: 30_000 })
+  assert.ok(DEFAULT_THANKS_POOL.includes('Obrigado por aguardar.'))
+  assert.ok(DEFAULT_THANKS_POOL.includes('Pronto, obrigado pela paciência.'))
+  assert.ok(DEFAULT_THANKS_POOL.includes('Valeu por esperar, olha só…'))
+  assert.ok(DEFAULT_THANKS_POOL.includes('Pronto, aqui está.'))
+  assert.ok(
+    !DEFAULT_THANKS_POOL.some((t) => /desculp|foi mal/i.test(t)),
+    'agradece, não se desculpa'
+  )
+  for (const pool of [DEFAULT_KEEPALIVE_POOL, DEFAULT_KEEPALIVE_TOOL_POOL, DEFAULT_THANKS_POOL]) {
+    assert.ok(pool.length >= 4, 'variedade: ≥ 4 frases por pool')
+    assert.equal(new Set(pool).size, pool.length, 'sem duplicatas')
+    assert.ok(pool.every((t) => t.length <= 80 && !/\.\.\./.test(t)))
+  }
+  assert.ok(
+    !DEFAULT_KEEPALIVE_POOL.some((t) => DEFAULT_KEEPALIVE_TOOL_POOL.includes(t)),
+    'pools de contexto distintos'
+  )
 })
 
-test('keepAliveDueAt: silêncio ≥ limiar, máx. por turno, cooldown e gap contados do FIM, só antes da resposta (ou com tool)', () => {
-  assert.equal(keepAliveDueAt(st({}), CFG), 8000, 'sem preâmbulo: silêncio desde o turno + 8 s')
+test('keepAliveDueAt: regra ÚNICA — 8 s de silêncio desde o fim da última fala; sem cooldown/gap à parte; vale com a resposta já iniciada', () => {
+  assert.equal(keepAliveDueAt(st({}), CFG), 8000, 'sem nada tocado: silêncio desde o envio')
   assert.equal(
-    keepAliveDueAt(st({ silentSince: 1500, lastShortEndAt: 1500 }), CFG),
-    1500 + DELAY_MIN_GAP_MS,
-    'depois do preâmbulo: o gap de 10 s vence os 8 s de silêncio'
+    keepAliveDueAt(st({ silentSince: 2000, lastShortEndAt: 2000 }), CFG),
+    10_000,
+    'depois da frase de ferramenta/preâmbulo: 8 s do FIM dela'
   )
+  // a 1ª "manter viva" terminou aos 11,5 s: a 2ª 8 s depois (o silêncio É o espaçamento)
   assert.equal(
-    keepAliveDueAt(st({ silentSince: 1500, lastShortEndAt: 1500 }), {
-      ...CFG,
-      keepAliveAfterMs: 12_000
-    }),
-    13_500,
-    'limiar maior que o gap: vale o limiar'
+    keepAliveDueAt(st({ keepAlives: 1, silentSince: 11_500, lastShortEndAt: 11_500 }), CFG),
+    19_500
   )
-  assert.equal(keepAliveDueAt(st({ silentSince: null }), CFG), null, 'algo tocando: espera o idle')
+  assert.equal(keepAliveDueAt(st({ silentSince: 0 }), { ...CFG, keepAliveAfterMs: 12_000 }), 12_000)
+  assert.equal(keepAliveDueAt(st({ silentSince: null }), CFG), null, 'algo tocando/usuário falando')
   assert.equal(keepAliveDueAt(st({ turnStartedAt: null }), CFG), null, 'desarmado')
   assert.equal(keepAliveDueAt(st({}), { ...CFG, enabled: false }), null, 'desligado')
   assert.equal(
     keepAliveDueAt(st({ keepAlives: KEEPALIVE_MAX_PER_TURN }), CFG),
     null,
-    `no máximo ${KEEPALIVE_MAX_PER_TURN} por turno`
+    `no máximo ${KEEPALIVE_MAX_PER_TURN} faladas por turno`
   )
-  // a 1ª terminou de tocar em 12 s (lastKeepAliveAt = o FIM): a 2ª só 15 s depois
+  // o modelo já falou ("Vou pesquisar isso.") e PENSA DE NOVO depois da tool: continua valendo
+  // (antes: só com tool rodando — o silêncio depois da tool não tinha "manter viva")
   assert.equal(
-    keepAliveDueAt(
-      st({ keepAlives: 1, lastKeepAliveAt: 12_000, lastShortEndAt: 12_000, silentSince: 12_000 }),
-      CFG
-    ),
-    12_000 + KEEPALIVE_COOLDOWN_MS
+    keepAliveDueAt(st({ answerSpoken: true, toolsRunning: false, silentSince: 30_000 }), CFG),
+    38_000
   )
-  assert.equal(keepAliveDueAt(st({ answerSpoken: true }), CFG), null, 'resposta já falando')
-  assert.equal(
-    keepAliveDueAt(st({ answerSpoken: true, toolsRunning: true, silentSince: 10_000 }), CFG),
-    18_000,
-    'depois da 1ª frase, só com tool rodando'
-  )
+  assert.equal(keepAliveContext({ toolsRunning: true }), 'tool')
+  assert.equal(keepAliveContext({ toolsRunning: false }), 'thinking')
 })
 
-test('apologyDueAt / apologySkipReason: limiar desde o turno; só pronta; pulada (nunca adiada) a < 10 s de uma frase curta', () => {
-  assert.equal(apologyDueAt(st({}), CFG), 15_000)
-  assert.equal(apologyDueAt(st({ apologyStarted: true }), CFG), null, '1 por turno')
-  assert.equal(apologyDueAt(st({ answerSpoken: true }), CFG), null, 'resposta já saiu')
-  assert.equal(apologyDueAt(st({}), { ...CFG, enabled: false }), null)
+test('thanksSkipReason: só depois de "manter viva", 1 por turno, a última frase de espera terminou há ≥ 4,5 s, só pronto', () => {
   const base = {
+    waitKeepAlives: 1,
+    thanked: false,
     ready: true,
-    now: 30_000,
-    keepAlivePlaying: false,
-    lastShortEndAt: null,
-    clipPlaying: false
+    shortPlaying: false,
+    lastWaitEndAt: 10_000,
+    now: 14_500,
+    thanksAfterMs: 4500
   }
-  assert.equal(apologySkipReason(base), null, 'pronta e nada recente → toca')
-  assert.equal(apologySkipReason({ ...base, ready: false }), 'not-ready', 'nunca espera a síntese')
-  assert.equal(apologySkipReason({ ...base, keepAlivePlaying: true }), 'keepalive-playing')
-  assert.equal(apologySkipReason({ ...base, clipPlaying: true }), 'clip-playing')
-  assert.equal(
-    apologySkipReason({ ...base, lastShortEndAt: 30_000 - DELAY_MIN_GAP_MS + 1 }),
-    'too-soon',
-    'frase curta terminou há < 10 s'
-  )
-  assert.equal(apologySkipReason({ ...base, lastShortEndAt: 30_000 - DELAY_MIN_GAP_MS }), null)
+  assert.equal(thanksSkipReason(base), null, 'terminou há 4,5 s → agradece')
+  assert.equal(thanksSkipReason({ ...base, now: 14_499 }), 'too-soon', 'há < 4,5 s → não precisa')
+  assert.equal(thanksSkipReason({ ...base, now: 12_000 }), 'too-soon', 'há 2 s → não precisa')
+  assert.equal(thanksSkipReason({ ...base, shortPlaying: true }), 'too-soon', 'ainda tocando')
+  assert.equal(thanksSkipReason({ ...base, lastWaitEndAt: null }), 'too-soon')
+  assert.equal(thanksSkipReason({ ...base, waitKeepAlives: 0 }), 'no-keepalive')
+  assert.equal(thanksSkipReason({ ...base, thanked: true }), 'already')
+  assert.equal(thanksSkipReason({ ...base, ready: false }), 'not-ready', 'nunca espera a síntese')
+  assert.equal(thanksSkipReason({ ...base, thanksAfterMs: 8000, now: 17_999 }), 'too-soon')
 })
 
 test('pickDelayPhrase: nunca repete as últimas; pool de 1 sempre devolve a única; vazio → null', () => {
@@ -160,41 +175,43 @@ test('pickDelayPhrase: nunca repete as últimas; pool de 1 sempre devolve a úni
   )
 })
 
-test('normalizeDelayPhrases: padrões, tempos presos em 1–60 s, pools aparados/sem duplicatas; aditivo no voiceCallDefaults', () => {
+test('normalizeDelayPhrases: padrões, tempos presos (manter viva 1–60 s, obrigado 1–30 s), pools aparados; aditivo no voiceCallDefaults', () => {
   assert.deepEqual(normalizeDelayPhrases(undefined), DEFAULT_DELAY_PHRASES)
   assert.deepEqual(normalizeDelayPhrases({}), DEFAULT_DELAY_PHRASES)
-  assert.deepEqual(DEFAULT_DELAY_PHRASES, {
-    enabled: true,
-    keepAliveAfterMs: 8000,
-    apologyAfterMs: 15_000,
-    keepAlivePool: null,
-    apologyPool: null
-  })
   const n = normalizeDelayPhrases({
     enabled: false,
     keepAliveAfterMs: 10,
-    apologyAfterMs: 999_999,
+    thanksAfterMs: 999_999,
     keepAlivePool: ['  Um   instante.  ', 'Um instante.', 42, '', 'x'.repeat(200)],
-    apologyPool: []
+    keepAliveToolPool: ['Ainda rodando…'],
+    thanksPool: []
   })
   assert.equal(n.enabled, false)
   assert.equal(n.keepAliveAfterMs, 1000)
-  assert.equal(n.apologyAfterMs, 60_000)
+  assert.equal(n.thanksAfterMs, 30_000)
   assert.deepEqual(n.keepAlivePool, ['Um instante.', 'x'.repeat(80)])
-  assert.equal(n.apologyPool, null, 'vazio = padrão')
-  assert.deepEqual(resolveDelayPhrasePools(n).apology, [...DEFAULT_APOLOGY_POOL])
-  // registro antigo (sem o campo) → os padrões; o campo passa pelo normalizador global
+  assert.deepEqual(n.keepAliveToolPool, ['Ainda rodando…'])
+  assert.equal(n.thanksPool, null, 'vazio = padrão')
+  assert.equal(normalizeDelayPhrases({ thanksAfterMs: 10 }).thanksAfterMs, 1000)
+  assert.equal(normalizeDelayPhrases({ thanksAfterMs: -1 }).thanksAfterMs, 4500, 'lixo → padrão')
+  const pools = resolveDelayPhrasePools(n)
+  assert.deepEqual(pools.thanks, [...DEFAULT_THANKS_POOL])
+  assert.deepEqual(pools.keepAliveTool, ['Ainda rodando…'])
+  assert.deepEqual(resolveDelayPhrasePools(DEFAULT_DELAY_PHRASES).keepAliveTool, [
+    ...DEFAULT_KEEPALIVE_TOOL_POOL
+  ])
+  // registro sem o campo → os padrões; o campo passa pelo normalizador global
   const old = normalizeVoiceCallDefaults({ enabled: true, endCall: false })
   assert.deepEqual(old.delayPhrases, DEFAULT_DELAY_PHRASES)
-  const custom = normalizeVoiceCallDefaults({ delayPhrases: { apologyAfterMs: 8000 } })
-  assert.equal(custom.delayPhrases.apologyAfterMs, 8000)
+  const custom = normalizeVoiceCallDefaults({ delayPhrases: { thanksAfterMs: 6000 } })
+  assert.equal(custom.delayPhrases.thanksAfterMs, 6000)
   assert.equal(custom.delayPhrases.keepAliveAfterMs, 8000)
   assert.deepEqual(DEFAULT_VOICE_CALL_DEFAULTS.delayPhrases, DEFAULT_DELAY_PHRASES)
 })
 
-test('migração: os padrões ANTIGOS gravados (3000/5000) viram os novos; valores próprios ficam', () => {
-  assert.deepEqual(LEGACY_DELAY_PHRASE_DEFAULTS, { keepAliveAfterMs: 3000, apologyAfterMs: 5000 })
-  // o que uma instalação existente tem gravado (os padrões antigos explícitos)
+test('(f) migração: "desculpa" antiga → "obrigado por aguardar"; apologyAfterMs some; pool personalizado vira o do obrigado; 3000 → 8000', () => {
+  assert.deepEqual(LEGACY_DELAY_PHRASE_DEFAULTS, { keepAliveAfterMs: 3000 })
+  // o que uma instalação existente tem gravado (padrões antigos explícitos)
   const stored = {
     enabled: true,
     keepAliveAfterMs: 3000,
@@ -202,18 +219,38 @@ test('migração: os padrões ANTIGOS gravados (3000/5000) viram os novos; valor
     keepAlivePool: null,
     apologyPool: null
   }
-  assert.deepEqual(normalizeDelayPhrases(stored), DEFAULT_DELAY_PHRASES)
-  // só o campo que tem o valor antigo exato migra; o outro, escolhido pelo usuário, fica
-  const mixed = normalizeDelayPhrases({ keepAliveAfterMs: 3000, apologyAfterMs: 9000 })
-  assert.equal(mixed.keepAliveAfterMs, 8000)
-  assert.equal(mixed.apologyAfterMs, 9000)
-  const own = normalizeDelayPhrases({ keepAliveAfterMs: 3500, apologyAfterMs: 5000 })
-  assert.equal(own.keepAliveAfterMs, 3500, 'valor próprio fica')
-  assert.equal(own.apologyAfterMs, 15_000)
-  // pelo registro sincronizado (`voiceCallDefaults`), e idempotente
-  const d = normalizeVoiceCallDefaults({ delayPhrases: { ...stored, enabled: false } })
-  assert.deepEqual(d.delayPhrases, { ...DEFAULT_DELAY_PHRASES, enabled: false })
+  const m = normalizeDelayPhrases(stored)
+  assert.deepEqual(m, DEFAULT_DELAY_PHRASES)
+  assert.ok(!('apologyAfterMs' in m) && !('apologyPool' in m), 'campos antigos descartados')
+  // tempo próprio de "manter viva" fica; o apologyAfterMs escolhido (15 s, 9 s…) não vira nada
+  const own = normalizeDelayPhrases({ keepAliveAfterMs: 3500, apologyAfterMs: 9000 })
+  assert.equal(own.keepAliveAfterMs, 3500)
+  assert.equal(own.thanksAfterMs, 4500, 'a regra nova não usa o tempo desde o turno')
+  // pool de desculpas PERSONALIZADO → o pool do obrigado
+  const mine = normalizeDelayPhrases({ apologyPool: ['  Pronto, chegou.  ', 'Opa, aqui.'] })
+  assert.deepEqual(mine.thanksPool, ['Pronto, chegou.', 'Opa, aqui.'])
+  // pool igual ao padrão antigo (não é personalização) → os padrões novos
+  assert.equal(normalizeDelayPhrases({ apologyPool: [...LEGACY_APOLOGY_POOL] }).thanksPool, null)
+  // registro novo (com thanksPool, mesmo null) ignora o apologyPool que sobrou
+  assert.equal(
+    normalizeDelayPhrases({ thanksPool: null, apologyPool: ['Velha.'] }).thanksPool,
+    null
+  )
+  assert.deepEqual(
+    normalizeDelayPhrases({ thanksPool: ['Valeu!'], apologyPool: ['Velha.'] }).thanksPool,
+    ['Valeu!']
+  )
+  // pelo registro do dispositivo (`voiceCallDefaults`), e idempotente
+  const d = normalizeVoiceCallDefaults({
+    delayPhrases: { ...stored, enabled: false, apologyPool: ['Pronto, chegou.'] }
+  })
+  assert.deepEqual(d.delayPhrases, {
+    ...DEFAULT_DELAY_PHRASES,
+    enabled: false,
+    thanksPool: ['Pronto, chegou.']
+  })
   assert.deepEqual(normalizeVoiceCallDefaults(d), d)
+  assert.deepEqual(normalizeDelayPhrases(JSON.parse(JSON.stringify(mine))), mine)
 })
 
 // =====================================================================================
@@ -250,6 +287,10 @@ class FakeTimers {
     this.now = target
     await flush()
   }
+  /** Avança até o instante absoluto `at` (relógio falso). */
+  async until(at: number): Promise<void> {
+    await this.advance(Math.max(0, at - this.now))
+  }
 }
 
 /** Esvazia microtarefas/imediatos (síntese falsa resolve em microtarefa). */
@@ -268,6 +309,7 @@ interface PhraseCall {
 interface PlayDurations {
   filler: number
   delay: number
+  tool: number
   sentence: number
 }
 
@@ -282,12 +324,16 @@ interface PlayRec {
 
 interface HarnessOpts {
   delay?: Partial<VoiceDelayPhrases>
-  /** Frases de demora resolvem só com `phrase.resolve()` (padrão: na hora). */
+  /** Frases de espera resolvem só com `phrase.resolve()` (padrão: na hora). */
   manualPhrases?: boolean
-  /** Latência da síntese das frases de demora no relógio falso (ms; padrão 0 = microtarefa). */
+  /** Latência da síntese das frases de espera no relógio falso (ms; padrão 0 = microtarefa). */
   phraseLatencyMs?: number
-  /** Preâmbulo (filler) ligado (padrão true — clipe falso, espera 0). */
+  /** Preâmbulo (filler) ligado (padrão true — clipe falso). */
   fillers?: boolean
+  /** Espera do preâmbulo (padrão 0 = já; os cenários usam o padrão real de 2,5 s). */
+  fillerDelayMs?: number
+  /** Clipes `THANKS` gerados (padrão true); false = o agradecimento é sintetizado ao vivo. */
+  thanksClips?: boolean
   ttsFeed?: boolean
   /** STT só pela API (especulação lenta — espera de fim de turno longa). */
   slowSpeculation?: boolean
@@ -313,16 +359,30 @@ interface Harness {
   synthTexts: string[]
   /** Pedidos à síntese de FRASE (`synthPhrase`). */
   phrases: PhraseCall[]
+  /** Clipes pedidos (`CLASSE_n`). */
+  clipCalls: string[]
   amends: { spoken: Record<string, string[]> }[]
   markers: { content: string; meta: MessageMeta }[]
   feedCalls: string[]
   emit(e: AgentEvent): void
-  /** Emitidas de frase de demora (kind 'delay'), com o texto decodificado. */
+  /** Emitidas de frase de espera (kind 'delay'), com o texto decodificado. */
   delays(): string[]
   history: StoredMessage[]
 }
 
 const dec = (u: VoiceCallUtterance): string => new TextDecoder().decode(u.audio)
+const THANKS_POOL = [...DEFAULT_THANKS_POOL]
+/** Texto de uma utterance de espera (síntese `PHRASE:<texto>` ou clipe `CLIP:THANKS_<n>`). */
+const phraseText = (raw: string): string => {
+  const clip = /^CLIP:THANKS_(\d+)$/.exec(raw)
+  if (clip) return THANKS_POOL[Number(clip[1]) - 1] ?? '?'
+  return raw.replace(/^PHRASE:/, '')
+}
+const isKeepAlive = (raw: string): boolean => {
+  const t = phraseText(raw)
+  return DEFAULT_KEEPALIVE_POOL.includes(t) || DEFAULT_KEEPALIVE_TOOL_POOL.includes(t)
+}
+const isThanks = (raw: string): boolean => THANKS_POOL.includes(phraseText(raw))
 
 function harness(opts: HarnessOpts = {}): Harness {
   const listeners: ((e: AgentEvent) => void)[] = []
@@ -337,6 +397,7 @@ function harness(opts: HarnessOpts = {}): Harness {
     timeline: [],
     synthTexts: [],
     phrases: [],
+    clipCalls: [],
     amends: [],
     markers: [],
     feedCalls: [],
@@ -360,7 +421,7 @@ function harness(opts: HarnessOpts = {}): Harness {
   }
   // reprodução falsa: fila na ordem, uma por vez, `playback-idle` quando esvazia
   const durations: PlayDurations | null = opts.autoPlay
-    ? { filler: 1000, delay: 1500, sentence: 2000, ...opts.autoPlay }
+    ? { filler: 1000, delay: 1500, tool: 1000, sentence: 2000, ...opts.autoPlay }
     : null
   const queue: VoiceCallUtterance[] = []
   let playing: PlayRec | null = null
@@ -375,12 +436,13 @@ function harness(opts: HarnessOpts = {}): Harness {
     const rec: PlayRec = { id: u.id, kind, text: dec(u), start: clock.now, end: -1 }
     playing = rec
     h.played.push(rec)
-    const ms =
-      kind === 'filler' ? durations.filler : kind === 'delay' ? durations.delay : durations.sentence
-    clock.set(() => {
-      rec.end = clock.now
-      playNext()
-    }, ms)
+    clock.set(
+      () => {
+        rec.end = clock.now
+        playNext()
+      },
+      durations[kind as keyof PlayDurations] ?? durations.sentence
+    )
   }
   h.m = new VoiceCallManager({
     // o runner grava a mensagem do usuário DENTRO do envio (como o real)
@@ -417,7 +479,7 @@ function harness(opts: HarnessOpts = {}): Harness {
     timers: { set: clock.set, clear: clock.clear },
     now: () => clock.now,
     rng: () => 0.3,
-    fillerDelayMs: 0,
+    fillerDelayMs: opts.fillerDelayMs ?? 0,
     emitState: () => {},
     emitUtterance: (u) => {
       h.emitted.push(u)
@@ -429,10 +491,11 @@ function harness(opts: HarnessOpts = {}): Harness {
     emitUtteranceCancel: (id) => void h.cancelled.push(id),
     emitTimeline: (e) => void h.timeline.push({ ...e }),
     logEval: () => {},
-    clip: async (cls, n) => ({
-      audio: new TextEncoder().encode(`CLIP:${cls}_${n}`),
-      mime: 'audio/wav'
-    }),
+    clip: async (cls, n) => {
+      h.clipCalls.push(`${cls}_${n}`)
+      if (cls === 'THANKS' && opts.thanksClips === false) return null
+      return { audio: new TextEncoder().encode(`CLIP:${cls}_${n}`), mime: 'audio/wav' }
+    },
     sessionInfo: () => ({ chatId: 'c1', depth: 0, busy: false }),
     chatConfig: () => ({}) as ChatConfig,
     settings: () => ({
@@ -470,11 +533,16 @@ async function waitFiller(h: Harness): Promise<void> {
   )
 }
 
-/** Fala → turno (o filler sai na hora — espera 0 — e o renderer avisa o fim dele em `fillerMs`). */
-async function turnWithFiller(h: Harness, fillerMs = 1000): Promise<void> {
+/** Fala → turno enviado (o preâmbulo é armado com a espera do harness). */
+function userTurn(h: Harness, text = LONG_Q): void {
   h.m.speechBegin()
   h.m.speechEnd()
-  h.m.turn(LONG_Q)
+  h.m.turn(text)
+}
+
+/** Fala → turno (o filler sai na hora — espera 0 — e o renderer avisa o fim dele em `fillerMs`). */
+async function turnWithFiller(h: Harness, fillerMs = 1000): Promise<void> {
+  userTurn(h)
   await waitFiller(h)
   await h.clock.advance(fillerMs)
   h.m.playbackIdle() // o preâmbulo terminou de tocar
@@ -500,181 +568,328 @@ async function answer(h: Harness, text: string, opts: { done?: boolean } = {}): 
   return id
 }
 
+let tSeq = 0
+/** O assistente chama UMA tool (mensagem com tool_calls, texto opcional antes) e ela começa a rodar. */
+async function callTool(h: Harness, name = 'web_search', content = ''): Promise<string> {
+  const id = `tc${++tSeq}`
+  const a: StoredMessage = {
+    id: `mt${tSeq}`,
+    sessionId: 's1',
+    seq: h.history.length + 1,
+    message: {
+      role: 'assistant',
+      content,
+      tool_calls: [{ id, type: 'function' as const, function: { name, arguments: '{}' } }]
+    },
+    createdAt: h.clock.now
+  } as StoredMessage
+  h.history.push(a)
+  if (content)
+    h.emit({ type: 'draft', sessionId: 's1', draft: { content } } as unknown as AgentEvent)
+  h.emit({ type: 'message-added', message: a })
+  h.emit({ type: 'tool-running', sessionId: 's1', toolCallId: id, running: true } as AgentEvent)
+  await flush()
+  return id
+}
+const toolDone = (h: Harness, id: string): void =>
+  h.emit({ type: 'tool-running', sessionId: 's1', toolCallId: id, running: false } as AgentEvent)
+
 const decisions = (h: Harness, cls: string): VoiceCallTimelineEvent[] =>
   h.timeline.filter((e) => e.kind === 'decision' && e.class === cls)
+const playedOf = (h: Harness, cls: string): VoiceCallTimelineEvent[] =>
+  decisions(h, cls).filter((e) => e.played)
 
-const toolRunning = (running: boolean): AgentEvent =>
-  ({ type: 'tool-running', sessionId: 's1', toolCallId: 't1', running }) as AgentEvent
+/** Frases curtas tocadas (preâmbulo/ferramenta/espera), na ordem. */
+const shortsOf = (h: Harness): PlayRec[] => h.played.filter((p) => p.kind !== 'sentence')
+const keepAlivesOf = (h: Harness): PlayRec[] =>
+  h.played.filter((p) => p.kind === 'delay' && isKeepAlive(p.text))
+const thanksOf = (h: Harness): PlayRec[] =>
+  h.played.filter((p) => p.kind === 'delay' && isThanks(p.text))
 
-test('manter viva: nunca antes de 10 s do FIM do preâmbulo (o gap global vence os 8 s de silêncio)', async () => {
-  const h = harness({ delay: { apologyAfterMs: 60_000 } })
-  await turnWithFiller(h, 1000)
-  await h.clock.advance(DELAY_MIN_GAP_MS - 1)
-  assert.equal(h.phrases.length, 0, 'antes do gap nada é sintetizado')
-  await h.clock.advance(1)
-  assert.equal(h.phrases.length, 1, 'no gap: síntese AO VIVO da frase')
-  assert.ok(DEFAULT_KEEPALIVE_POOL.includes(h.phrases[0].text))
-  assert.deepEqual(h.delays(), [`PHRASE:${h.phrases[0].text}`], 'tocou (kind delay)')
-  assert.equal(h.synthTexts.length, 0, 'nunca pela síntese de sentença (contexto da resposta)')
-  const d = decisions(h, 'KEEPALIVE').find((e) => e.played)
-  assert.ok(d, 'decisão na timeline')
-  assert.equal(d!.text, h.phrases[0].text)
-  assert.equal(h.m.state().phase, 'thinking', 'a fase continua "Pensando…"')
+// ---------------- o bug do silêncio (uso real) ----------------
+
+test('bug do silêncio: ruído/"uhum" durante a espera (depois da frase de ferramenta) não cala a espera — a "manter viva" ainda vem', async () => {
+  for (const noise of ['', 'uhum']) {
+    const h = harness({ autoPlay: {}, fillerDelayMs: 2500 })
+    const t0 = h.clock.now
+    userTurn(h)
+    await h.clock.advance(1000)
+    await callTool(h, 'web_search') // frase de ferramenta aos 1 s (clipe, 1 s)
+    assert.equal(h.played.filter((p) => p.kind === 'tool').length, 1)
+    await h.clock.until(t0 + 5000)
+    // o microfone captou algo (tosse, respiração, eco, "uhum"): antes, `speech-begin` ZERAVA as
+    // frases de espera do turno e a transcrição vazia/backchannel nunca as rearmava — silêncio total
+    h.m.speechBegin({ dropped: [] })
+    await h.clock.advance(600)
+    h.m.speechEnd()
+    await h.clock.advance(400)
+    h.m.turn(noise)
+    const resumed = h.clock.now
+    await h.clock.until(t0 + 30_000)
+    const kas = keepAlivesOf(h)
+    assert.equal(kas.length, 2, `ruído "${noise}": as 2 "manter viva" ainda tocam`)
+    assert.equal(kas[0].start, resumed + 8000, '8 s de silêncio desde o fim do ruído')
+    assert.equal(kas[1].start - kas[0].end, 8000)
+    h.m.stop()
+  }
 })
 
-test('manter viva: sem preâmbulo conta keepAliveAfterMs (8 s) desde o envio; limiar maior que o gap vale', async () => {
-  const h = harness({ fillers: false, delay: { apologyAfterMs: 60_000 } })
-  h.m.speechBegin()
-  h.m.speechEnd()
-  h.m.turn(LONG_Q)
+test('bug do silêncio: o modelo anunciou a tool ("Vou pesquisar isso.") e PENSA DE NOVO depois dela — a "manter viva" continua (antes: só com tool rodando)', async () => {
+  const h = harness({ autoPlay: {}, fillerDelayMs: 2500 })
+  const t0 = h.clock.now
+  userTurn(h)
+  await h.clock.advance(1000)
+  const id = await callTool(h, 'web_search', 'Vou pesquisar isso.')
+  // a frase do próprio modelo toca (2 s) e a frase de ferramenta é pulada (anunciada)
+  assert.ok(decisions(h, 'TOOL').some((e) => e.reason === 'web/announced'))
+  await h.clock.until(t0 + 4000)
+  toolDone(h, id) // tool rápida (3 s): o modelo volta a pensar — sem tool rodando
+  await h.clock.until(t0 + 40_000)
+  const kas = keepAlivesOf(h)
+  assert.equal(kas.length, 2, 'as 2 "manter viva" com o modelo pensando de novo')
+  const sentenceEnd = h.played.find((p) => p.kind === 'sentence')!.end
+  assert.equal(kas[0].start, sentenceEnd + 8000, '8 s depois do fim da frase do modelo')
+  assert.ok(
+    DEFAULT_KEEPALIVE_POOL.includes(phraseText(kas[0].text)),
+    'pool "pensando" (nenhuma tool rodando)'
+  )
+  await answer(h, 'Achei: a fotossíntese usa luz.')
+  assert.equal(thanksOf(h).length, 1, 'e agradece antes da resposta que encerrou a espera')
+  h.m.stop()
+})
+
+test('bug: "manter viva" pulada depois de sintetizada NÃO gasta o limite do turno', async () => {
+  // síntese de 3 s; a frase de ferramenta começa a tocar enquanto a 1ª "manter viva" sintetiza →
+  // pulada (assistant-audio); antes ela gastava 1 das 2 do turno — agora ainda saem 2 faladas
+  const h = harness({ fillers: false, phraseLatencyMs: 3000, autoPlay: {} })
+  const t0 = h.clock.now
+  userTurn(h)
+  await h.clock.until(t0 + 8000) // "manter viva" devida: síntese começa (pronta aos 11 s)
+  assert.equal(h.phrases.length, 1)
+  // a tool começa aos 10,5 s; o clipe da frase de ferramenta toca na hora (10,5 → 11,5 s)
+  await h.clock.until(t0 + 10_500)
+  await callTool(h, 'shell')
+  await h.clock.until(t0 + 60_000)
+  assert.ok(decisions(h, 'KEEPALIVE').some((e) => !e.played && e.reason === 'assistant-audio'))
+  assert.equal(keepAlivesOf(h).length, KEEPALIVE_MAX_PER_TURN, 'ainda 2 faladas')
+  h.m.stop()
+})
+
+// ---------------- os cenários pedidos ----------------
+
+test('(a) tool às 1 s, tool de 30 s, resposta aos 35 s: frase de ferramenta → "manter viva" 8 s depois → outra 8 s depois → obrigado → resposta', async () => {
+  const h = harness({ autoPlay: {}, fillerDelayMs: 2500 })
+  const t0 = h.clock.now
+  userTurn(h)
+  await h.clock.advance(1000)
+  const id = await callTool(h, 'web_search')
+  await h.clock.until(t0 + 31_000)
+  toolDone(h, id)
+  await h.clock.until(t0 + 35_000)
+  const t = h.clock.now
+  await answer(h, 'Pronto, achei o que você pediu.')
+  await h.clock.advance(10_000)
+  const kinds = h.played.map((p) =>
+    p.kind === 'delay' ? (isThanks(p.text) ? 'thanks' : 'keepalive') : p.kind
+  )
+  assert.deepEqual(kinds, ['tool', 'keepalive', 'keepalive', 'thanks', 'sentence'])
+  const [tool, ka1, ka2, thanks, sentence] = h.played
+  assert.equal(tool.start, t0 + 1000, 'frase de ferramenta no lugar do preâmbulo')
+  assert.equal(
+    ka1.start - tool.end,
+    8000,
+    '1ª "manter viva" 8 s depois do FIM da frase de ferramenta'
+  )
+  assert.equal(ka2.start - ka1.end, 8000, '2ª 8 s depois do FIM da 1ª')
+  assert.ok(
+    DEFAULT_KEEPALIVE_TOOL_POOL.includes(phraseText(ka1.text)),
+    'tool rodando → pool "ferramenta"'
+  )
+  assert.notEqual(ka1.text, ka2.text, 'sem repetir')
+  assert.ok(t - ka2.end >= 4500, 'a resposta chegou ≥ 4,5 s depois da última')
+  assert.equal(thanks.start, t, 'obrigado na hora (clipe pré-gerado)')
+  assert.ok(isThanks(thanks.text))
+  assert.ok(
+    h.clipCalls.some((c) => c.startsWith('THANKS_')),
+    'clipe THANKS'
+  )
+  assert.equal(
+    h.emittedAt.get(h.emitted.find((u) => u.kind === 'sentence')!.id),
+    t,
+    'a resposta sai na hora'
+  )
+  assert.equal(sentence.start, thanks.end, 'a frase espera o obrigado terminar (sem corte)')
+  assert.equal(playedOf(h, 'FILLER').length, 0, 'nenhum preâmbulo')
+  assert.equal(playedOf(h, 'THANKS').length, 1)
+  assert.equal(h.synthTexts.length, 1, 'só a frase da resposta pela síntese de sentença')
+  h.m.stop()
+})
+
+test('(b) "manter viva" e a resposta 2 s depois → sem obrigado (e tocando agora → também não, sem corte)', async () => {
+  const h = harness({ autoPlay: {}, fillerDelayMs: 2500 })
+  const t0 = h.clock.now
+  userTurn(h)
+  await h.clock.advance(1000)
+  await callTool(h, 'web_search')
+  await h.clock.until(t0 + 11_500) // 1ª "manter viva" terminou (10 s → 11,5 s)
+  assert.equal(keepAlivesOf(h).length, 1)
+  await h.clock.advance(2000)
+  await answer(h, 'Aqui está.')
+  await h.clock.advance(5000)
+  assert.equal(thanksOf(h).length, 0, 'falou "só mais um instante" há 2 s: não precisa')
+  assert.ok(decisions(h, 'THANKS').some((e) => !e.played && e.reason === 'too-soon'))
+  // resposta chegando com a "manter viva" ainda tocando: espera ela terminar, sem obrigado
+  const g = harness({ autoPlay: {}, fillerDelayMs: 2500 })
+  const g0 = g.clock.now
+  userTurn(g)
+  await g.clock.advance(1000)
+  await callTool(g, 'web_search')
+  await g.clock.until(g0 + 10_500)
+  await answer(g, 'Aqui está.')
+  await g.clock.advance(5000)
+  assert.equal(thanksOf(g).length, 0)
+  const ka = keepAlivesOf(g)[0]
+  const s = g.played.find((p) => p.kind === 'sentence')!
+  assert.equal(s.start, ka.end, 'a resposta entra logo depois da "manter viva" (nada cortado)')
+  assert.equal(g.cancelled.length, 0)
+  h.m.stop()
+  g.m.stop()
+})
+
+test('(c) sem "manter viva" (resposta 6 s depois da frase de ferramenta) → sem obrigado, nada preparado', async () => {
+  const h = harness({ autoPlay: {}, fillerDelayMs: 2500, thanksClips: false })
+  const t0 = h.clock.now
+  userTurn(h)
+  await h.clock.advance(1000)
+  await callTool(h, 'web_search')
+  await h.clock.until(t0 + 2000 + 6000)
+  await answer(h, 'Pronto.')
+  await h.clock.advance(10_000)
+  assert.equal(keepAlivesOf(h).length, 0)
+  assert.equal(thanksOf(h).length, 0)
+  assert.equal(decisions(h, 'THANKS').length, 0, 'nada a explicar: não houve espera longa')
+  assert.equal(h.phrases.length, 0, 'nada sintetizado (nem o obrigado)')
+  assert.ok(!h.clipCalls.some((c) => c.startsWith('THANKS_')))
+  h.m.stop()
+})
+
+test('(d) obrigado sem clipe e ainda sintetizando quando a resposta chega → pulado (abortado); a resposta nunca espera', async () => {
+  const h = harness({ autoPlay: {}, fillerDelayMs: 2500, thanksClips: false, manualPhrases: true })
+  const t0 = h.clock.now
+  userTurn(h)
+  await h.clock.advance(1000)
+  await callTool(h, 'web_search')
+  await h.clock.until(t0 + 10_000)
+  assert.equal(h.phrases.length, 1, '"manter viva" sintetizando')
+  h.phrases[0].resolve()
+  await flush()
+  assert.equal(keepAlivesOf(h).length, 1)
+  // a 1ª "manter viva" falada: o obrigado (sem clipe) começa a sintetizar EM PARALELO já
+  assert.equal(h.phrases.length, 2)
+  assert.ok(
+    THANKS_POOL.includes(h.phrases[1].text),
+    'síntese do obrigado assim que a 1ª foi falada'
+  )
+  await h.clock.until(t0 + 18_000) // última frase de espera terminou há 6,5 s
+  const t = h.clock.now
+  await answer(h, 'Pronto, aqui está a resposta.')
+  const sentence = h.emitted.find((u) => u.kind === 'sentence')!
+  assert.equal(h.emittedAt.get(sentence.id), t, 'a frase saiu sem esperar o obrigado')
+  assert.equal(h.phrases[1].signal.aborted, true, 'síntese do obrigado abortada')
+  h.phrases[1].resolve() // chega tarde: ignorada
+  await h.clock.advance(5000)
+  assert.equal(thanksOf(h).length, 0)
+  assert.ok(decisions(h, 'THANKS').some((e) => !e.played && e.reason === 'not-ready'))
+  // pronto a tempo (síntese ao vivo, sem clipe): toca, e os caracteres contam no custo
+  const g = harness({ autoPlay: {}, fillerDelayMs: 2500, thanksClips: false })
+  const g0 = g.clock.now
+  userTurn(g)
+  await g.clock.advance(1000)
+  await callTool(g, 'web_search')
+  await g.clock.until(g0 + 18_000)
+  await answer(g, 'Pronto.')
+  await g.clock.advance(5000)
+  assert.equal(thanksOf(g).length, 1, 'síntese ao vivo pronta → toca')
+  assert.ok(playedOf(g, 'THANKS')[0].reason?.endsWith('/live'))
+  g.m.stop()
+  const end = g.markers.find((m) => (m.meta.voiceCall as VoiceCallMark).phase === 'end')!
+  const usage = (end.meta.voiceCall as VoiceCallMark).usage!
+  const phraseChars = g.phrases.reduce((n, p) => n + p.text.length, 0)
+  assert.equal(
+    usage.tts.chars,
+    phraseChars + 'Pronto.'.length,
+    '"manter viva" + obrigado + resposta'
+  )
+  h.m.stop()
+})
+
+test('(e) preâmbulo (sem tool, resposta lenta): preâmbulo aos 2,5 s → "manter viva" ×2 a cada 8 s de silêncio → obrigado → resposta', async () => {
+  for (const [answerAt, thanks] of [
+    [30_000, true], // última "manter viva" terminou aos 22,5 s → 7,5 s
+    [25_000, false] // 2,5 s depois → sem obrigado
+  ] as const) {
+    const h = harness({ autoPlay: {}, fillerDelayMs: 2500 })
+    const t0 = h.clock.now
+    userTurn(h)
+    await h.clock.until(t0 + answerAt)
+    const t = h.clock.now
+    await answer(h, 'A resposta, enfim. Com duas frases.')
+    await h.clock.advance(15_000)
+    const shorts = shortsOf(h)
+    assert.equal(shorts[0].kind, 'filler')
+    assert.equal(shorts[0].start, t0 + 2500, 'preâmbulo só porque a resposta demorou')
+    const kas = keepAlivesOf(h)
+    assert.equal(kas.length, 2)
+    assert.equal(kas[0].start - shorts[0].end, 8000, '8 s depois do FIM do preâmbulo')
+    assert.equal(kas[1].start - kas[0].end, 8000)
+    assert.ok(DEFAULT_KEEPALIVE_POOL.includes(phraseText(kas[0].text)), 'o modelo pensando')
+    assert.equal(thanksOf(h).length, thanks ? 1 : 0, `resposta aos ${answerAt / 1000} s`)
+    const first = h.emitted.find((u) => u.kind === 'sentence')!
+    assert.equal(h.emittedAt.get(first.id), t, 'a 1ª frase é emitida assim que fica pronta')
+    h.m.stop()
+  }
+})
+
+// ---------------- regras e garantias ----------------
+
+test('manter viva: sem preâmbulo conta 8 s de silêncio desde o envio; limiar configurado vale', async () => {
+  const h = harness({ fillers: false })
+  userTurn(h)
   await h.clock.advance(7999)
   assert.equal(h.phrases.length, 0)
   await h.clock.advance(1)
   assert.equal(h.phrases.length, 1, '8 s de silêncio desde o envio')
-  // limiar configurado acima do gap: depois do preâmbulo conta o limiar (12 s)
-  const g = harness({ delay: { keepAliveAfterMs: 12_000, apologyAfterMs: 60_000 } })
+  assert.equal(h.synthTexts.length, 0, 'nunca pela síntese de sentença (contexto da resposta)')
+  assert.equal(h.m.state().phase, 'thinking', 'a fase continua "Pensando…"')
+  const g = harness({ delay: { keepAliveAfterMs: 12_000 } })
   await turnWithFiller(g, 1000)
   await g.clock.advance(11_999)
   assert.equal(g.phrases.length, 0)
   await g.clock.advance(1)
-  assert.equal(g.phrases.length, 1)
+  assert.equal(g.phrases.length, 1, '12 s depois do FIM do preâmbulo')
 })
 
-test('manter viva: no máx. 2 por turno, 15 s entre o FIM de uma e o início da outra, sem repetir a frase', async () => {
-  const h = harness({ delay: { apologyAfterMs: 60_000 } })
-  await turnWithFiller(h, 1000)
-  await h.clock.advance(DELAY_MIN_GAP_MS) // 1ª
-  assert.equal(h.delays().length, 1)
-  await h.clock.advance(1500)
-  h.m.playbackIdle() // a 1ª terminou de tocar: o cooldown conta daqui
-  const end1 = h.clock.now
-  await h.clock.advance(KEEPALIVE_COOLDOWN_MS - 1)
-  assert.equal(h.delays().length, 1, 'cooldown de 15 s desde o FIM segura a 2ª')
-  await h.clock.advance(1)
-  assert.equal(h.delays().length, 2, '2ª no fim do cooldown')
-  assert.equal(h.emittedAt.get(h.emitted.at(-1)!.id), end1 + KEEPALIVE_COOLDOWN_MS)
-  assert.notEqual(h.phrases[0].text, h.phrases[1].text, 'sem repetir')
-  await h.clock.advance(1500)
-  h.m.playbackIdle()
-  await h.clock.advance(60_000)
-  assert.equal(h.delays().length, 2, `no máximo ${KEEPALIVE_MAX_PER_TURN} por turno`)
-  assert.equal(h.clock.pending, 0, 'nenhum timer pendurado')
-})
-
-test('bug corrigido: a latência da síntese e a duração do áudio não comem o intervalo (conta do FIM)', async () => {
-  // síntese lenta (3 s) + frase longa (2,5 s): antes o cooldown contava da DECISÃO (6 s depois
-  // dela a 2ª já saía, ~0,5 s depois do fim da 1ª) e a desculpa contava da EMISSÃO da "manter viva"
-  const h = harness({
-    phraseLatencyMs: 3000,
-    autoPlay: { filler: 1000, delay: 2500, sentence: 2000 }
-  })
-  h.m.speechBegin()
-  h.m.speechEnd()
-  h.m.turn(LONG_Q)
+test('manter viva: latência da síntese e duração do áudio não comem o silêncio (conta do FIM da anterior)', async () => {
+  const h = harness({ phraseLatencyMs: 3000, autoPlay: { filler: 1000, delay: 2500 } })
+  userTurn(h)
   await waitFiller(h)
   await h.clock.advance(60_000)
-  const shorts = h.played.filter((p) => p.kind !== 'sentence')
+  const shorts = shortsOf(h)
   assert.deepEqual(
     shorts.map((p) => p.kind),
     ['filler', 'delay', 'delay'],
-    'preâmbulo + 2 "manter viva"'
+    'preâmbulo + 2 "manter viva" (no máx. 2)'
   )
   const [pre, ka1, ka2] = shorts
-  assert.ok(ka1.start - pre.end >= DELAY_MIN_GAP_MS, `preâmbulo → 1ª: ${ka1.start - pre.end} ms`)
-  assert.ok(ka2.start - ka1.end >= KEEPALIVE_COOLDOWN_MS, `1ª → 2ª: ${ka2.start - ka1.end} ms`)
-  // a resposta chega 8 s depois do fim da 2ª: a desculpa (pronta) é PULADA, a resposta não espera
-  await h.clock.advance(ka2.end + 8000 - h.clock.now)
-  const t = h.clock.now
-  await answer(h, 'Pronto, aqui está.')
-  const sentence = h.emitted.find((u) => u.kind === 'sentence')!
-  assert.equal(h.emittedAt.get(sentence.id), t, 'a frase sai na hora')
-  assert.ok(decisions(h, 'APOLOGY').some((e) => !e.played && e.reason === 'too-soon'))
-  assert.equal(h.delays().length, 2, 'sem a desculpa')
-})
-
-test('desculpa: sintetizada no limiar (15 s), toca ANTES da 1ª frase (que fica atrás dela na fila)', async () => {
-  const h = harness({ delay: { keepAliveAfterMs: 60_000 } })
-  await turnWithFiller(h, 1000)
-  await h.clock.advance(13_999) // 15 s desde o turno (1 s do preâmbulo + 13,999 s)
-  assert.equal(h.phrases.length, 0, 'antes do limiar nada')
-  await h.clock.advance(1)
-  assert.equal(h.phrases.length, 1, 'síntese da desculpa começa no limiar (em paralelo)')
-  assert.ok(DEFAULT_APOLOGY_POOL.includes(h.phrases[0].text))
-  assert.equal(h.delays().length, 0, 'pronta, mas espera a resposta (não toca solta)')
-  await h.clock.advance(2000)
-  await answer(h, 'A fotossíntese transforma luz em energia.')
-  const kinds = h.emitted.map((u) => `${u.kind}:${dec(u)}`)
-  const iA = kinds.indexOf(`delay:PHRASE:${h.phrases[0].text}`)
-  const iS = kinds.indexOf('sentence:WAV:A fotossíntese transforma luz em energia.')
-  assert.ok(iA >= 0 && iS === iA + 1, `desculpa logo antes da frase: ${kinds.join(' | ')}`)
-  assert.ok(decisions(h, 'APOLOGY').some((e) => e.played && e.reason === 'late-answer'))
-})
-
-test('desculpa: abaixo do limiar nem é sintetizada', async () => {
-  const h = harness({ delay: { keepAliveAfterMs: 60_000 } })
-  await turnWithFiller(h, 1000)
-  await h.clock.advance(12_000) // 13 s
-  await answer(h, 'Resposta rápida.')
-  await h.clock.advance(30_000)
-  assert.equal(h.phrases.length, 0)
-  assert.equal(h.delays().length, 0)
-})
-
-test('desculpa: não pronta quando a resposta chega → descartada (abortada) e a resposta NÃO espera', async () => {
-  const h = harness({ delay: { keepAliveAfterMs: 60_000 }, manualPhrases: true })
-  await turnWithFiller(h, 1000)
-  await h.clock.advance(14_000)
-  assert.equal(h.phrases.length, 1)
-  await h.clock.advance(300)
-  await answer(h, 'Aqui está.')
-  assert.ok(
-    h.emitted.some((u) => u.kind === 'sentence' && dec(u) === 'WAV:Aqui está.'),
-    'a frase saiu sem esperar a desculpa'
-  )
-  assert.equal(h.phrases[0].signal.aborted, true, 'síntese da desculpa abortada')
-  h.phrases[0].resolve() // chega tarde: ignorada
-  await flush()
-  assert.equal(h.delays().length, 0)
-  assert.ok(decisions(h, 'APOLOGY').some((e) => !e.played && e.reason === 'not-ready'))
-})
-
-test('desculpa × manter viva: pulada com um "manter viva" tocando ou terminado há < 10 s; depois disso toca', async () => {
-  // "manter viva" aos 11 s (tocando); desculpa sintetizada aos 15 s; resposta aos 15,5 s
-  const a = harness()
-  await turnWithFiller(a, 1000)
-  await a.clock.advance(DELAY_MIN_GAP_MS)
-  assert.equal(a.delays().length, 1, '"manter viva" tocando')
-  await a.clock.advance(4500)
-  assert.equal(a.phrases.length, 2, 'desculpa sintetizada no limiar')
-  await answer(a, 'Pronto.')
-  assert.equal(a.delays().length, 1, 'sem a desculpa')
-  assert.ok(decisions(a, 'APOLOGY').some((e) => e.reason === 'keepalive-playing'))
-  // "manter viva" terminou aos 12,5 s; resposta aos 20 s (7,5 s depois) → pulada
-  const b = harness()
-  await turnWithFiller(b, 1000)
-  await b.clock.advance(DELAY_MIN_GAP_MS)
-  await b.clock.advance(1500)
-  b.m.playbackIdle()
-  await b.clock.advance(7500)
-  await answer(b, 'Pronto.')
-  assert.equal(b.delays().length, 1)
-  assert.ok(decisions(b, 'APOLOGY').some((e) => e.reason === 'too-soon'))
-  // resposta aos 23 s (10,5 s depois do fim) → toca
-  const c = harness()
-  await turnWithFiller(c, 1000)
-  await c.clock.advance(DELAY_MIN_GAP_MS)
-  await c.clock.advance(1500)
-  c.m.playbackIdle()
-  await c.clock.advance(10_500)
-  await answer(c, 'Pronto.')
-  assert.equal(c.delays().length, 2, '"manter viva" + desculpa')
-  assert.ok(decisions(c, 'APOLOGY').some((e) => e.played))
+  assert.equal(ka1.start - pre.end, 8000 + 3000, '8 s de silêncio + a síntese')
+  assert.equal(ka2.start - ka1.end, 8000 + 3000)
+  assert.equal(h.clock.pending, 0, 'nenhum timer pendurado')
 })
 
 test('manter viva em voo é abortada quando a resposta chega antes (nunca toca depois)', async () => {
-  const h = harness({ delay: { apologyAfterMs: 60_000 }, manualPhrases: true })
+  const h = harness({ manualPhrases: true })
   await turnWithFiller(h, 1000)
-  await h.clock.advance(DELAY_MIN_GAP_MS)
+  await h.clock.advance(8000)
   assert.equal(h.phrases.length, 1)
   await answer(h, 'Chegou a resposta.')
   assert.equal(h.phrases[0].signal.aborted, true)
@@ -684,47 +899,55 @@ test('manter viva em voo é abortada quando a resposta chega antes (nunca toca d
   assert.ok(decisions(h, 'KEEPALIVE').some((e) => !e.played && e.reason === 'answer-first'))
 })
 
-test('nunca com o usuário falando: fala nova aborta a síntese e corta a frase tocando', async () => {
+test('nunca com o usuário falando: a fala aborta a síntese e corta a frase tocando; fala de verdade vira turno novo', async () => {
   const h = harness({ manualPhrases: true })
   await turnWithFiller(h, 1000)
-  await h.clock.advance(DELAY_MIN_GAP_MS)
+  await h.clock.advance(8000)
   assert.equal(h.phrases.length, 1)
   h.m.speechBegin() // o usuário voltou a falar
   assert.equal(h.phrases[0].signal.aborted, true)
   await h.clock.advance(60_000)
-  assert.equal(h.phrases.length, 1, 'nada novo enquanto/depois de o usuário falar no turno')
+  assert.equal(h.phrases.length, 1, 'nada enquanto o usuário fala (por mais longa que seja a fala)')
   // tocando: a fala do usuário corta (o renderer já descartou; o main manda cancelar)
   const g = harness()
   await turnWithFiller(g, 1000)
-  await g.clock.advance(DELAY_MIN_GAP_MS)
+  await g.clock.advance(8000)
   const id = g.emitted.find((u) => u.kind === 'delay')!.id
   g.m.speechBegin()
-  assert.ok(g.cancelled.includes(id), 'frase de demora cancelada com fade')
+  assert.ok(g.cancelled.includes(id), 'frase de espera cancelada com fade')
+  // o renderer avisa a fila vazia (clipe cortado) enquanto o usuário ainda fala: nada conta
+  g.m.playbackIdle()
+  await g.clock.advance(30_000)
+  assert.equal(g.delays().length, 1, 'nada por cima da fala')
+  // a fala vira turno continuado (texto de verdade): o turno novo rearma do zero
+  g.m.speechEnd()
+  g.m.turn('na verdade quero saber da respiração das plantas')
+  await flush()
+  assert.ok(g.timeline.some((e) => e.kind === 'turn-continued'))
 })
 
 test('nunca depois do barge-in, do end_call (desligamento armado) nem com resposta de erro', async () => {
   // barge-in no meio da resposta (tool rodando depois da 1ª frase): nada mais
-  const b = harness({ delay: { apologyAfterMs: 60_000 } })
+  const b = harness()
   await turnWithFiller(b, 1000)
   await answer(b, 'Vou ver isso.', { done: false })
-  b.emit(toolRunning(true))
+  b.emit({ type: 'tool-running', sessionId: 's1', toolCallId: 'tx', running: true } as AgentEvent)
   b.m.bargeIn({ playedIds: [] })
   b.m.playbackIdle()
   await b.clock.advance(60_000)
   assert.equal(b.phrases.length, 0)
-  // controle: sem o barge-in a tool rodando reabre o "manter viva" — 8 s de silêncio depois da
-  // frase (fim aos 2 s → 10 s), mas ≥ 10 s depois do FIM do preâmbulo (1 s → 11 s): vale o maior
-  const c = harness({ delay: { apologyAfterMs: 60_000 } })
+  // controle: sem o barge-in a espera depois da 1ª frase tem "manter viva" — 8 s do FIM dela
+  const c = harness()
   await turnWithFiller(c, 1000)
   await answer(c, 'Vou ver isso.', { done: false })
-  c.emit(toolRunning(true))
+  c.emit({ type: 'tool-running', sessionId: 's1', toolCallId: 'tx', running: true } as AgentEvent)
   await c.clock.advance(1000)
   c.m.playbackIdle()
-  await c.clock.advance(8999)
+  await c.clock.advance(7999)
   assert.equal(c.delays().length, 0)
   await c.clock.advance(1)
   assert.equal(c.delays().length, 1, 'tool longa depois da 1ª frase: "manter viva"')
-  // end_call: o desligamento armado cala as frases de demora
+  // end_call: o desligamento armado cala as frases de espera
   const e = harness()
   await turnWithFiller(e, 1000)
   const a: StoredMessage = {
@@ -773,33 +996,79 @@ test('nunca depois do barge-in, do end_call (desligamento armado) nem com respos
   assert.equal(r.phrases.length, 0)
 })
 
-test('frases de demora fora do histórico: o barge-in trunca só às frases da RESPOSTA', async () => {
-  const h = harness({ delay: { keepAliveAfterMs: 60_000 } })
-  await turnWithFiller(h, 1000)
-  await h.clock.advance(14_500)
-  const id = await answer(h, 'Primeira frase. Segunda frase.', { done: false })
-  const apologyId = h.emitted.find((u) => u.kind === 'delay')!.id
-  const first = h.emitted.find((u) => u.kind === 'sentence')!.id
-  h.m.bargeIn({ playedIds: [apologyId, first] })
-  await flush()
-  assert.equal(h.amends.length, 1)
-  assert.deepEqual(h.amends[0].spoken, { [id]: ['Primeira frase.'] }, 'sem a desculpa')
+test('aprovação/pergunta na tela: nada de "só mais um instante" enquanto a sessão espera o usuário', async () => {
+  const h = harness({ fillers: false })
+  userTurn(h)
+  await h.clock.advance(2000)
+  h.emit({
+    type: 'session-updated',
+    session: { id: 's1', status: 'awaiting_approval' }
+  } as AgentEvent)
+  await h.clock.advance(60_000)
+  assert.equal(h.phrases.length, 0, 'esperando a aprovação do usuário')
+  h.emit({ type: 'session-updated', session: { id: 's1', status: 'running' } } as AgentEvent)
+  await h.clock.advance(7999)
+  assert.equal(h.phrases.length, 0)
+  await h.clock.advance(1)
+  assert.equal(h.phrases.length, 1, 'voltou a rodar: 8 s de silêncio daqui')
 })
 
-test('custo: os caracteres das frases de demora contam no uso da voz da chamada', async () => {
+test('espera no meio da resposta: o obrigado entra antes da frase que encerra a espera (1 por turno)', async () => {
+  const h = harness({ autoPlay: {} })
+  await turnWithFiller(h, 1000)
+  await answer(h, 'Vou procurar isso nos arquivos.', { done: false })
+  const id = await callTool(h, 'read_file')
+  await h.clock.advance(40_000)
+  toolDone(h, id)
+  const t = h.clock.now
+  await answer(h, 'Pronto, achei o arquivo.')
+  await h.clock.advance(10_000)
+  assert.equal(
+    keepAlivesOf(h).length,
+    2,
+    `2 "manter viva" na tool longa: ${h.delays().join(' | ')}`
+  )
+  const kinds = h.played.map((p) =>
+    p.kind === 'delay' ? (isThanks(p.text) ? 'thanks' : 'keepalive') : p.kind
+  )
+  assert.deepEqual(kinds.slice(-2), ['thanks', 'sentence'], 'obrigado logo antes da frase seguinte')
+  const last = h.emitted.filter((u) => u.kind === 'sentence').at(-1)!
+  assert.equal(h.emittedAt.get(last.id), t, 'a frase sai na hora')
+})
+
+test('variedade: "manter viva" e obrigado não repetem as últimas entre turnos', async () => {
+  const h = harness({ fillers: false, autoPlay: {} })
+  const seen: { ka: string[]; th: string[] } = { ka: [], th: [] }
+  for (let turn = 0; turn < 4; turn++) {
+    const t0 = h.clock.now
+    userTurn(h, `${LONG_Q} ${turn}`)
+    await h.clock.until(t0 + 30_000)
+    await answer(h, `Resposta ${turn}.`)
+    await h.clock.advance(5000)
+  }
+  for (const p of h.played)
+    if (p.kind === 'delay') (isThanks(p.text) ? seen.th : seen.ka).push(phraseText(p.text))
+  assert.equal(seen.th.length, 4, 'um obrigado por turno')
+  for (let i = 1; i < seen.th.length; i++) assert.notEqual(seen.th[i], seen.th[i - 1])
+  for (let i = 2; i < seen.th.length; i++) assert.notEqual(seen.th[i], seen.th[i - 2])
+  for (let i = 1; i < seen.ka.length; i++) assert.notEqual(seen.ka[i], seen.ka[i - 1])
+  for (let i = 2; i < seen.ka.length; i++) assert.notEqual(seen.ka[i], seen.ka[i - 2])
+})
+
+test('frases de espera fora do histórico: o barge-in trunca só às frases da RESPOSTA', async () => {
   const h = harness()
   await turnWithFiller(h, 1000)
-  await h.clock.advance(DELAY_MIN_GAP_MS) // manter viva aos 11 s
-  await h.clock.advance(1500)
-  h.m.playbackIdle() // terminou aos 12,5 s
-  await h.clock.advance(10_500) // desculpa sintetizada aos 15 s; resposta aos 23 s
-  await answer(h, 'Pronto.')
-  h.m.stop()
-  const end = h.markers.find((m) => (m.meta.voiceCall as VoiceCallMark).phase === 'end')!
-  const usage = (end.meta.voiceCall as VoiceCallMark).usage!
-  const phraseChars = h.phrases.reduce((n, p) => n + p.text.length, 0)
-  assert.equal(usage.tts.chars, phraseChars + 'Pronto.'.length)
-  assert.equal(h.delays().length, 2, '"manter viva" + desculpa')
+  await h.clock.advance(8000) // "manter viva" aos 9 s
+  h.m.playbackIdle() // terminou
+  await h.clock.advance(6000)
+  const id = await answer(h, 'Primeira frase. Segunda frase.', { done: false })
+  const delays = h.emitted.filter((u) => u.kind === 'delay')
+  assert.equal(delays.length, 2, '"manter viva" + obrigado')
+  const first = h.emitted.find((u) => u.kind === 'sentence')!.id
+  h.m.bargeIn({ playedIds: [...delays.map((u) => u.id), first] })
+  await flush()
+  assert.equal(h.amends.length, 1)
+  assert.deepEqual(h.amends[0].spoken, { [id]: ['Primeira frase.'] }, 'sem as frases de espera')
 })
 
 test('desligado (delayPhrases.enabled false): nada', async () => {
@@ -808,122 +1077,43 @@ test('desligado (delayPhrases.enabled false): nada', async () => {
   await h.clock.advance(60_000)
   await answer(h, 'Pronto.')
   assert.equal(h.phrases.length, 0)
+  assert.equal(h.delays().length, 0)
   assert.equal(h.clock.pending, 0)
 })
 
-test('ElevenLabs (tts-feed): a frase vai por request à parte — nunca no contexto da resposta', async () => {
-  const h = harness({ ttsFeed: true, delay: { keepAliveAfterMs: 60_000 } })
+test('ElevenLabs (tts-feed): as frases de espera vão por request à parte — nunca no contexto da resposta', async () => {
+  const h = harness({ ttsFeed: true, thanksClips: false })
   await turnWithFiller(h, 1000)
-  await h.clock.advance(14_500)
+  await h.clock.advance(8000)
+  h.m.playbackIdle()
+  await h.clock.advance(6000)
   await answer(h, 'Resposta.')
-  const apology = h.phrases[0].text
-  assert.ok(h.delays().length === 1)
-  assert.ok(
-    !h.feedCalls.some((c) => c.includes(apology)),
-    `o texto da desculpa nunca vai ao feed: ${h.feedCalls.join(' | ')}`
-  )
+  assert.equal(h.delays().length, 2, '"manter viva" + obrigado (ao vivo)')
+  for (const p of h.phrases)
+    assert.ok(
+      !h.feedCalls.some((c) => c.includes(p.text)),
+      `"${p.text}" nunca vai ao feed: ${h.feedCalls.join(' | ')}`
+    )
   assert.ok(h.feedCalls.includes('cut:Resposta.'), 'a resposta segue pelo feed')
 })
 
-test('resposta inteira depois de raciocínio longo (turno já ocioso na síntese): a desculpa ainda entra', async () => {
-  const h = harness({ delay: { keepAliveAfterMs: 60_000 } })
-  // síntese de sentença lenta: o turno do agente termina antes da 1ª frase ficar pronta
+test('resposta inteira depois de raciocínio longo (turno já ocioso na síntese): o obrigado ainda entra', async () => {
+  const h = harness()
   await turnWithFiller(h, 1000)
-  await h.clock.advance(15_000)
-  assert.equal(h.phrases.length, 1)
+  await h.clock.advance(8000)
+  h.m.playbackIdle()
+  await h.clock.advance(6000)
   await answer(h, 'Demorou mas veio.') // done = session idle logo depois
-  assert.equal(h.delays().length, 1, 'desculpa antes da frase')
-})
-
-// ---------------- cenários com reprodução falsa (relógio falso de ponta a ponta) ----------------
-
-/** Frases curtas tocadas (preâmbulo/frases de demora), na ordem. */
-const shortsOf = (h: Harness): PlayRec[] => h.played.filter((p) => p.kind !== 'sentence')
-
-/** Nenhuma frase de demora começa < 10 s depois do FIM da frase curta anterior (15 s entre "manter viva"). */
-function assertSpaced(h: Harness): void {
-  const shorts = shortsOf(h)
-  for (let i = 1; i < shorts.length; i++) {
-    const prev = shorts[i - 1]
-    const cur = shorts[i]
-    if (cur.kind !== 'delay') continue
-    assert.ok(prev.end >= 0, 'a anterior terminou antes')
-    const gap = cur.start - prev.end
-    assert.ok(
-      gap >= DELAY_MIN_GAP_MS,
-      `"${cur.text}" ${gap} ms depois de "${prev.text}" (${shorts.map((s) => `${s.text}@${s.start}-${s.end}`).join(' | ')})`
-    )
-  }
-  const kas = shorts.filter((p) => DEFAULT_KEEPALIVE_POOL.some((t) => p.text.includes(t)))
-  for (let i = 1; i < kas.length; i++)
-    assert.ok(
-      kas[i].start - kas[i - 1].end >= KEEPALIVE_COOLDOWN_MS,
-      'cooldown entre "manter viva"'
-    )
-}
-
-test('cenário: tool longa (60 s) — frases curtas sempre ≥ 10 s entre si, no máx. 2 "manter viva"', async () => {
-  const h = harness({ autoPlay: {} })
-  const t0 = h.clock.now
-  h.m.speechBegin()
-  h.m.speechEnd()
-  h.m.turn(LONG_Q)
-  await waitFiller(h)
-  await h.clock.advance(3000)
-  await answer(h, 'Vou procurar isso nos arquivos.', { done: false })
-  h.emit(toolRunning(true))
+  const kinds = h.emitted.map((u) =>
+    u.kind === 'delay' ? (isThanks(dec(u)) ? 'thanks' : 'ka') : u.kind
+  )
+  assert.deepEqual(kinds, ['filler', 'ka', 'thanks', 'sentence'])
+  h.m.playbackIdle()
   await h.clock.advance(60_000)
-  h.emit(toolRunning(false))
-  const t = h.clock.now
-  await answer(h, 'Pronto, achei o arquivo.')
-  await h.clock.advance(10_000)
-  assertSpaced(h)
-  assert.equal(h.delays().length, 2, `2 "manter viva" na tool longa: ${h.delays().join(' | ')}`)
-  assert.ok(!decisions(h, 'APOLOGY').some((e) => e.played), 'a resposta já tinha começado')
-  const last = h.emitted.filter((u) => u.kind === 'sentence').at(-1)!
-  assert.equal(h.emittedAt.get(last.id), t, 'a resposta final sai na hora')
-  assert.ok(shortsOf(h)[0].start - t0 < 1000, 'o preâmbulo sai logo')
+  assert.equal(h.clock.pending, 0, 'a espera acabou com a resposta')
 })
 
-test('cenário: raciocínio longo (40 s) — "manter viva" espaçadas e a desculpa só a ≥ 10 s da última; nunca atrasa a resposta', async () => {
-  for (const [answerAt, apologyPlays] of [
-    [40_000, true], // 11 s depois do fim da 2ª "manter viva"
-    [35_000, false] // 6 s depois: pulada
-  ] as const) {
-    const h = harness({ autoPlay: {} })
-    const t0 = h.clock.now
-    h.m.speechBegin()
-    h.m.speechEnd()
-    h.m.turn(LONG_Q)
-    await waitFiller(h)
-    await h.clock.advance(t0 + answerAt - h.clock.now)
-    const t = h.clock.now
-    await answer(h, 'A resposta, enfim. Com duas frases.')
-    await h.clock.advance(15_000)
-    assertSpaced(h)
-    const first = h.emitted.find((u) => u.kind === 'sentence')!
-    assert.equal(h.emittedAt.get(first.id), t, 'a 1ª frase é emitida assim que fica pronta')
-    assert.equal(
-      decisions(h, 'APOLOGY').some((e) => e.played),
-      apologyPlays,
-      `resposta aos ${answerAt / 1000} s: ${decisions(h, 'APOLOGY')
-        .map((e) => e.reason)
-        .join(',')}`
-    )
-    if (!apologyPlays)
-      assert.ok(
-        decisions(h, 'APOLOGY').some((e) => e.reason === 'too-soon'),
-        'pulada, não adiada'
-      )
-    assert.equal(
-      h.delays().filter((d) => DEFAULT_KEEPALIVE_POOL.some((k) => d.includes(k))).length,
-      2,
-      '2 "manter viva"'
-    )
-  }
-})
-
-test('métricas: frases de demora tocadas e "não tocou" no seu balde', () => {
+test('métricas: frases de espera tocadas e "não tocou" no seu balde', () => {
   const ev = (p: Partial<VoiceCallTimelineEvent>): VoiceCallTimelineEvent => ({
     ts: 1,
     kind: 'decision',
@@ -931,12 +1121,12 @@ test('métricas: frases de demora tocadas e "não tocou" no seu balde', () => {
   })
   const m = computeVoiceCallMetrics([
     ev({ class: 'KEEPALIVE', played: true }),
-    ev({ class: 'APOLOGY', played: false, reason: 'too-soon' }),
-    ev({ class: 'APOLOGY', played: true }),
+    ev({ class: 'THANKS', played: false, reason: 'too-soon' }),
+    ev({ class: 'THANKS', played: true }),
     ev({ class: 'FILLER', played: true })
   ])
   assert.equal(m.fillerPlayed, 1)
-  assert.deepEqual(m.delayPlayed, { keepAlive: 1, apology: 1 })
+  assert.deepEqual(m.delayPlayed, { keepAlive: 1, thanks: 1 })
   assert.deepEqual(m.skipped.delay, { 'too-soon': 1 })
 })
 

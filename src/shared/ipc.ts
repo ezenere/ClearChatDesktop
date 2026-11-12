@@ -911,8 +911,8 @@ export interface TtsClipsView {
   /** Cache de uma definição antiga (frases/pool de preâmbulos mudaram) — precisa regerar. */
   stale?: boolean
   /**
-   * Com `stale`: as classes velhas/ausentes (`'FILLER'` preâmbulos, `'TOOL'` frases de ferramenta)
-   * — as outras continuam tocando. Ausente com `stale` = todas.
+   * Com `stale`: as classes velhas/ausentes (`'FILLER'` preâmbulos, `'TOOL'` frases de ferramenta,
+   * `'THANKS'` "obrigado por aguardar") — as outras continuam tocando. Ausente com `stale` = todas.
    */
   staleClasses?: string[]
 }
@@ -927,8 +927,9 @@ export interface VoiceCallUtteranceEvent {
   mime: string
   /**
    * Origem do áudio (timeline/UI; ausente = 'sentence'): sentença da resposta, preâmbulo pós-turno
-   * (clipe `resolveClip` — SPEC → "Chamada de voz") ou frase de demora sintetizada ao vivo ("Só
-   * mais um instante…", "Desculpe a demora…" — tratada como clipe: pulada se não tocar, descartada
+   * (clipe `resolveClip` — SPEC → "Chamada de voz") ou frase de espera ("Só mais um instante…"
+   * sintetizada ao vivo, "Obrigado por aguardar." — clipe `THANKS_<n>` ou síntese ao vivo — tratada
+   * como clipe: pulada se não tocar, descartada
    * quando o usuário fala, nunca no histórico) ou frase de ferramenta da 1ª tool do turno ("Vou
    * pesquisar isso." — clipe `TOOL_<n>` ou síntese ao vivo, mesmas regras de clipe).
    */
@@ -1026,7 +1027,7 @@ export interface VoiceCallTimelineEvent {
      * `reason` = mensagem, `id`/`class` = a utterance): nunca mais calada (painel + erro do dock).
      */
     | 'playback-error'
-  /** Classe do ato ('FILLER'/'KEEPALIVE'/'APOLOGY'); ausente em eventos sem classe. */
+  /** Classe do ato ('FILLER'/'TOOL'/'KEEPALIVE'/'THANKS'); ausente em eventos sem classe. */
   class?: string | null
   /** Id da utterance dona do evento (pareia decisão → áudio). */
   id?: string | null

@@ -34,7 +34,6 @@ import {
   type VoiceToolPhrases
 } from '@shared/voice'
 import {
-  DELAY_MIN_GAP_MS,
   TOOL_PHRASE_AFTER_PREAMBLE_MS,
   TOOL_PHRASE_RECENT_WINDOW,
   pickToolPhrase,
@@ -674,8 +673,8 @@ test('usuário falando (resposta em voo) → pulada', async () => {
   h.m.stop()
 })
 
-test('espaçamento: a frase de ferramenta conta como frase curta — "manter viva" só 10 s depois do FIM dela', async () => {
-  const h = harness({ fillers: false, autoPlay: true, delay: { apologyAfterMs: 60_000 } })
+test('espaçamento: a frase de ferramenta conta como frase curta — "manter viva" só 8 s depois do FIM dela', async () => {
+  const h = harness({ fillers: false, autoPlay: true })
   userTurn(h)
   await h.clock.advance(1000)
   callTools(h, ['web_search'])
@@ -684,17 +683,18 @@ test('espaçamento: a frase de ferramenta conta como frase curta — "manter viv
   await h.clock.advance(DUR.tool) // a frase terminou de tocar (playback-idle)
   const end = h.clock.now
   const delays = (): VoiceCallUtterance[] => h.emitted.filter((u) => u.kind === 'delay')
-  // sem a frase, a "manter viva" sairia aos 8 s do envio; agora espera 10 s do fim da frase
-  await h.clock.advance(DELAY_MIN_GAP_MS - 1)
-  assert.equal(delays().length, 0, 'gap de 10 s desde o fim da frase de ferramenta')
+  const after = DEFAULT_DELAY_PHRASES.keepAliveAfterMs
+  // sem a frase, a "manter viva" sairia aos 8 s do envio; agora conta 8 s do fim da frase
+  await h.clock.advance(after - 1)
+  assert.equal(delays().length, 0, '8 s de silêncio desde o fim da frase de ferramenta')
   await h.clock.advance(1)
   assert.equal(delays().length, 1)
-  assert.equal(h.emittedAt.get(delays()[0].id), end + DELAY_MIN_GAP_MS)
+  assert.equal(h.emittedAt.get(delays()[0].id), end + after)
   h.m.stop()
 })
 
 test('espaçamento: "manter viva" tocando quando a 1ª tool começa → frase de ferramenta pulada', async () => {
-  const h = harness({ fillers: false, autoPlay: true, delay: { apologyAfterMs: 60_000 } })
+  const h = harness({ fillers: false, autoPlay: true })
   userTurn(h)
   await h.clock.advance(DEFAULT_DELAY_PHRASES.keepAliveAfterMs) // "manter viva" sai aos 8 s
   assert.equal(h.emitted.filter((u) => u.kind === 'delay').length, 1)

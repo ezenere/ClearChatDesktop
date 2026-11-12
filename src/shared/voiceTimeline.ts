@@ -8,13 +8,13 @@ export interface VoiceCallMetrics {
   elapsedMs: number
   /** Preâmbulos que tocaram de fato (`decision` FILLER com `played`). */
   fillerPlayed: number
-  /** Frases de demora que tocaram ("manter viva" e desculpa). */
-  delayPlayed: { keepAlive: number; apology: number }
+  /** Frases de espera que tocaram ("manter viva" e "obrigado por aguardar"). */
+  delayPlayed: { keepAlive: number; thanks: number }
   /** Frases de ferramenta que tocaram (`decision` TOOL com `played` — no máx. 1 por turno). */
   toolPlayed: number
   /**
    * Por que NÃO tocou (motivo → vezes), separado em preâmbulos, frases de demora
-   * (`KEEPALIVE`/`APOLOGY`) e frases de ferramenta (`TOOL`, motivo `<categoria>/<motivo>`) — o
+   * (`KEEPALIVE`/`THANKS`) e frases de ferramenta (`TOOL`, motivo `<categoria>/<motivo>`) — o
    * painel "Atos de fala curta" explica.
    */
   skipped: {
@@ -24,8 +24,8 @@ export interface VoiceCallMetrics {
   }
 }
 
-/** Classes das frases de demora sintetizadas ao vivo. */
-export const DELAY_PHRASE_CLASSES: readonly string[] = ['KEEPALIVE', 'APOLOGY']
+/** Classes das frases de espera ("manter viva" e "obrigado por aguardar"). */
+export const DELAY_PHRASE_CLASSES: readonly string[] = ['KEEPALIVE', 'THANKS']
 
 /**
  * Métricas da chamada atual: preâmbulos, frases de demora e de ferramenta tocados e os motivos dos que não
@@ -39,7 +39,7 @@ export function computeVoiceCallMetrics(
   const first = list[0]?.ts ?? 0
   const last = now ?? list[list.length - 1]?.ts ?? first
   const skipped: VoiceCallMetrics['skipped'] = { filler: {}, delay: {}, tool: {} }
-  const delayPlayed = { keepAlive: 0, apology: 0 }
+  const delayPlayed = { keepAlive: 0, thanks: 0 }
   let fillerPlayed = 0
   let toolPlayed = 0
   for (const e of list) {
@@ -52,7 +52,7 @@ export function computeVoiceCallMetrics(
       if (isFiller) fillerPlayed++
       else if (isTool) toolPlayed++
       else if (e.class === 'KEEPALIVE') delayPlayed.keepAlive++
-      else delayPlayed.apology++
+      else delayPlayed.thanks++
       continue
     }
     const bucket = isFiller ? skipped.filler : isTool ? skipped.tool : skipped.delay

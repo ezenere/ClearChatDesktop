@@ -70,7 +70,7 @@ async function refreshClips(): Promise<void> {
     const ok = !!m && m.clips.length > 0 && !m.stale
     useVoiceCallRuntime.setState({
       clips: ok ? 'ok' : 'missing',
-      clipsStale: ok ? [] : (m?.staleClasses ?? ['FILLER', 'TOOL'])
+      clipsStale: ok ? [] : (m?.staleClasses ?? ['FILLER', 'TOOL', 'THANKS'])
     })
   } catch {
     useVoiceCallRuntime.setState({ clips: 'unknown' })
@@ -637,7 +637,7 @@ export function useVoiceCall(): void {
       const ok = m.clips.length > 0
       useVoiceCallRuntime.setState({
         clips: ok ? 'ok' : 'missing',
-        clipsStale: ok ? [] : ['FILLER', 'TOOL']
+        clipsStale: ok ? [] : ['FILLER', 'TOOL', 'THANKS']
       })
     } catch (err) {
       useVoiceCallRuntime.setState({ clips: 'missing' })

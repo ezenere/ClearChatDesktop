@@ -25,12 +25,14 @@ const SKIP_LABELS: Record<string, string> = {
   spoken: 'a resposta chegou antes',
   'fast-answer': 'a resposta ficou pronta antes da espera',
   'assistant-audio': 'áudio do assistente tocando',
-  // frases de demora ("manter viva"/desculpa)
+  // frases de espera ("manter viva"/"obrigado por aguardar")
   'answer-first': 'a resposta chegou antes',
-  'answer-coming': 'a resposta já está sintetizando',
-  'not-ready': 'não ficou pronta antes da resposta',
-  'keepalive-playing': '"manter viva" tocando',
-  'too-soon': 'outra frase curta tocou há menos de 10 s',
+  'answer-coming': 'a resposta já está chegando',
+  'not-ready': 'o obrigado não ficou pronto antes da resposta',
+  'too-soon': 'obrigado dispensado — a última frase de espera foi há pouco',
+  already: 'já agradeceu neste turno',
+  'awaiting-user': 'esperando você (aprovação/pergunta na tela)',
+  max: 'limite do turno',
   'clip-playing': 'outro clipe tocando',
   'user-speaking': 'você falando',
   'barge-in': 'barge-in',
@@ -46,6 +48,13 @@ const SKIP_LABELS: Record<string, string> = {
   announced: 'o assistente já falou antes da tool',
   'after-preamble': 'preâmbulo terminou há menos de 3 s',
   'tool-done': 'a tool terminou antes'
+}
+
+/** Classe do ato de fala curta → nome no painel (as de ferramenta têm linha própria). */
+const CLASS_LABELS: Record<string, string> = {
+  FILLER: 'preâmbulo',
+  KEEPALIVE: '"manter viva"',
+  THANKS: '"obrigado por aguardar"'
 }
 
 /** Por que a fala por cima virou barge-in → texto. */
@@ -77,7 +86,7 @@ function describeTimelineEvent(e: VoiceCallTimelineEvent): string {
         } — ${state}${e.text ? ` · "${e.text.slice(0, 40)}"` : ''}`
       }
       const state = e.played ? 'tocou' : `não tocou — ${skipLabel(e.reason ?? '?')}`
-      return `decisão ${e.class ?? '?'}${e.variant ? ` v${e.variant}` : ''} — ${state}${
+      return `decisão ${CLASS_LABELS[e.class ?? ''] ?? e.class ?? '?'}${e.variant ? ` v${e.variant}` : ''} — ${state}${
         e.text ? ` · "…${e.text.slice(-24)}"` : ''
       }`
     }
@@ -171,10 +180,10 @@ export function VoiceCallPanel({ open }: { open: boolean }): React.JSX.Element |
         className="flex flex-wrap items-center gap-x-3 gap-y-0.5 border-t border-border/60 pt-1.5 text-[10.5px] text-subtle"
       >
         <span data-testid="voice-call-filler-played">preâmbulos: {metrics.fillerPlayed}</span>
-        {metrics.delayPlayed.keepAlive + metrics.delayPlayed.apology > 0 && (
+        {metrics.delayPlayed.keepAlive + metrics.delayPlayed.thanks > 0 && (
           <span data-testid="voice-call-delay-played">
-            frases de demora: {metrics.delayPlayed.keepAlive} manter viva ·{' '}
-            {metrics.delayPlayed.apology} desculpa
+            frases de espera: {metrics.delayPlayed.keepAlive} manter viva ·{' '}
+            {metrics.delayPlayed.thanks} obrigado
           </span>
         )}
         {metrics.toolPlayed > 0 && (
@@ -231,7 +240,7 @@ export function VoiceCallPanel({ open }: { open: boolean }): React.JSX.Element |
 }
 
 /**
- * Por que os atos de fala curta não tocaram (motivo × vezes) — preâmbulos, frases de demora e de
+ * Por que os atos de fala curta não tocaram (motivo × vezes) — preâmbulos, frases de espera e de
  * ferramenta (estas com a categoria: "web: o assistente já falou antes da tool ×1").
  */
 function SkipReadout({
@@ -263,7 +272,7 @@ function SkipReadout({
     )
   }
   const a = row('Preâmbulo', skipped.filler, 'voice-call-skips-filler')
-  const b = row('Frase de demora', skipped.delay, 'voice-call-skips-delay')
+  const b = row('Frase de espera', skipped.delay, 'voice-call-skips-delay')
   const c = row('Frase de ferramenta', skipped.tool, 'voice-call-skips-tool', (reason) => {
     const [cat = '?', ...rest] = reason.split('/')
     const why = rest.filter((r) => r !== 'live').join('/')

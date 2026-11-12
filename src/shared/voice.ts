@@ -494,72 +494,105 @@ export interface VoiceToolPhrases {
 export const DEFAULT_TOOL_PHRASES: VoiceToolPhrases = { enabled: true, pool: null }
 
 /**
- * Frases de demora da chamada (`voiceCallDefaults.delayPhrases`, global): sintetizadas AO VIVO pela
- * mesma voz da chamada (sem clipes pré-gerados) quando a resposta demora. Duas situações:
- * - **manter viva** (`keepAlivePool`): depois do preâmbulo, sem áudio da resposta por
- *   `keepAliveAfterMs` de silêncio → "Só mais um instante…" (no máx. 2 por turno, 15 s entre o fim
- *   de uma e o início da outra);
- * - **desculpa** (`apologyPool`): a 1ª frase da resposta ficou pronta depois de `apologyAfterMs`
- *   desde o turno → "Desculpe a demora, vamos lá." antes dela (sintetizada em paralelo; só toca se
- *   ficou pronta antes da resposta — nunca atrasa a síntese da resposta).
- * Espaçamento global: ≥ 10 s entre o FIM de qualquer frase curta (preâmbulo/"manter viva"/desculpa)
- * e o início da próxima "manter viva" ou desculpa (`DELAY_MIN_GAP_MS`; a desculpa que violaria é
- * pulada). Não entram no histórico (como os preâmbulos); os caracteres contam no custo da voz.
+ * Frases de espera da chamada (`voiceCallDefaults.delayPhrases`, local do dispositivo desde o
+ * protocolo 1.9.0): falas curtas pela mesma voz da chamada enquanto a resposta não chega. A
+ * sequência de um turno demorado: preâmbulo (só se a resposta demorar) OU frase de ferramenta (1ª
+ * tool) → "manter viva" → "manter viva" → "obrigado por aguardar" logo antes da resposta.
+ * - **manter viva** (`keepAlivePool` — o modelo pensando; `keepAliveToolPool` — com uma tool
+ *   rodando): depois de `keepAliveAfterMs` de SILÊNCIO desde o fim da última fala (preâmbulo, frase
+ *   de ferramenta, a "manter viva" anterior, uma frase da resposta — ou o envio do turno), sempre que
+ *   a resposta ainda não está sendo falada: antes dela, com tool rodando e com o modelo pensando de
+ *   novo depois da tool. No máx. 2 por turno (`KEEPALIVE_MAX_PER_TURN`); sintetizada ao vivo.
+ * - **obrigado por aguardar** (`thanksPool`): quando a frase da resposta que encerra a espera fica
+ *   pronta, toca UMA antes dela só se ao menos uma "manter viva" foi falada nessa espera e a última
+ *   frase de espera terminou há ≥ `thanksAfterMs` (falou "só mais um instante" há 2 s e a resposta
+ *   chegou → sem agradecimento). Sempre pronta na hora: clipe pré-gerado (`THANKS_<n>`, "Gerar
+ *   clipes") ou sintetizada em paralelo assim que a 1ª "manter viva" é falada — não pronta = pulada
+ *   (a resposta nunca espera por ela).
+ * Não entram no histórico (como os preâmbulos); os caracteres sintetizados contam no custo da voz.
  */
 export interface VoiceDelayPhrases {
-  /** Liga as frases de demora (padrão true). */
+  /** Liga as frases de espera (padrão true). */
   enabled: boolean
-  /** Silêncio (ms) esperando a resposta antes de uma frase "manter viva" (padrão 8000). */
+  /** Silêncio (ms) desde o fim da última fala antes de uma frase "manter viva" (padrão 8000). */
   keepAliveAfterMs: number
-  /** Espera (ms) desde o turno acima da qual a resposta ganha uma desculpa antes (padrão 15000). */
-  apologyAfterMs: number
-  /** Frases "manter viva"; null = `DEFAULT_KEEPALIVE_POOL`. */
+  /**
+   * "Obrigado por aguardar" só se a última frase de espera terminou há pelo menos isto (ms — padrão
+   * 4500, faixa 1000–30000) quando a resposta fica pronta.
+   */
+  thanksAfterMs: number
+  /** Frases "manter viva" (o modelo pensando); null = `DEFAULT_KEEPALIVE_POOL`. */
   keepAlivePool: string[] | null
-  /** Frases de desculpa; null = `DEFAULT_APOLOGY_POOL`. */
-  apologyPool: string[] | null
+  /** Frases "manter viva" com uma tool rodando; null = `DEFAULT_KEEPALIVE_TOOL_POOL`. */
+  keepAliveToolPool: string[] | null
+  /** Frases "obrigado por aguardar"; null = `DEFAULT_THANKS_POOL` (mudou → regerar os clipes). */
+  thanksPool: string[] | null
 }
 
-/** Frases "manter viva" padrão (curtas, ~1 s — enquanto a resposta não sai). */
+/** Frases "manter viva" padrão — o modelo pensando (curtas, ~1 s). */
 export const DEFAULT_KEEPALIVE_POOL: readonly string[] = [
   'Só mais um instante…',
   'Tô quase lá…',
-  'Deixa eu terminar de ver isso…',
-  'Já te respondo…'
+  'Já te respondo…',
+  'Deixa eu só organizar a resposta…',
+  'Só mais um minutinho…'
 ]
 
-/** Frases de desculpa padrão (antes da 1ª frase de uma resposta que demorou). */
-export const DEFAULT_APOLOGY_POOL: readonly string[] = [
+/** Frases "manter viva" padrão — com uma tool rodando (busca, comando, arquivos…). */
+export const DEFAULT_KEEPALIVE_TOOL_POOL: readonly string[] = [
+  'Ainda tô vendo isso aqui…',
+  'Deixa eu terminar de ver isso…',
+  'Tá terminando aqui, só um instante…',
+  'Só mais um pouquinho, tá quase…'
+]
+
+/** Frases "obrigado por aguardar" padrão (logo antes da resposta que demorou). */
+export const DEFAULT_THANKS_POOL: readonly string[] = [
+  'Obrigado por aguardar.',
+  'Pronto, obrigado pela paciência.',
+  'Valeu por esperar, olha só…',
+  'Pronto, aqui está.'
+]
+
+/**
+ * Pool padrão ANTIGO das desculpas (até 2026-11-12 — "Desculpe a demora…"): um `apologyPool` gravado
+ * igual a ele não é personalização (vira o pool novo de agradecimento); outro valor vira o
+ * `thanksPool`.
+ */
+export const LEGACY_APOLOGY_POOL: readonly string[] = [
   'Desculpe a demora, vamos lá.',
   'Pronto, desculpa a espera.',
   'Foi mal a demora, olha só…'
 ]
 
-/** Máximo de frases por pool de demora. */
+/** Máximo de frases por pool de espera. */
 export const DELAY_PHRASE_POOL_MAX = 12
-/** Tamanho máximo de uma frase de demora (chars). */
+/** Tamanho máximo de uma frase de espera (chars). */
 export const DELAY_PHRASE_MAX_CHARS = 80
 
 export const DEFAULT_DELAY_PHRASES: VoiceDelayPhrases = {
   enabled: true,
   keepAliveAfterMs: 8000,
-  apologyAfterMs: 15_000,
+  thanksAfterMs: 4500,
   keepAlivePool: null,
-  apologyPool: null
+  keepAliveToolPool: null,
+  thanksPool: null
 }
 
 /**
- * Padrões ANTIGOS dos tempos das frases de demora (até 2026-11-12): gravados explicitamente nas
- * instalações existentes (`voiceCallDefaults.delayPhrases`, sincronizado). O normalizador migra o
- * valor EXATAMENTE igual ao padrão antigo para o novo (`DEFAULT_DELAY_PHRASES`); outros valores
- * escolhidos pelo usuário ficam como estão.
+ * Padrão ANTIGO do "manter viva" (até 2026-11-12 — 3000 ms, gravado explicitamente nas instalações
+ * existentes): o normalizador migra o valor EXATAMENTE igual a ele para o novo; outros valores
+ * escolhidos pelo usuário ficam. (O `apologyAfterMs` antigo — tempo desde o turno — saiu: a regra do
+ * agradecimento conta do fim da última frase de espera.)
  */
 export const LEGACY_DELAY_PHRASE_DEFAULTS = {
-  keepAliveAfterMs: 3000,
-  apologyAfterMs: 5000
+  keepAliveAfterMs: 3000
 } as const
 
-/** Limites dos tempos das frases de demora (ms) — fora deles o valor é preso no limite. */
+/** Limites do "manter viva após" (ms) — fora deles o valor é preso no limite. */
 export const DELAY_PHRASE_MS_RANGE = { min: 1000, max: 60_000 } as const
+/** Limites do "agradecer se a última frase foi há mais de" (ms). */
+export const THANKS_AFTER_MS_RANGE = { min: 1000, max: 30_000 } as const
 
 /** Modelo próprio da chamada de voz (null = herda o modelo do chat). */
 export interface VoiceCallModelConfig {
@@ -706,8 +739,8 @@ export interface VoiceCallDefaults {
   /** "O agente pode encerrar a chamada" (tool `end_call` nos turnos da chamada; padrão true). */
   endCall: boolean
   /**
-   * Frases de demora sintetizadas ao vivo ("Só mais um instante…", "Desculpe a demora, vamos
-   * lá.") — ver `VoiceDelayPhrases`. Aditivo (ausente no registro = os padrões).
+   * Frases de espera ("Só mais um instante…" e "Obrigado por aguardar." antes da resposta que
+   * demorou) — ver `VoiceDelayPhrases`. Aditivo (ausente no registro = os padrões).
    */
   delayPhrases: VoiceDelayPhrases
   /** Frases de ferramenta (1 por turno, na 1ª tool) — ver `VoiceToolPhrases`. Aditivo (ausente = padrões). */
@@ -1346,7 +1379,7 @@ export function normalizeVoiceCallDefaults(v: unknown): VoiceCallDefaults {
   }
 }
 
-/** Pool de frases de demora: textos aparados (≤ 80 chars, sem duplicatas, máx. 12); vazio/lixo → null. */
+/** Pool de frases de espera: textos aparados (≤ 80 chars, sem duplicatas, máx. 12); vazio/lixo → null. */
 export function normalizeDelayPhrasePool(v: unknown): string[] | null {
   if (!Array.isArray(v)) return null
   const out: string[] = []
@@ -1363,38 +1396,68 @@ export function normalizeDelayPhrasePool(v: unknown): string[] | null {
 }
 
 /**
- * Frases de demora completas (ausente/lixo → `DEFAULT_DELAY_PHRASES`; tempos presos em 1–60 s; o
- * valor igual ao padrão antigo — `LEGACY_DELAY_PHRASE_DEFAULTS` — vira o padrão novo).
+ * Frases de espera completas (ausente/lixo → `DEFAULT_DELAY_PHRASES`). Tempos: "manter viva" preso
+ * em 1–60 s (o valor igual ao padrão antigo — `LEGACY_DELAY_PHRASE_DEFAULTS` — vira o novo),
+ * agradecimento em 1–30 s. **Migração** do registro antigo (desculpa): `apologyAfterMs` é
+ * descartado (a regra nova não usa o tempo desde o turno); `apologyPool` personalizado vira o
+ * `thanksPool` (igual ao padrão antigo/ausente → os padrões novos) — só quando o registro ainda não
+ * tem `thanksPool`. Idempotente.
  */
 export function normalizeDelayPhrases(v: unknown): VoiceDelayPhrases {
   const src = asObject(v)
   const d = DEFAULT_DELAY_PHRASES
-  const ms = (x: unknown, def: number, legacy: number): number => {
+  const ms = (
+    x: unknown,
+    def: number,
+    range: { min: number; max: number },
+    legacy?: number
+  ): number => {
     const n = typeof x === 'number' && Number.isFinite(x) ? Math.round(x) : NaN
     if (Number.isNaN(n) || n <= 0 || n === legacy) return def
-    return Math.min(DELAY_PHRASE_MS_RANGE.max, Math.max(DELAY_PHRASE_MS_RANGE.min, n))
+    return Math.min(range.max, Math.max(range.min, n))
   }
-  const legacy = LEGACY_DELAY_PHRASE_DEFAULTS
+  const legacyThanks = (): string[] | null => {
+    const old = normalizeDelayPhrasePool(src?.apologyPool)
+    return old && old.join('\n') !== LEGACY_APOLOGY_POOL.join('\n') ? old : null
+  }
   return {
     enabled: boolOr(src?.enabled, d.enabled),
-    keepAliveAfterMs: ms(src?.keepAliveAfterMs, d.keepAliveAfterMs, legacy.keepAliveAfterMs),
-    apologyAfterMs: ms(src?.apologyAfterMs, d.apologyAfterMs, legacy.apologyAfterMs),
+    keepAliveAfterMs: ms(
+      src?.keepAliveAfterMs,
+      d.keepAliveAfterMs,
+      DELAY_PHRASE_MS_RANGE,
+      LEGACY_DELAY_PHRASE_DEFAULTS.keepAliveAfterMs
+    ),
+    thanksAfterMs: ms(src?.thanksAfterMs, d.thanksAfterMs, THANKS_AFTER_MS_RANGE),
     keepAlivePool: normalizeDelayPhrasePool(src?.keepAlivePool),
-    apologyPool: normalizeDelayPhrasePool(src?.apologyPool)
+    keepAliveToolPool: normalizeDelayPhrasePool(src?.keepAliveToolPool),
+    thanksPool:
+      src && src.thanksPool !== undefined
+        ? normalizeDelayPhrasePool(src.thanksPool)
+        : legacyThanks()
   }
 }
 
-/** Pools efetivos das frases de demora (null → os padrões). */
+/** Pools efetivos das frases de espera (null → os padrões). */
 export function resolveDelayPhrasePools(
-  p: Pick<VoiceDelayPhrases, 'keepAlivePool' | 'apologyPool'>
+  p: Pick<VoiceDelayPhrases, 'keepAlivePool' | 'keepAliveToolPool' | 'thanksPool'>
 ): {
   keepAlive: string[]
-  apology: string[]
+  keepAliveTool: string[]
+  thanks: string[]
 } {
   return {
     keepAlive: normalizeDelayPhrasePool(p.keepAlivePool) ?? [...DEFAULT_KEEPALIVE_POOL],
-    apology: normalizeDelayPhrasePool(p.apologyPool) ?? [...DEFAULT_APOLOGY_POOL]
+    keepAliveTool: normalizeDelayPhrasePool(p.keepAliveToolPool) ?? [
+      ...DEFAULT_KEEPALIVE_TOOL_POOL
+    ],
+    thanks: resolveThanksPool(p.thanksPool)
   }
+}
+
+/** Pool efetivo do "obrigado por aguardar" (null → `DEFAULT_THANKS_POOL`) — também o dos clipes `THANKS`. */
+export function resolveThanksPool(pool: readonly string[] | null | undefined): string[] {
+  return normalizeDelayPhrasePool(pool ? [...pool] : null) ?? [...DEFAULT_THANKS_POOL]
 }
 
 // ---------------- resolução da chamada de voz (herança persona→chat→global) ----------------

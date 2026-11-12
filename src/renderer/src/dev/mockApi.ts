@@ -44,6 +44,7 @@ import {
   normalizeVoiceTtsChoice,
   resolveFillerPool,
   resolveSttVoice,
+  resolveThanksPool,
   resolveToolPhrasePool,
   resolveTtsVoice,
   resolveTurnSilenceMs,
@@ -2946,10 +2947,17 @@ export function createMockApi(scenario: string): ClearApi {
                   clips: []
                 }
                 clipsByVoice.set(voiceId, view)
-                // os preâmbulos e as frases de ferramenta (pools configurados): `FILLER_<n>`/`TOOL_<n>`
+                // os preâmbulos, as frases de ferramenta e o "obrigado por aguardar" (pools
+                // configurados): `FILLER_<n>`/`TOOL_<n>`/`THANKS_<n>`
                 const sets = [
                   ['FILLER', resolveFillerPool(voiceCallDefaults.fillers.pool)],
-                  ['TOOL', resolveToolPhrasePool(voiceCallDefaults.toolPhrases.pool)]
+                  ['TOOL', resolveToolPhrasePool(voiceCallDefaults.toolPhrases.pool)],
+                  [
+                    'THANKS',
+                    resolveThanksPool(voiceCallDefaults.delayPhrases.thanksPool).map((text) => ({
+                      text
+                    }))
+                  ]
                 ] as const
                 const total = sets.reduce((a, [, pool]) => a + pool.length, 0)
                 let done = 0

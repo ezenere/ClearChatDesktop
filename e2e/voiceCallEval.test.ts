@@ -129,8 +129,8 @@ test('computeVoiceCallMetrics: preâmbulos e frases de demora tocados; motivos p
     ev(3_000, 'decision', { class: 'FILLER', played: false, reason: 'short-speech' }),
     ev(3_100, 'decision', { class: 'FILLER', variant: 4, played: false, reason: 'delay/no-clip' }),
     ev(3_200, 'decision', { class: 'KEEPALIVE', played: true, id: 'u5' }),
-    ev(3_300, 'decision', { class: 'APOLOGY', played: false, reason: 'not-ready' }),
-    ev(3_400, 'decision', { class: 'APOLOGY', played: true, id: 'u6' }),
+    ev(3_300, 'decision', { class: 'THANKS', played: false, reason: 'not-ready' }),
+    ev(3_400, 'decision', { class: 'THANKS', played: true, id: 'u6' }),
     ev(3_450, 'decision', { class: 'TOOL', played: true, variant: 1, reason: 'web', id: 'u7' }),
     ev(3_460, 'decision', { class: 'TOOL', played: false, reason: 'files/announced' }),
     // decisões de classes desconhecidas não entram em balde nenhum
@@ -140,7 +140,7 @@ test('computeVoiceCallMetrics: preâmbulos e frases de demora tocados; motivos p
   const m = computeVoiceCallMetrics(events)
   assert.equal(m.elapsedMs, 3_000, '1000 → 4000')
   assert.equal(m.fillerPlayed, 1)
-  assert.deepEqual(m.delayPlayed, { keepAlive: 1, apology: 1 })
+  assert.deepEqual(m.delayPlayed, { keepAlive: 1, thanks: 1 })
   assert.equal(m.toolPlayed, 1)
   assert.deepEqual(m.skipped, {
     filler: { 'short-speech': 1, 'delay/no-clip': 1 },

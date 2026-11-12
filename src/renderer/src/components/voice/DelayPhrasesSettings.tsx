@@ -1,16 +1,19 @@
-// Configurações → Áudio → Chamada de voz → "Frases de demora" (global, `voiceCallDefaults.
-// delayPhrases`): liga/desliga, os dois tempos e os pools editáveis (recolhidos). As frases são
-// sintetizadas AO VIVO pela voz da chamada — ver SPEC.md → "Frases de demora".
+// Configurações → Áudio → Chamada de voz → "Frases de espera" (local do dispositivo,
+// `voiceCallDefaults.delayPhrases`): liga/desliga, "Manter viva após (silêncio)", "Agradecer se a
+// última frase foi há mais de" e os pools editáveis (recolhidos) — "manter viva" (pensando /
+// ferramenta rodando) e "obrigado por aguardar". Ver SPEC.md → "Frases de demora".
 import { useState } from 'react'
 import {
-  DEFAULT_APOLOGY_POOL,
   DEFAULT_DELAY_PHRASES,
   DEFAULT_KEEPALIVE_POOL,
+  DEFAULT_KEEPALIVE_TOOL_POOL,
+  DEFAULT_THANKS_POOL,
   DELAY_PHRASE_MS_RANGE,
+  THANKS_AFTER_MS_RANGE,
   normalizeDelayPhrasePool,
   type VoiceDelayPhrases
 } from '@shared/voice'
-import { DELAY_MIN_GAP_MS } from '@shared/voicePolicy'
+import { KEEPALIVE_MAX_PER_TURN } from '@shared/voicePolicy'
 import { ToggleRow } from '../panel/fields'
 import { Button } from '../ui/controls'
 import { NumberRow, SubHeading } from './audioUi'
@@ -86,44 +89,43 @@ export function DelayPhrasesSettings({
   const set = (patch: Partial<VoiceDelayPhrases>): void => onChange({ ...dp, ...patch })
   return (
     <div className="space-y-3" data-testid="voice-call-delay-phrases">
-      <SubHeading>Frases de demora</SubHeading>
+      <SubHeading>Frases de espera</SubHeading>
       <ToggleRow
-        label="Frases de demora"
+        label="Frases de espera"
         checked={dp.enabled}
         onChange={(enabled) => set({ enabled })}
         help={
-          'Quando a resposta demora (raciocínio longo, tools), a chamada fala uma frase curta com a MESMA voz, sintetizada na hora (sem clipes pré-gerados):\n' +
-          '• "manter viva" — depois do preâmbulo, sem áudio da resposta pelo tempo abaixo: "Só mais um instante…" (no máximo 2 por turno, 15 s entre o fim de uma e o início da outra);\n' +
-          '• desculpa — a resposta ficou pronta depois do tempo abaixo: "Desculpe a demora, vamos lá." antes dela (só se já estiver pronta — a resposta nunca espera por ela).\n' +
-          'Espaçadas: sempre pelo menos 10 s de silêncio entre o fim de qualquer frase curta (preâmbulo, "manter viva", desculpa) e a próxima "manter viva" ou desculpa — a desculpa que cairia antes disso é pulada.\n' +
-          'Nunca enquanto você fala, depois de um barge-in ou da despedida. Não entram no histórico; os caracteres contam no custo da voz da chamada.'
+          'Quando a resposta demora (raciocínio longo, tools), a chamada fala frases curtas com a MESMA voz:\n' +
+          `• "manter viva" — depois do preâmbulo ou da frase de ferramenta, a cada "Manter viva após" de silêncio sem a resposta: "Só mais um instante…" (no máximo ${KEEPALIVE_MAX_PER_TURN} por turno; vale com a ferramenta rodando e com o modelo pensando de novo depois dela);\n` +
+          '• "obrigado por aguardar" — quando a resposta chega depois de uma "manter viva", uma frase de agradecimento antes dela, só se a última frase de espera foi há mais que o tempo abaixo (falou "só mais um instante" agora há pouco → não agradece). Fica pronta na hora: clipe ("Gerar clipes" em Voz) ou sintetizada enquanto você espera — a resposta nunca espera por ela.\n' +
+          'Nunca enquanto você fala (um ruído só pausa), depois de um barge-in, da despedida ou com uma aprovação/pergunta na tela esperando você. Não entram no histórico; os caracteres sintetizados contam no custo da voz da chamada.'
         }
       />
       {dp.enabled && (
         <>
           <NumberRow
-            label="Manter viva após"
-            help={`Silêncio esperando a resposta (depois do preâmbulo, ou do envio da sua fala) até a frase “manter viva” — padrão ${DEFAULT_DELAY_PHRASES.keepAliveAfterMs / 1000} s; depois de uma frase curta, nunca menos de ${DELAY_MIN_GAP_MS / 1000} s.`}
+            label="Manter viva após (silêncio)"
+            help={`Silêncio desde o fim da última fala (preâmbulo, frase de ferramenta, a "manter viva" anterior — ou o envio da sua fala) até a próxima "manter viva" — padrão ${DEFAULT_DELAY_PHRASES.keepAliveAfterMs / 1000} s. É também o espaço entre duas delas.`}
             value={dp.keepAliveAfterMs}
             min={DELAY_PHRASE_MS_RANGE.min}
             max={DELAY_PHRASE_MS_RANGE.max}
             step={500}
             unit="ms"
             testId="voice-call-keepalive-after"
-            ariaLabel="Frase manter viva após (ms)"
+            ariaLabel="Frase manter viva após (ms de silêncio)"
             onCommit={(keepAliveAfterMs) => set({ keepAliveAfterMs })}
           />
           <NumberRow
-            label="Desculpa após"
-            help={`Espera desde o fim da sua fala acima da qual a resposta ganha uma desculpa antes — padrão ${DEFAULT_DELAY_PHRASES.apologyAfterMs / 1000} s (só para demoras longas de verdade).`}
-            value={dp.apologyAfterMs}
-            min={DELAY_PHRASE_MS_RANGE.min}
-            max={DELAY_PHRASE_MS_RANGE.max}
+            label="Agradecer se a última frase foi há mais de"
+            help={`"Obrigado por aguardar" antes da resposta só se a última frase de espera terminou há mais que isto — padrão ${DEFAULT_DELAY_PHRASES.thanksAfterMs / 1000} s (a resposta logo depois do "só mais um instante" dispensa o agradecimento).`}
+            value={dp.thanksAfterMs}
+            min={THANKS_AFTER_MS_RANGE.min}
+            max={THANKS_AFTER_MS_RANGE.max}
             step={500}
             unit="ms"
-            testId="voice-call-apology-after"
-            ariaLabel="Desculpa após (ms)"
-            onCommit={(apologyAfterMs) => set({ apologyAfterMs })}
+            testId="voice-call-thanks-after"
+            ariaLabel="Agradecer se a última frase de espera foi há mais de (ms)"
+            onCommit={(thanksAfterMs) => set({ thanksAfterMs })}
           />
           <details data-testid="voice-call-delay-pools" className="group">
             <summary className="cursor-pointer text-[12px] text-subtle select-none hover:text-fg">
@@ -131,18 +133,25 @@ export function DelayPhrasesSettings({
             </summary>
             <div className="mt-2 space-y-3">
               <PoolField
-                label="Manter viva"
+                label="Manter viva — pensando"
                 value={dp.keepAlivePool}
                 defaults={DEFAULT_KEEPALIVE_POOL}
                 testId="voice-call-keepalive-pool"
                 onCommit={(keepAlivePool) => set({ keepAlivePool })}
               />
               <PoolField
-                label="Desculpa"
-                value={dp.apologyPool}
-                defaults={DEFAULT_APOLOGY_POOL}
-                testId="voice-call-apology-pool"
-                onCommit={(apologyPool) => set({ apologyPool })}
+                label="Manter viva — ferramenta rodando"
+                value={dp.keepAliveToolPool}
+                defaults={DEFAULT_KEEPALIVE_TOOL_POOL}
+                testId="voice-call-keepalive-tool-pool"
+                onCommit={(keepAliveToolPool) => set({ keepAliveToolPool })}
+              />
+              <PoolField
+                label="Obrigado por aguardar"
+                value={dp.thanksPool}
+                defaults={DEFAULT_THANKS_POOL}
+                testId="voice-call-thanks-pool"
+                onCommit={(thanksPool) => set({ thanksPool })}
               />
             </div>
           </details>

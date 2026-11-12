@@ -29,7 +29,12 @@ import {
   Volume2,
   X
 } from 'lucide-react'
-import { DEFAULT_FILLER_POOL, DEFAULT_TOOL_PHRASE_POOL, type VoiceCallPhase } from '@shared/voice'
+import {
+  DEFAULT_FILLER_POOL,
+  DEFAULT_THANKS_POOL,
+  DEFAULT_TOOL_PHRASE_POOL,
+  type VoiceCallPhase
+} from '@shared/voice'
 import { api } from '../../lib/api'
 import { cn } from '../../lib/format'
 import { useStore } from '../../store'
@@ -302,7 +307,8 @@ function DockWaveform({ muted }: { muted: boolean }): React.JSX.Element {
 /**
  * Preâmbulos ligados mas sem clipes gerados para a voz atual: nada tocaria em silêncio — o dock
  * avisa e oferece gerar os clipes ali mesmo. Só as frases de ferramenta ligadas: elas caem na
- * síntese ao vivo (mais lenta) — o aviso também aparece.
+ * síntese ao vivo (mais lenta) — o aviso também aparece. Só o "obrigado por aguardar" sem clipe:
+ * sem aviso (ele é sintetizado em paralelo enquanto o usuário espera).
  */
 function ClipsHint(): React.JSX.Element | null {
   const clips = useVoiceCallRuntime((s) => s.clips)
@@ -317,7 +323,8 @@ function ClipsHint(): React.JSX.Element | null {
   if (!resolved.fillers.enabled && !resolved.toolPhrases) return null
   if (clips !== 'generating' && (clips !== 'missing' || (!fillerMissing && !toolMissing)))
     return null
-  const total = DEFAULT_FILLER_POOL.length + DEFAULT_TOOL_PHRASE_POOL.length
+  const total =
+    DEFAULT_FILLER_POOL.length + DEFAULT_TOOL_PHRASE_POOL.length + DEFAULT_THANKS_POOL.length
   return (
     <div
       data-testid="voice-call-clips-hint"
