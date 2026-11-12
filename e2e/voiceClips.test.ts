@@ -1,7 +1,8 @@
-// Clipes de interjeição/filler (`src/main/voice/clips.ts`): nomes de arquivo pela whitelist de
-// classes, manifest por voz (id da voz, engine, modelo, hash da definição), cache reutilizado
-// quando a definição não muda, regeneração quando a voz muda (diretório novo), `resolveClip` para
-// a Feature B e defesa contra ids de voz/nomes inseguros. A síntese usa um motor local FAKE (nada
+// Clipes dos preâmbulos (`src/main/voice/clips.ts`): nomes de arquivo pela whitelist de classes
+// (só `FILLER`), manifest por voz (id da voz, engine, modelo, hash da definição), cache reutilizado
+// quando a definição não muda, regeneração quando a voz muda (diretório novo), cache de versões
+// antigas (com outras classes de clipe) regerado sem erro e limpo, `resolveClip` para a Feature B
+// e defesa contra ids de voz/nomes inseguros. A síntese usa um motor local FAKE (nada
 // de ONNX nem rede — o pipeline real está reportado na SPEC).
 // Rodar: npm run test:unit
 import { test } from 'node:test'
@@ -12,7 +13,6 @@ import { join } from 'node:path'
 import {
   CLIP_CLASSES,
   CLIP_MAX_VARIANTS,
-  CLIP_PHRASES,
   clipFileName,
   clipPhraseSet,
   loadCurrentClipAudio,
@@ -87,9 +87,11 @@ test('clipFileName: whitelist de classes e variantes 1..16; fora disso → erro 
   }
   assert.throws(() => clipFileName('EXEC', 1), /classe de clipe desconhecida/)
   assert.throws(() => clipFileName('../../evil', 1), /classe de clipe desconhecida/)
-  assert.throws(() => clipFileName('ACK', 0), /variante de clipe inválida/)
-  assert.throws(() => clipFileName('ACK', CLIP_MAX_VARIANTS + 1), /variante de clipe inválida/)
-  assert.throws(() => clipFileName('ACK', 1.5), /variante de clipe inválida/)
+  // classes de versões antigas (interjeições) saíram da whitelist
+  assert.throws(() => clipFileName('ACK', 1), /classe de clipe desconhecida/)
+  assert.throws(() => clipFileName('FILLER', 0), /variante de clipe inválida/)
+  assert.throws(() => clipFileName('FILLER', CLIP_MAX_VARIANTS + 1), /variante de clipe inválida/)
+  assert.throws(() => clipFileName('FILLER', 1.5), /variante de clipe inválida/)
 })
 
 test('clipVoiceId: engine+voz por trás de um segmento seguro (sem separadores de caminho)', () => {
@@ -109,7 +111,7 @@ test('clipVoiceId: engine+voz por trás de um segmento seguro (sem separadores d
 
 // ---------------- geração + manifest ----------------
 
-test('generateClips: interjeições + pool de preâmbulos na whitelist, manifest com voz/engine/hash e progresso', async () => {
+test('generateClips: pool de preâmbulos na whitelist, manifest com voz/engine/hash e progresso', async () => {
   const base = newBase()
   const { backend, calls } = fakeEngine()
   const progress: { id: string; done: number; total: number }[] = []
@@ -145,7 +147,11 @@ test('generateClips: interjeições + pool de preâmbulos na whitelist, manifest
     Array.from({ length: totalClips }, (_, i) => i + 1)
   )
   assert.ok(progress.every((p) => p.total === totalClips))
-  assert.equal(progress[0].id, 'ACK_1')
+  assert.equal(progress[0].id, 'FILLER_1')
+  assert.ok(
+    manifest.clips.every((c) => c.class === 'FILLER'),
+    'só preâmbulos'
+  )
   // arquivos em <base>/voice-clips/<voiceId>/<CLASSE>_<n>.wav + manifest.json (sem .part sobrando)
   const dir = clipsDir(base, manifest.voiceId)!
   const files = readdirSync(dir).sort()
@@ -187,8 +193,8 @@ test('generateClips: regenera quando a VOZ muda (diretório novo por voz) e quan
   // os dois caches convivem (a voz antiga continua resolvível)
   assert.ok(await loadClips(base, a.voiceId))
   assert.ok(await loadClips(base, b.voiceId))
-  assert.ok(await resolveClip(base, a.voiceId, 'ACK', 1))
-  assert.ok(await resolveClip(base, b.voiceId, 'ACK', 1))
+  assert.ok(await resolveClip(base, a.voiceId, 'FILLER', 1))
+  assert.ok(await resolveClip(base, b.voiceId, 'FILLER', 1))
   // hash muda com a voz (mesmo texto/backend)
   assert.notEqual(a.hash, b.hash)
   rmSync(base, { recursive: true, force: true })
@@ -249,7 +255,7 @@ test('loadClips: manifest inválido/incompleto → null (o chamador regenera)', 
   assert.equal(await loadClips(base, m.voiceId), null)
   // arquivo faltando → null (cache incompleto)
   writeFileSync(join(dir, 'manifest.json'), JSON.stringify(m))
-  rmSync(join(dir, 'ACK_1.wav'))
+  rmSync(join(dir, 'FILLER_1.wav'))
   assert.equal(await loadClips(base, m.voiceId), null)
   // id de voz inseguro → null (sem traversal)
   assert.equal(await loadClips(base, '../../evil'), null)
@@ -262,12 +268,13 @@ test('resolveClip: caminho do wav por classe/variante; inválidos/ausentes → n
   const m = await generateClips({ baseDir: base, settings: localSettings(), local: backend })
   const dir = clipsDir(base, m.voiceId)!
   assert.equal(await resolveClip(base, m.voiceId, 'FILLER', 3), join(dir, 'FILLER_3.wav'))
-  assert.equal(await resolveClip(base, m.voiceId, 'ACK', 9), null)
+  assert.equal(await resolveClip(base, m.voiceId, 'FILLER', CLIP_MAX_VARIANTS), null)
+  assert.equal(await resolveClip(base, m.voiceId, 'ACK', 1), null, 'classe que saiu')
   assert.equal(await resolveClip(base, m.voiceId, 'EXEC', 1), null)
-  assert.equal(await resolveClip(base, '../../evil', 'ACK', 1), null)
+  assert.equal(await resolveClip(base, '../../evil', 'FILLER', 1), null)
   // classe conhecida mas nunca gerada (cache parcial) → null
-  rmSync(join(dir, 'THINKING_2.wav'))
-  assert.equal(await resolveClip(base, m.voiceId, 'THINKING', 2), null)
+  rmSync(join(dir, 'FILLER_2.wav'))
+  assert.equal(await resolveClip(base, m.voiceId, 'FILLER', 2), null)
   rmSync(base, { recursive: true, force: true })
 })
 
@@ -312,9 +319,10 @@ test('clipsHash: estável para a mesma definição e sensível a frases/voz/mode
   assert.match(h1, /^[0-9a-f]{64}$/)
 })
 
-// catálogo de frases: variantes não vazias por classe (o manifest depende disso)
-test('CLIP_PHRASES: frases por extenso que os dois motores pronunciam; ACK só Uhum/Aham', () => {
-  assert.equal(CLIP_CLASSES.length, 5)
+// catálogo de frases: o pool de preâmbulos, não vazio (o manifest depende disso)
+test('clipPhraseSet: só FILLER (o pool de preâmbulos), frases por extenso que os dois motores pronunciam', () => {
+  assert.deepEqual(CLIP_CLASSES, ['FILLER'])
+  assert.deepEqual(Object.keys(PHRASES), ['FILLER'])
   for (const cls of CLIP_CLASSES) {
     const phrases = PHRASES[cls]
     assert.ok(phrases.length >= 2 && phrases.length <= CLIP_MAX_VARIANTS, cls)
@@ -324,8 +332,10 @@ test('CLIP_PHRASES: frases por extenso que os dois motores pronunciam; ACK só U
       assert.ok(!/\bhmm\b/i.test(p) && !/^hum\.*$/i.test(p) && !/\.\.\./.test(p), p)
     }
   }
-  assert.deepEqual(CLIP_PHRASES.ACK, ['Uhum.', 'Aham.'])
-  assert.ok(CLIP_PHRASES.THINKING.includes('Hum, deixa eu ver.'))
+  assert.deepEqual(
+    PHRASES.FILLER,
+    DEFAULT_FILLER_POOL.map((f) => f.text)
+  )
   // o longo "Só um minutinho que eu tô vendo isso." saiu
   assert.ok(!PHRASES.FILLER.some((p) => p.includes('tô vendo isso')))
   // sanity: nenhum arquivo temporário criado na raiz do tmp por engano
@@ -357,6 +367,49 @@ test('clipsHash: o pool de preâmbulos entra no hash (mudou → cache velho → 
   const dir = clipsDir(base, m.voiceId)!
   assert.ok(!existsSync(join(dir, 'FILLER_3.wav')))
   assert.ok(await loadCurrentClipAudio(base, settings, pool, 'FILLER', 2))
+  rmSync(base, { recursive: true, force: true })
+})
+
+test('cache de versão antiga (com clipes de interjeição): lido como ausente, sem erro; gerar de novo limpa os arquivos', async () => {
+  const base = newBase()
+  const { backend, calls } = fakeEngine()
+  const settings = localSettings()
+  const voiceId = clipVoiceId(settings)
+  const dir = clipsDir(base, voiceId)!
+  // como uma versão antiga deixava: ACK/THINKING + FILLER no mesmo manifest
+  const { mkdirSync } = await import('node:fs')
+  mkdirSync(dir, { recursive: true })
+  const old = [
+    { id: 'ACK_1', file: 'ACK_1.wav', class: 'ACK', n: 1, text: 'Uhum.' },
+    { id: 'THINKING_3', file: 'THINKING_3.wav', class: 'THINKING', n: 3, text: 'Um instante.' },
+    { id: 'FILLER_1', file: 'FILLER_1.wav', class: 'FILLER', n: 1, text: 'Hum, deixa eu ver aqui.' }
+  ]
+  for (const c of old) writeFileSync(join(dir, c.file), 'RIFF')
+  writeFileSync(
+    join(dir, 'manifest.json'),
+    JSON.stringify({
+      voiceId,
+      backend: 'local',
+      engine: 'kokoro',
+      model: 'pf_dora',
+      hash: 'a'.repeat(64),
+      generatedAt: new Date().toISOString(),
+      clips: old
+    })
+  )
+  // leitura: cache velho = ausente (nada toca; nenhum erro)
+  assert.equal(await loadClips(base, voiceId), null)
+  assert.equal(await loadCurrentClips(base, settings), null)
+  assert.equal(await loadCurrentClipAudio(base, settings, null, 'FILLER', 1), null)
+  assert.equal(await loadCurrentClipAudio(base, settings, null, 'ACK', 1), null)
+  // gerar de novo: só os preâmbulos; os arquivos das classes que saíram são apagados
+  const m = await generateClips({ baseDir: base, settings, local: backend })
+  assert.equal(calls.length, totalClips)
+  assert.ok(m.clips.every((c) => c.class === 'FILLER'))
+  const files = readdirSync(dir)
+  assert.ok(!files.includes('ACK_1.wav') && !files.includes('THINKING_3.wav'), files.join(','))
+  assert.ok(files.includes('FILLER_1.wav'))
+  assert.ok(await loadCurrentClipAudio(base, settings, null, 'FILLER', 1))
   rmSync(base, { recursive: true, force: true })
 })
 

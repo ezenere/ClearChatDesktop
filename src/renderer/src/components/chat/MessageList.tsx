@@ -90,11 +90,29 @@ import { reasoningHeader } from '../../lib/reasoning'
 import { CallMarker, EndCallLine, VoiceBadge } from './VoiceMarks'
 import { contributeCtx } from '../../lib/contextMenu'
 import { markdownToPlainText } from '@shared/contextMenu'
+import { liveDimFrom } from '@shared/heardText'
+import { useVoiceFollow } from '../../lib/voice/voiceFollow'
 
 // ---------- Bits ----------
 
 type ReasoningView = 'closed' | 'box' | 'full'
 /** Estado por mensagem (sobrevive a remontagens enquanto o app está aberto). */
+/** Mensagem falada na chamada: tags de voz esmaecidas (opacidade 0,65) no texto. */
+const VOICE_TAGS = { tags: true } as const
+/** O resto não ouvido de uma resposta interrompida: inteiro esmaecido (tags com o 0,65 relativo). */
+const VOICE_UNHEARD = { tags: true, dimFrom: 0 } as const
+
+/**
+ * Markdown de uma resposta da chamada: tags de voz esmaecidas e, enquanto ELA está sendo falada, o
+ * trecho ainda não ouvido esmaecido (`liveDimFrom` — avança palavra por palavra; só opacidade, sem
+ * pulo de layout). Fora da fala: render normal.
+ */
+function VoiceMarkdown({ text }: { text: string }): React.JSX.Element {
+  const dimFrom = useVoiceFollow((s) => (s.current ? liveDimFrom(text, s.heard, s.current) : null))
+  const voice = useMemo(() => (dimFrom != null ? { tags: true, dimFrom } : VOICE_TAGS), [dimFrom])
+  return <Markdown text={text} voice={voice} />
+}
+
 const reasoningViews = new Map<string, ReasoningView>()
 
 /**
@@ -1238,18 +1256,29 @@ function AssistantMessage({ msg, ctx }: { msg: StoredMessage; ctx: Ctx }): React
       ) : (
         content &&
         (msg.meta.voice?.source === 'call' ? (
-          // resposta falada na chamada: itálico (o texto é o que foi dito)
+          // resposta falada na chamada: itálico (o texto é o que foi dito); enquanto é falada, o que
+          // ainda não tocou fica esmaecido (leitura ao vivo)
           <div data-voice="call" className="italic">
-            <Markdown text={content} />
+            <VoiceMarkdown text={content} />
           </div>
         ) : (
           <Markdown text={content} />
         ))
       )}
-      {msg.meta.interrupted && (
-        <div className="mt-1.5 inline-flex items-center gap-1 rounded-md bg-white/[0.04] px-1.5 py-0.5 text-[11px] text-subtle">
-          <X className="size-3" /> Interrompida pelo usuário
+      {msg.meta.voice?.unheard ? (
+        // barge-in no meio: o resto que você não ouviu fica legível, esmaecido, depois do marcador
+        <div data-testid="voice-unheard" className="mt-1 italic">
+          <span className="mr-1.5 inline-flex items-center gap-1 rounded-md bg-white/[0.04] px-1.5 py-0.5 align-middle text-[11px] not-italic text-subtle">
+            <X className="size-3" /> interrompido
+          </span>
+          <Markdown text={msg.meta.voice.unheard} voice={VOICE_UNHEARD} />
         </div>
+      ) : (
+        msg.meta.interrupted && (
+          <div className="mt-1.5 inline-flex items-center gap-1 rounded-md bg-white/[0.04] px-1.5 py-0.5 text-[11px] text-subtle">
+            <X className="size-3" /> Interrompida pelo usuário
+          </div>
+        )
       )}
       {m.tool_calls?.map((tc) => {
         const result = ctx.results.get(tc.id)
@@ -1345,6 +1374,7 @@ const DraftView = memo(function DraftView({
   ctx: Ctx
 }): React.JSX.Element {
   const clock = useStore((s) => s.reasoningClocks[ctx.sessionId])
+  const inCall = useStore((s) => s.voiceCall.active && s.voiceCall.sessionId === ctx.sessionId)
   const live = !draft.content && !draft.toolCalls.length
   return (
     <div className="py-2">
@@ -1356,9 +1386,15 @@ const DraftView = memo(function DraftView({
           durationMs={clock?.end != null ? clock.end - clock.start : undefined}
         />
       )}
-      {(draft.content || (!draft.reasoning && !draft.toolCalls.length)) && (
-        <Markdown text={draft.content} streaming={!draft.toolCalls.length} />
-      )}
+      {(draft.content || (!draft.reasoning && !draft.toolCalls.length)) &&
+        (inCall ? (
+          // resposta da chamada ainda chegando: itálico + leitura ao vivo
+          <div data-voice="call" className="italic">
+            <VoiceMarkdown text={draft.content} />
+          </div>
+        ) : (
+          <Markdown text={draft.content} streaming={!draft.toolCalls.length} />
+        ))}
       {draft.toolCalls.map((tc, i) =>
         tc.name === 'end_call' ? (
           <EndCallLine

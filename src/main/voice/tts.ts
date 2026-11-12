@@ -478,6 +478,11 @@ export interface TtsPcmStream {
    * no fim do corpo; erro de rede/tempo → `TtsError`; abort do `signal` → `AbortError`.
    */
   chunks: AsyncIterable<Uint8Array>
+  /**
+   * Início (ms, relativo ao começo deste áudio) de cada letra/dígito do texto — alinhamento EXATO
+   * do motor (ElevenLabs WebSocket), lido na hora (cresce com o áudio). Ausente = estimativa.
+   */
+  unitStartsMs?: () => number[] | null
 }
 
 /** Resultado de `synthesizeStream`: stream PCM, ou o áudio completo quando não há streaming. */

@@ -6,11 +6,15 @@
 // do limite de upload da API vai em segmentos). `cancel()` descarta tudo sem transcrever. Uma
 // sessão ATIVA por vez, com autocura: iniciar outra substitui a anterior; sessões de um renderer
 // que recarregou/caiu são descartadas por `cancelTranscribeSessions(owner)`; sem PCM por 60 s a
-// sessão se cancela. `encodeWav` monta o wav PCM enviado à API. Ver SPEC.md → "Áudio → Sessão de
-// transcrição".
+// sessão se cancela. `encodeWav` monta o wav PCM enviado à API. **Portão de ativação de fala**
+// (`@shared/speechGate`) na frente de TODA via de STT (parciais, segmentos, especulação e final):
+// trecho com voz de menos não chama o STT, o que vai é aparado, e o texto passa pelo pós-filtro de
+// alucinações de silêncio. Ver SPEC.md → "Áudio → Sessão de transcrição" e "Portão de ativação de
+// fala".
 import type { VoicePartialEvent, VoiceTranscribeResult } from '@shared/ipc'
 import type { SttLocalConfig, SttSettings } from '@shared/voice'
 import { STT_LOCAL_PARTIALS_OFF_NOTICE } from '@shared/voice'
+import { INITIAL_NOISE_FLOOR_DB, SpeechGate, filterSilenceHallucination } from '@shared/speechGate'
 import { abortError } from '../tools/util'
 import type { LocalModelInfo } from './models'
 import {
@@ -183,6 +187,11 @@ export interface StartTranscribeOptions {
   settings: SttSettings
   /** Idioma do áudio ('pt-BR' → 'pt' na API); ausente/vazio = detecção automática. */
   language?: string
+  /**
+   * Nível de ativação do microfone (dBFS — `audioInput.activationDb`, local do dispositivo);
+   * ausente = `DEFAULT_ACTIVATION_DB`. Abaixo dele nada é fala (o portão não manda ao STT).
+   */
+  activationDb?: number
 }
 
 export interface TranscribeStopOptions {
@@ -270,6 +279,8 @@ interface SessionState {
   apiMaxUploadBytes: number
   /** Última transcrição especulativa (fim de turno adaptativo) — null = nenhuma. */
   spec: SpeculationState | null
+  /** Portão de ativação de fala (quadros de 20 ms do buffer inteiro). */
+  gate: SpeechGate
   // ---- transcrição segmentada (cortes nas pausas; a final só transcreve o trecho final) ----
   /** Segmentação ligada (backend da final utilizável). */
   segmented: boolean
@@ -307,6 +318,11 @@ interface SessionInternal {
 
 /** A sessão que recebe áudio (no máximo uma). */
 let current: SessionInternal | null = null
+/**
+ * Piso de ruído aprendido pela última sessão (dBFS): a próxima começa dele — na chamada cada fala é
+ * uma sessão curta, e o piso precisa atravessar as falas para se adaptar ao ambiente.
+ */
+let lastNoiseFloorDb = INITIAL_NOISE_FLOOR_DB
 /** Sessões vivas (a ativa + as que ainda transcrevem a final depois do `stop`). */
 const live = new Set<SessionInternal>()
 
@@ -505,12 +521,15 @@ function maybeFirePartial(state: SessionState): void {
     : Math.max(state.segCut, state.coveredBytes - OVERLAP_BYTES, pieceEnd - windowBytes)
   if (pieceEnd - pieceStart <= 0) return
   const cutAtFire = state.segCut
+  // portão de fala: pedaço sem voz suficiente não sobe (o whisper alucina em silêncio/ruído)
+  const g = state.gate.analyze(pieceStart, pieceEnd)
+  if (!g.send) return
 
   state.lastFireAt = now
   const seq = ++state.seq
   const controller = new AbortController()
   state.inFlight = { seq, controller }
-  const audio = sliceBuffer(state, pieceStart, pieceEnd)
+  const audio = sliceBuffer(state, g.send.start, g.send.end)
   const input = {
     audio: encodeWav(audio, VOICE_SAMPLE_RATE),
     mimeType: 'audio/wav',
@@ -528,10 +547,12 @@ function maybeFirePartial(state: SessionState): void {
           signal: controller.signal
         })
   void partial
-    .then((r) => {
+    .then((res) => {
+      let r = res
       // resultado velho (sessão encerrada/abortada) expira; nunca entra na fila
       if (state.status !== 'active' || state.seq !== seq) return
       if (state.segCut !== cutAtFire) return // um segmento fechou no meio: esta parcial ficou velha
+      r = { ...r, text: filterSilenceHallucination(r.text, g) }
       if (exact) {
         state.partialText = r.text.trim()
         state.tailExact = { start: pieceStart, end: pieceEnd, backend: chosen }
@@ -602,21 +623,28 @@ function maybeCutSegment(state: SessionState): void {
 function fireSegment(state: SessionState, start: number, end: number, attempt: number): void {
   if (end - start <= 0) return
   const controller = new AbortController()
-  const input = {
-    audio: encodeWav(sliceBuffer(state, start, end), VOICE_SAMPLE_RATE),
-    mimeType: 'audio/wav',
-    fileName: 'segment'
-  }
-  const promise = transcribeWithFallback(input, {
-    settings: state.opts.settings,
-    language: state.opts.language,
-    local: state.local,
-    signal: controller.signal
-  })
+  // portão de fala: segmento sem voz suficiente vale texto vazio (sem chamar o STT)
+  const g = state.gate.analyze(start, end)
+  const input = g.send
+    ? {
+        audio: encodeWav(sliceBuffer(state, g.send.start, g.send.end), VOICE_SAMPLE_RATE),
+        mimeType: 'audio/wav',
+        fileName: 'segment'
+      }
+    : null
+  const stt: Promise<{ text: string; ms: number }> = input
+    ? transcribeWithFallback(input, {
+        settings: state.opts.settings,
+        language: state.opts.language,
+        local: state.local,
+        signal: controller.signal
+      })
+    : Promise.resolve({ text: '', ms: 0 })
+  const promise = stt
     .then((r) => {
       if (controller.signal.aborted || state.status === 'cancelled' || state.segCut !== start)
         return
-      state.segText = joinSegments(state.segText, r.text)
+      state.segText = joinSegments(state.segText, filterSilenceHallucination(r.text, g))
       state.segCut = end
       // a parcial do trecho que virou segmento sai; as próximas partem do corte
       state.partialText = ''
@@ -720,12 +748,33 @@ function startSpeculation(
   // uma request concorrente na API — no OpenRouter elas disputam a mesma fila e atrasam a final)
   state.inFlight?.controller.abort()
   state.inFlight = null
-  // só o trecho desde o último segmento (o texto dos segmentos já está pronto)
-  const pcm = trimTrailingSilence(sliceBuffer(state, state.segCut, state.totalBytes))
-  if (!pcm.length || pcm.length + 44 > state.apiMaxUploadBytes) return Promise.resolve(null)
   const finalBackend = finalBackendNow
   const segBase = state.segText
   const cutAt = state.segCut
+  // só o trecho desde o último segmento (o texto dos segmentos já está pronto), pelo portão de
+  // fala: sem voz suficiente a especulação é o texto dos segmentos — sem request (e reusável: a
+  // final também não chamaria o STT)
+  const g = state.gate.analyze(state.segCut, state.totalBytes)
+  if (!g.send) {
+    const result: VoiceSpeculativeResult = {
+      text: segBase,
+      ms: 0,
+      backend: finalBackend,
+      reusable: true
+    }
+    state.spec = {
+      bytes: state.totalBytes,
+      backend: finalBackend,
+      reusable: true,
+      controller: new AbortController(),
+      promise: Promise.resolve(result),
+      result,
+      done: true
+    }
+    return state.spec.promise
+  }
+  const pcm = sliceBuffer(state, g.send.start, g.send.end)
+  if (!pcm.length || pcm.length + 44 > state.apiMaxUploadBytes) return Promise.resolve(null)
   const input = {
     audio: encodeWav(pcm, VOICE_SAMPLE_RATE),
     mimeType: 'audio/wav',
@@ -758,7 +807,12 @@ function startSpeculation(
         if (controller.signal.aborted) return null
         // um segmento fechou no meio: o texto do trecho já não casa com o corte atual
         if (state.segCut !== cutAt) return null
-        spec.result = { text: joinSegments(segBase, r.text), ms: r.ms, backend: b, reusable }
+        spec.result = {
+          text: joinSegments(segBase, filterSilenceHallucination(r.text, g)),
+          ms: r.ms,
+          backend: b,
+          reusable
+        }
         return spec.result
       })
       .catch((e) => {
@@ -899,6 +953,11 @@ export function startTranscribeSession(
     apiMaxUploadBytes: Math.max(1024, deps.apiMaxUploadBytes ?? STT_API_MAX_UPLOAD_BYTES),
     spec: null,
     prefetch: null,
+    gate: new SpeechGate({
+      activationDb: opts.activationDb,
+      sampleRate: VOICE_SAMPLE_RATE,
+      noiseFloorDb: lastNoiseFloorDb
+    }),
     // segmentos só com o backend da final utilizável (modo local sem motor: a final já falha)
     // (modo local sem motor: o 1º segmento falha com erro `config` e desliga a segmentação)
     segmented: deps.segmented !== false,
@@ -912,6 +971,8 @@ export function startTranscribeSession(
 
   const end = (): void => {
     if (state.status !== 'cancelled') state.status = 'ended'
+    // o piso de ruído aprendido segue para a próxima sessão (falas curtas da chamada)
+    if (state.gate.frames > 0) lastNoiseFloorDb = state.gate.noiseFloorDb
     clearIdle(state)
     if (current?.state === state) current = null
     live.delete(internal)
@@ -954,6 +1015,7 @@ export function startTranscribeSession(
       }
       state.chunks.push(chunk)
       state.totalBytes += chunk.length
+      state.gate.push(chunk)
       trackSpeech(state, chunk)
       maybeCutSegment(state)
       maybeFirePartial(state)
@@ -1034,7 +1096,12 @@ export function startTranscribeSession(
         // segmentos em voo terminam (começaram antes — saem antes); a final é só o trecho final
         await settleSegments(state)
         if ((state.status as string) === 'cancelled') throw abortError()
-        const pcm = trimTrailingSilence(sliceBuffer(state, state.segCut, state.totalBytes))
+        // portão de fala: o trecho final sem voz suficiente não vai ao STT (vazio — ou só os
+        // segmentos); com voz, só do 1º ao último quadro com voz (com folga)
+        const g = state.gate.analyze(state.segCut, state.totalBytes)
+        const pcm = g.send
+          ? trimTrailingSilence(sliceBuffer(state, g.send.start, g.send.end))
+          : new Uint8Array(0)
         if (!pcm.length && state.segText) {
           end()
           return {
@@ -1076,7 +1143,8 @@ export function startTranscribeSession(
           chooseSttBackend(state.opts.settings, { hasLocalReady: false }) === 'local'
         )
           throw localRuntimeError(state.opts.settings.local, state.hasLocalReady)
-        const r = await transcribeFinal(state, pcm, controller.signal)
+        const raw = await transcribeFinal(state, pcm, controller.signal)
+        const r = { ...raw, text: filterSilenceHallucination(raw.text, g) }
         return state.segText ? { ...r, text: joinSegments(state.segText, r.text) } : r
       } catch (e) {
         if (state.finalController?.signal.aborted || (state.status as string) === 'cancelled')

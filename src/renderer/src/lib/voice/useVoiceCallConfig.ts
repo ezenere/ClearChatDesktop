@@ -2,12 +2,11 @@
 // de timeline (`VoiceCallDock`/`VoiceCallPanel`): resolve `ChatConfig.voice` contra `voiceCallDefaults`
 // e grava overrides por `patchConfig` (a opção ★ = padrão global remove o override). Os padrões
 // globais vêm do espelho reativo `useVoiceSettings` (nunca uma cópia do primeiro mount). Ver SPEC →
-// "Chamada de voz → Modo sombra e timeline".
+// "Chamada de voz → Timeline e log de diagnóstico".
 import { useEffect, useMemo } from 'react'
 import {
-  DEFAULT_VOICE_CALL_CONFIG,
+  normalizeVoiceCallConfig,
   resolveVoiceCallConfig,
-  type InterjectionPolicy,
   type ResolvedVoiceCall,
   type VoiceCallConfig,
   type VoiceCallDefaults,
@@ -22,7 +21,6 @@ export function useVoiceCallConfig(): {
   voice: VoiceCallConfig
   defaults: VoiceCallDefaults
   resolved: ResolvedVoiceCall
-  setInterjections: (patch: Partial<InterjectionPolicy> | 'inherit') => void
   setFillers: (patch: Partial<VoiceFillers> | 'inherit') => void
   /** Patch livre do `ChatConfig.voice` do chat da chamada (ex.: modelo da chamada). */
   setVoice: (patch: Partial<VoiceCallConfig>) => void
@@ -42,21 +40,13 @@ export function useVoiceCallConfig(): {
   const persona = useStore((s) =>
     presetId ? (s.presets.find((p) => p.id === presetId)?.config.voice ?? null) : null
   )
-  const voice: VoiceCallConfig = chat?.config.voice ?? DEFAULT_VOICE_CALL_CONFIG
+  // normalizado: campos legados de registros antigos (`interjections`) nunca são regravados
+  const stored = chat?.config.voice ?? null
+  const voice: VoiceCallConfig = useMemo(() => normalizeVoiceCallConfig(stored), [stored])
   const resolved = useMemo(
     () => resolveVoiceCallConfig(voice, defaults, persona),
     [voice, defaults, persona]
   )
-  const setInterjections = (patch: Partial<InterjectionPolicy> | 'inherit'): void => {
-    if (!chatId) return
-    patchConfig(chatId, {
-      voice: {
-        ...voice,
-        // ★ ("inherit") remove o override do grupo inteiro (enabled+shadow andam juntos)
-        interjections: patch === 'inherit' ? null : { ...resolved.interjections, ...patch }
-      }
-    })
-  }
   const setFillers = (patch: Partial<VoiceFillers> | 'inherit'): void => {
     if (!chatId) return
     patchConfig(chatId, {
@@ -67,5 +57,5 @@ export function useVoiceCallConfig(): {
     if (!chatId) return
     patchConfig(chatId, { voice: { ...voice, ...patch } })
   }
-  return { chatId, voice, defaults, resolved, setInterjections, setFillers, setVoice, persona }
+  return { chatId, voice, defaults, resolved, setFillers, setVoice, persona }
 }

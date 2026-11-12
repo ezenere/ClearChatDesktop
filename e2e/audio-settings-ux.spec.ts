@@ -428,10 +428,20 @@ app.on('window-all-closed', () => app.quit())
   )
 
   await step(
-    'TTS API: OpenRouter pelo atalho; seletor do chat com a latência medida e só os curados',
+    'TTS API: OpenRouter pelo seletor de modelo; seletor do chat com a latência medida e só os curados',
     async () => {
-      await page.getByTestId('tts-preset-openrouter').click()
+      // sem atalho: provedor + modelo pelo seletor único de Modelo e a voz pelo seletor de voz
+      await page.getByTestId('tts-model').click()
+      await page
+        .getByRole('listbox', { name: 'Modelos' })
+        .locator(
+          '[role=option][data-provider="OpenRouter"][data-model="elevenlabs/eleven-flash-v2.5"]'
+        )
+        .click()
       await page.getByTestId('tts-api').waitFor()
+      await page.getByTestId('tts-voice').click()
+      await page.getByTestId('tts-voice-menu').waitFor()
+      await page.getByTestId('voice-option-sarah').click()
       await waitFor(
         async () =>
           (await page.getByTestId('tts-model').getAttribute('data-value')) ===
@@ -531,7 +541,7 @@ app.on('window-all-closed', () => app.quit())
     await page.getByTestId('tts-clips-generate').click()
     await page.getByTestId('tts-clips-count').waitFor({ timeout: 6000 })
     const t = await page.getByTestId('tts-clips-count').innerText()
-    assert.match(t, /15 clipes gerados para “minha-voz-clonada”/)
+    assert.match(t, /12 clipes gerados para “minha-voz-clonada”/)
     return t
   })
 

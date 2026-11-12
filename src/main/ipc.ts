@@ -452,7 +452,7 @@ export function registerIpc(): void {
   presetsRepo.seed()
   // ---- chamada de voz meia-duplex: o dono do turno no main + os overrides de request ----
   // (o renderer é o "sensor": captura/silêncio/reprodução — SPEC → "Chamada de voz (meia-duplex)")
-  // decisões de filler/interjeição também viram linhas no log de avaliação (modo sombra/calibração)
+  // decisões de preâmbulo também viram linhas no log de diagnóstico (`voice-eval/*.jsonl`)
   const evalLogger = createEvalLogger(app.getPath('userData'), (e) =>
     console.log('[clearchat] voice-eval:', e)
   )
@@ -1163,7 +1163,8 @@ export function registerIpc(): void {
         v.stt.mode !== 'api' && !gpuMode ? probeWhisperRuntime() : null
       ])
       return startTranscribeSession(
-        { settings: v.stt, language: lang },
+        // nível de ativação do microfone (local do dispositivo): o portão de fala da sessão
+        { settings: v.stt, language: lang, activationDb: v.audioInput.activationDb },
         {
           // modo GPU: o whisper do servidor local entra como o motor "local" da sessão
           ...(gpuMode ? { local: gpu.sttBackend(gpuReady) } : {}),
@@ -1284,7 +1285,7 @@ export function registerIpc(): void {
       if (entry) syncLocalModelInstalled(entry, false)
     },
 
-    // ---- TTS: síntese de fala + clipes de interjeição/filler ----
+    // ---- TTS: síntese de fala + clipes dos preâmbulos ----
     // (a `apiKey` do endpoint de síntese fica no main — os handlers usam `getVoiceSettings()`)
     [IPC.voice.ttsSynth]: (input: { text: string; format?: 'wav' | 'mp3' }) => {
       const text = input && typeof input.text === 'string' ? input.text : ''
@@ -1474,24 +1475,31 @@ export function registerIpc(): void {
         speechMs: typeof input?.speechMs === 'number' ? input.speechMs : null
       }),
     [IPC.voice.callPlaybackIdle]: () => voiceCalls.playbackIdle(),
-    [IPC.voice.callBargeIn]: (input?: { playedIds?: unknown }) => {
+    [IPC.voice.callBargeIn]: (input?: {
+      playedIds?: unknown
+      reason?: unknown
+      speechMs?: unknown
+      current?: { id?: unknown; playedMs?: unknown; durationMs?: unknown }
+    }) => {
       ttsRelay.abortAll() // o renderer já descartou a fila: os downloads em curso param
-      return voiceCalls.bargeIn(
-        Array.isArray(input?.playedIds)
+      return voiceCalls.bargeIn({
+        ...(Array.isArray(input?.playedIds)
           ? { playedIds: input.playedIds.filter((x): x is string => typeof x === 'string') }
-          : undefined
-      )
+          : {}),
+        ...(typeof input?.reason === 'string' ? { reason: input.reason } : {}),
+        ...(typeof input?.speechMs === 'number' ? { speechMs: input.speechMs } : {}),
+        ...(typeof input?.current?.id === 'string' && typeof input.current.playedMs === 'number'
+          ? {
+              current: {
+                id: input.current.id,
+                playedMs: input.current.playedMs,
+                durationMs:
+                  typeof input.current.durationMs === 'number' ? input.current.durationMs : null
+              }
+            }
+          : {})
+      })
     },
-    [IPC.voice.callInterjectionObserved]: (input: {
-      speechMs: number
-      pauseMs: number
-      tail: string
-      observedAt: number
-      end?: string | null
-    }) =>
-      voiceCalls.interjectionObserved(
-        input ?? { speechMs: 0, pauseMs: 0, tail: '', observedAt: 0 }
-      ),
     [IPC.voice.callBackchannel]: (input: { ms: number }) =>
       voiceCalls.backchannel(input ?? { ms: 0 }),
 

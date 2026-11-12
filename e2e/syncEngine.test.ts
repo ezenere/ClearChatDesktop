@@ -285,7 +285,6 @@ test('1.5.0: voice do chat/persona sincroniza (ida e volta, com cwd local)', () 
     voicePrompt: 'fale curto',
     promptMode: 'replace',
     fillers: { enabled: false, prompt: null },
-    interjections: null,
     endCall: false
   }
   const { chatId } = addChat(a, 'Com voz')
@@ -328,6 +327,87 @@ test('1.5.0: voice do chat/persona sincroniza (ida e volta, com cwd local)', () 
   assert.equal(cfgB.voice, undefined)
 })
 
+test('legado: `interjections` recebido (chat/persona/voiceCallDefaults) é ignorado e nunca reenviado (§4.3.6)', () => {
+  const a = newDb()
+  const legacyPolicy = {
+    enabled: true,
+    shadow: true,
+    cooldownMs: 5000,
+    fireProbability: 0.5,
+    minSpeechMs: 700,
+    minPauseMs: 450,
+    classes: ['ACK'],
+    volume: 0.6
+  }
+  const voice = {
+    enabled: true,
+    model: null,
+    tools: null,
+    voicePrompt: 'curto',
+    fillers: { enabled: false, prompt: null },
+    endCall: false
+  }
+  // registros de um escritor antigo: o campo legado em todos os lugares onde ele vivia
+  const { chatId } = addChat(a, 'Antigo')
+  const chatPlain = buildLocal(a, 'chat', chatId)!.plain
+  applyRemote(a, 'chat', chatId, {
+    ...chatPlain,
+    config: {
+      ...(chatPlain.config as object),
+      voice: { ...voice, interjections: legacyPolicy }
+    }
+  })
+  applyRemote(a, 'preset', 'pv', {
+    sv: 1,
+    name: 'Voz antiga',
+    description: '',
+    icon: 'mic',
+    config: { model: 'x', voice: { ...voice, interjections: null } },
+    createdAt: 1,
+    updatedAt: 2
+  })
+  const vcd = {
+    enabled: true,
+    fillers: { enabled: true, prompt: null, delayMs: 250, pool: null },
+    endCall: false
+  }
+  applyRemote(a, 'setting', 'voiceCallDefaults', {
+    sv: 1,
+    value: { ...vcd, interjections: legacyPolicy }
+  })
+  // aplicado sem o campo (o resto do registro vale)
+  const stored = (table: string, id: string): any =>
+    JSON.parse(
+      (a.prepare(`SELECT config_json FROM ${table} WHERE id = ?`).get(id) as any).config_json
+    )
+  assert.deepEqual(stored('chats', chatId).voice, voice, 'chat: interjections ignorado')
+  assert.deepEqual(stored('presets', 'pv').voice, voice, 'persona: interjections ignorado')
+  assert.deepEqual(getSetting(a, 'voiceCallDefaults'), vcd, 'global: interjections ignorado')
+  // nunca reenviado — nem quando o banco local ainda o guarda (dado de uma versão anterior)
+  a.prepare('UPDATE chats SET config_json = ? WHERE id = ?').run(
+    JSON.stringify({ ...stored('chats', chatId), voice: { ...voice, interjections: null } }),
+    chatId
+  )
+  putSetting(a, 'voiceCallDefaults', { ...vcd, interjections: legacyPolicy })
+  for (const [type, id] of [
+    ['chat', chatId],
+    ['preset', 'pv'],
+    ['setting', 'voiceCallDefaults']
+  ] as const) {
+    const out = JSON.stringify(buildLocal(a, type, id)!.plain)
+    assert.ok(!out.includes('interjections'), `${type}: o campo legado não sai (${out})`)
+  }
+  assert.deepEqual((buildLocal(a, 'chat', chatId)!.plain.config as any).voice, voice)
+  assert.deepEqual(buildLocal(a, 'setting', 'voiceCallDefaults')!.plain.value, vcd)
+  // o normalizador também o descarta (a leitura da app nunca o vê)
+  assert.ok(
+    !(
+      'interjections' in
+      voiceNormalizers.normalizeVoiceCallDefaults({ ...vcd, interjections: legacyPolicy })
+    )
+  )
+})
+
 test('1.5.0: settings de áudio — partes do dispositivo nunca saem e sobrevivem ao recebido', () => {
   const a = newDb()
   const b = newDb()
@@ -355,16 +435,6 @@ test('1.5.0: settings de áudio — partes do dispositivo nunca saem e sobrevive
   })
   const vcd = {
     enabled: true,
-    interjections: {
-      enabled: true,
-      shadow: false,
-      cooldownMs: 5000,
-      fireProbability: 0.5,
-      minSpeechMs: 700,
-      minPauseMs: 450,
-      classes: ['ACK'],
-      volume: 0.6
-    },
     fillers: {
       enabled: true,
       prompt: null,
@@ -2648,8 +2718,7 @@ test('1.5.0: settings de áudio, voice do chat/persona e provedor ElevenLabs vã
     model: { providerId: pid, model: 'voz/m', params: { temperature: 0.2 } },
     tools: { enabledTools: ['web_search'], maxToolOutputChars: null },
     voicePrompt: null,
-    fillers: null,
-    interjections: null
+    fillers: null
   }
   A.conn
     .prepare('UPDATE chats SET config_json = ? WHERE id = ?')

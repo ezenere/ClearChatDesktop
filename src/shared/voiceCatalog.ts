@@ -775,3 +775,69 @@ export function orderVoicesForPt(
     })
     .map(({ v }) => (rec.has(v.id) ? { ...v, recommended: true } : v))
 }
+
+// ---------------- tags de voz (audio tags) ----------------
+
+/**
+ * O modelo de fala interpreta tags de voz entre colchetes (`@shared/audioTags`)? Sem flag na API —
+ * basta o texto com as tags e um destes modelos:
+ * - ElevenLabs direto: famílias Eleven v3/v4 (`eleven_v3`, `eleven_v3_conversational`, `eleven_v4`,
+ *   `eleven_v4_turbo`) — as anteriores (Flash/Turbo v2.5, Multilingual) ignoram/leem as tags. O
+ *   WebSocket `stream-input` NÃO aceita v3/v4 (a chamada já vai por HTTP frase a frase com eles; há
+ *   um WebSocket separado de Text-to-Dialogue — `/v1/text-to-dialogue/stream-input` — não usado);
+ * - OpenRouter: `elevenlabs/eleven-v3*`/`elevenlabs/eleven-v4*` e o Fish Audio Drama 3 / S2 Pro /
+ *   S2.1 Pro (direções em linguagem livre entre colchetes antes da frase — "[nervous, whispering]";
+ *   o S1 usa parênteses → fora).
+ * `family` = `voiceProviderSupport` do provedor (null/local/GPU → false).
+ */
+export function supportsAudioTags(family: VoiceProviderSupport | null, modelId: string): boolean {
+  const m = String(modelId ?? '')
+    .trim()
+    .toLowerCase()
+  if (!m) return false
+  if (family === 'elevenlabs') return /^eleven_v[34](?:_|$)/.test(m)
+  if (family === 'openrouter')
+    return (
+      /^elevenlabs\/eleven-v[34](?:[-.:]|$)/.test(m) ||
+      /^fish-audio\/(?:drama-3|s2-pro|s2\.1-pro)(?:[-.:]|$)/.test(m)
+    )
+  return false
+}
+
+/**
+ * A voz da chamada (settings de fala RESOLVIDAS no main — `api.baseUrl`/`providerKind`) interpreta
+ * tags de voz? Só no backend de API (o Kokoro e os motores da GPU não interpretam).
+ */
+export function ttsSupportsAudioTags(tts: {
+  backend: string
+  api?: { model?: string; baseUrl?: string; providerKind?: string } | null
+}): boolean {
+  if (tts.backend !== 'api' || !tts.api) return false
+  const family = voiceProviderSupport({
+    baseUrl: tts.api.baseUrl ?? '',
+    kind: tts.api.providerKind
+  })
+  return supportsAudioTags(family, tts.api.model ?? '')
+}
+
+// ---------------- vozes do Fish Audio (sem lista no OpenRouter) ----------------
+
+/**
+ * Id de voz do Fish Audio colado pelo usuário: o próprio id (32 hex — o `reference_id`) ou o link da
+ * biblioteca (`https://fish.audio/m/<id>`, com ou sem `www.`, idioma — `/pt/m/<id>` — ou barra
+ * final). null = não é um id do Fish Audio (o texto segue como id livre).
+ */
+export function fishVoiceIdFrom(input: string): string | null {
+  const t = String(input ?? '').trim()
+  if (/^[0-9a-f]{32}$/i.test(t)) return t.toLowerCase()
+  const m =
+    /^(?:https?:\/\/)?(?:www\.)?fish\.audio\/(?:[a-z]{2}(?:-[a-z]{2})?\/)?m\/([0-9a-f]{32})(?:[/?#].*)?$/i.exec(
+      t
+    )
+  return m ? m[1].toLowerCase() : null
+}
+
+/** O modelo (OpenRouter) é do Fish Audio (vozes = ids da biblioteca do Fish, sem lista)? */
+export function isFishAudioModel(modelId: string): boolean {
+  return /^fish-audio\//i.test(String(modelId ?? '').trim())
+}

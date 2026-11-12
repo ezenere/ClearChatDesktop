@@ -90,7 +90,7 @@ export const SETTINGS_NAV: SettingsNavGroup[] = [
           'ptt',
           'silêncio',
           'idioma',
-          'interjeições',
+          'preâmbulos',
           'fillers',
           'frases de demora',
           'elevenlabs',

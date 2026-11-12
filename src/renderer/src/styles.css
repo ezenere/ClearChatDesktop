@@ -183,6 +183,15 @@
 }
 
 /* ---------- Markdown das respostas ---------- */
+/* chamada de voz: tags de voz ("[sussurra]") e o trecho ainda não falado — lib/voiceText.ts */
+.md .voice-tag {
+  opacity: 0.65;
+}
+.md .voice-unheard {
+  opacity: 0.5;
+  transition: opacity 0.15s ease-out;
+}
+
 .md {
   font-size: 14px;
   line-height: 1.7;

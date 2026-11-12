@@ -134,6 +134,24 @@ export class AlignedPcmSegmenter {
     return this.#segs[i]?.end ?? null
   }
 
+  /**
+   * Início (ms, relativo ao começo da fatia i) de cada unidade de fala (letra/dígito) da sentença
+   * i já alinhada — o "ouvido" EXATO do barge-in em palavras (`@shared/heardText`). null = sem
+   * alinhamento (modo estimativa) ou o começo da fatia ainda não é conhecido.
+   */
+  unitStartsMs(i: number): number[] | null {
+    const seg = this.#segs[i]
+    if (!seg || this.#estimate) return null
+    const start = this.#startOf(i)
+    if (start == null) return null
+    const base = this.#ms(start)
+    const prevCut = i ? this.#segs[i - 1].cut : 0
+    const out: number[] = []
+    for (let j = prevCut; j < seg.cut && j < this.#uStart.length; j++)
+      out.push(Math.max(0, this.#uStart[j] - base))
+    return out.length ? out : null
+  }
+
   /** Mais uma sentença (na ordem) com `units` unidades de fala; devolve o índice da fatia. */
   addSegment(units: number): number {
     const prev = this.#segs.at(-1)?.cut ?? 0

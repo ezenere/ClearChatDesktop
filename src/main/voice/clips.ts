@@ -1,14 +1,16 @@
-// Clipes de interjeição/filler da chamada de voz (SPEC → "Áudio → Serviço de TTS (clipes)"):
+// Clipes dos preâmbulos (fillers) da chamada de voz (SPEC → "Áudio → Serviço de TTS (clipes)"):
 // falas curtas pré-geradas pela voz configurada e cacheadas em
-// `<userData>/voice-clips/<voiceId>/<CLASSE>_<n>.wav` (silêncio das pontas aparado), com manifest
-// por voz (id, engine, modelo, hash da definição — frases das interjeições + pool de preâmbulos).
-// A Feature B consome via `loadCurrentClipAudio` (latência zero depois de gerados; cache velho =
-// nada toca) e a regeneração acontece quando a voz muda (voiceId próprio por voz) ou o hash muda.
+// `<userData>/voice-clips/<voiceId>/FILLER_<n>.wav` (silêncio das pontas aparado), com manifest
+// por voz (id, engine, modelo, hash da definição — o pool de preâmbulos). A Feature B consome via
+// `loadCurrentClipAudio` (latência zero depois de gerados; cache velho = nada toca) e a
+// regeneração acontece quando a voz muda (voiceId próprio por voz) ou o hash muda. Caches de
+// versões antigas (com classes de clipe que saíram — `ACK`, `THINKING`…) contam como velhos: gerar
+// de novo apaga os arquivos que não pertencem mais ao conjunto.
 // Sem Electron/UI/IPC; síntese via `synthesize` de `tts.ts` (motor local injetado ou API).
 import { createSHA256 } from 'hash-wasm'
 import { existsSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
   FILLER_POOL_MAX,
@@ -19,47 +21,27 @@ import {
 import { resolveGpuParams } from '@shared/gpuVoice'
 import { synthesize, type TtsLocalBackend } from './tts'
 
-/** Classes de clipes (whitelist de nomes de arquivo — nada fora daqui vira arquivo). */
-export type ClipClass = 'ACK' | 'AGREEMENT' | 'ENCOURAGEMENT' | 'THINKING' | 'FILLER'
-export const CLIP_CLASSES: readonly ClipClass[] = [
-  'ACK',
-  'AGREEMENT',
-  'ENCOURAGEMENT',
-  'THINKING',
-  'FILLER'
-]
-
-/** Variantes padrão das interjeições (o índice vira o `<n>` do nome do arquivo). */
-export const CLIP_VARIANTS = 3
+/**
+ * Classes de clipes (whitelist de nomes de arquivo — nada fora daqui vira arquivo): só o `FILLER`
+ * (preâmbulo pós-turno).
+ */
+export type ClipClass = 'FILLER'
+export const CLIP_CLASSES: readonly ClipClass[] = ['FILLER']
 
 /**
- * Teto do `<n>` de qualquer classe (whitelist dos nomes de arquivo): o `FILLER` tem uma variante por
- * frase do pool de preâmbulos (até `FILLER_POOL_MAX`); as interjeições têm 2–3.
+ * Teto do `<n>` (whitelist dos nomes de arquivo): uma variante por frase do pool de preâmbulos (até
+ * `FILLER_POOL_MAX`).
  */
 export const CLIP_MAX_VARIANTS = FILLER_POOL_MAX
 
 /**
- * Frases curtas (pt-BR) das interjeições, na ordem das variantes — por extenso, pronunciáveis pelo
- * Kokoro e pela ElevenLabs (o benchmark mostrou "Hum…"/"Hmm" soltos soletrados/anglicanizados e
- * "Hum, deixa eu ver."/"Então, deixa eu ver."/"Um instante."/"Uhum." bons nos dois). `ACK` (o
- * backchannel no meio da fala) é só "Uhum."/"Aham." — curtos e discretos.
- */
-export const CLIP_PHRASES: Readonly<Record<Exclude<ClipClass, 'FILLER'>, readonly string[]>> = {
-  ACK: ['Uhum.', 'Aham.'],
-  AGREEMENT: ['Sim.', 'Certo.', 'Isso.'],
-  ENCOURAGEMENT: ['Isso!', 'Boa!', 'Pode seguir.'],
-  THINKING: ['Hum, deixa eu ver.', 'Então, deixa eu ver.', 'Um instante.']
-}
-
-/**
- * Conjunto completo de frases por classe: as interjeições fixas + o `FILLER` = o pool de
- * preâmbulos (`voiceCallDefaults.fillers.pool`; null = `DEFAULT_FILLER_POOL`), na ordem do pool.
+ * Conjunto completo de frases por classe: o `FILLER` = o pool de preâmbulos
+ * (`voiceCallDefaults.fillers.pool`; null = `DEFAULT_FILLER_POOL`), na ordem do pool.
  */
 export function clipPhraseSet(
   fillerPool?: readonly FillerPhrase[] | null
 ): Record<ClipClass, readonly string[]> {
   return {
-    ...CLIP_PHRASES,
     FILLER: resolveFillerPool(fillerPool ? [...fillerPool] : null).map((f) => f.text)
   }
 }
@@ -162,8 +144,8 @@ export function clipsDir(baseDir: string, voiceId: string): string | null {
 // ---------------- manifest/hash ----------------
 
 /**
- * Hash da definição dos clipes (frases — inclusive o pool de preâmbulos — + voz + modelo +
- * pós-processamento): mudou → o cache é velho e os clipes são regerados.
+ * Hash da definição dos clipes (o pool de preâmbulos + voz + modelo + pós-processamento): mudou →
+ * o cache é velho e os clipes são regerados.
  */
 export async function clipsHash(
   settings: TtsSettings,
@@ -299,7 +281,7 @@ export async function resolveClip(
 
 /**
  * Bytes prontos de um clipe da voz atual (null = não gerado/ilegível) — consumo da chamada de voz
- * (fillers/interjeições tocam os `.wav` cacheados; nada é sintetizado no lugar).
+ * (os preâmbulos tocam os `.wav` cacheados; nada é sintetizado no lugar).
  */
 export async function loadClipAudio(
   baseDir: string,
@@ -357,11 +339,14 @@ async function generateClipsLocked(
   const total = CLIP_CLASSES.reduce((a, c) => a + phrases[c].length, 0)
   let done = 0
   await mkdir(dir, { recursive: true })
-  // conjunto novo: clipes de variantes que não existem mais (pool menor) saem
-  for (const cls of CLIP_CLASSES) {
-    for (let n = phrases[cls].length + 1; n <= CLIP_MAX_VARIANTS; n++) {
-      await rm(join(dir, clipFileName(cls, n)), { force: true })
-    }
+  // conjunto novo: todo `.wav` que não pertence mais a ele sai — variantes que não existem mais
+  // (pool menor) e as classes de versões antigas (`ACK_1.wav`, `THINKING_3.wav`…)
+  const keep = new Set(
+    CLIP_CLASSES.flatMap((c) => phrases[c].map((_, i) => clipFileName(c, i + 1)))
+  )
+  for (const name of await readdir(dir).catch(() => [] as string[])) {
+    if (/^[A-Z]+_\d+\.wav$/.test(name) && !keep.has(name))
+      await rm(join(dir, name), { force: true })
   }
   for (const cls of CLIP_CLASSES) {
     for (let n = 1; n <= phrases[cls].length; n++) {

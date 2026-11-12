@@ -20,6 +20,12 @@ export interface VoiceMessageMeta {
   spoken?: true | 'partial'
   /** Assistente: modelo/motor da voz. */
   ttsModel?: string
+  /**
+   * Assistente interrompido no meio (barge-in): o resto da resposta que o usuário NÃO ouviu — só
+   * para exibição (esmaecido depois do marcador "interrompido"); nunca vai ao modelo (o conteúdo da
+   * mensagem termina no que foi ouvido + "…").
+   */
+  unheard?: string
 }
 
 /** Quem encerrou a chamada. */
@@ -237,7 +243,7 @@ export function callUsageLines(mark: VoiceCallMark): [string, string][] {
           : formatCallUsd(0)
     }`
   ])
-  out.push(['Interjeições e preâmbulos', 'grátis (clipes pré-gerados)'])
+  out.push(['Preâmbulos', 'grátis (clipes pré-gerados)'])
   return out
 }
 

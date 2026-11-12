@@ -3,14 +3,14 @@
 // global), modelo da chamada + parâmetros (`VoiceCallModelEditor`), tools próprias, o modo do
 // prompt (complementar/substituto/nenhum) e o prompt do modo voz. Usada no painel do chat (aba
 // Chat) e no editor de personas (aba Chat); precedência chat > persona > global (campos null do
-// chat seguem a persona ao vivo). Interjeições/fillers ficam no painel da chamada.
-import { Star } from 'lucide-react'
+// chat seguem a persona ao vivo). Os preâmbulos (fillers) ficam no painel da chamada.
 import { useState } from 'react'
 import { TOOL_LABELS, TOOL_NAMES } from '@shared/tools'
 import type { ChatConfig, ToolName } from '@shared/types'
 import {
   DEFAULT_VOICE_CALL_CONFIG,
   VOICE_CALL_PROMPT_MODES,
+  normalizeVoiceCallConfig,
   resolveVoiceCallConfig,
   resolveVoiceCallEnabled,
   type VoiceCallConfig,
@@ -21,6 +21,9 @@ import { useVoiceSettings } from '../../lib/voice/voiceSettings'
 import { useStore } from '../../store'
 import { CollapsibleSection, ToggleRow } from '../panel/fields'
 import { AutoTextarea, Switch } from '../ui/controls'
+import { InheritChoice } from '../ui/InheritChoice'
+import { AudioTagsField } from './AudioTagsField'
+import { DEFAULT_AUDIO_TAGS_PROMPT } from '@shared/audioTags'
 import { ApiInfo, C } from '../ui/Tooltip'
 import { VoiceCallModelEditor } from './VoiceCallModelEditor'
 
@@ -45,7 +48,10 @@ export function VoiceCallConfigSection({
     presetId ? (s.presets.find((p) => p.id === presetId) ?? null) : null
   )
   const personaVoice = persona?.config.voice ?? null
-  const voice: VoiceCallConfig = cfg.voice ?? DEFAULT_VOICE_CALL_CONFIG
+  // normalizado: campos legados de registros antigos (`interjections`) nunca são regravados
+  const voice: VoiceCallConfig = cfg.voice
+    ? normalizeVoiceCallConfig(cfg.voice)
+    : DEFAULT_VOICE_CALL_CONFIG
   const set = (p: Partial<VoiceCallConfig>): void => patch({ voice: { ...voice, ...p } })
   const where = scope === 'chat' ? 'neste chat' : 'nesta persona'
   const { enabled, source } = resolveVoiceCallEnabled(voice, personaVoice, defaults)
@@ -60,7 +66,9 @@ export function VoiceCallConfigSection({
     !!voice.tools ||
     !!voice.voicePrompt?.trim() ||
     !!voice.promptMode ||
-    voice.endCall != null
+    voice.endCall != null ||
+    voice.audioTags != null ||
+    !!voice.audioTagsPrompt
   const summary = !enabled
     ? source === 'persona' && scope === 'chat'
       ? 'desligada pela persona'
@@ -102,50 +110,22 @@ export function VoiceCallConfigSection({
       <div data-testid="voice-call-config" className="space-y-3">
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-[13px] text-fg/90">Disponível {where}</span>
-          <div
-            role="radiogroup"
-            aria-label={`Chamada de voz ${where}`}
-            data-testid="voice-call-enabled"
-            data-effective={enabled ? 'on' : 'off'}
-            className="flex rounded-lg border border-border bg-bg/60 p-0.5"
-          >
-            {([null, true, false] as const).map((v) => {
-              const selected = voice.enabled === v
-              return (
-                <button
-                  key={String(v)}
-                  type="button"
-                  role="radio"
-                  aria-checked={selected}
-                  data-value={v === null ? 'inherit' : v ? 'on' : 'off'}
-                  onClick={() => set({ enabled: v })}
-                  title={
-                    v === null
-                      ? inheritedFrom === 'global'
-                        ? 'Segue Configurações → Áudio → Chamada de voz disponível'
-                        : `Segue a ${inheritedFrom}`
-                      : undefined
-                  }
-                  className={cn(
-                    'flex items-center gap-1 rounded-md px-2 py-0.5 text-[11.5px] transition-colors',
-                    selected ? 'bg-active text-fg shadow-sm' : 'text-subtle hover:text-fg'
-                  )}
-                >
-                  {v === null ? (
-                    <>
-                      <Star aria-hidden className="size-2.5 fill-current opacity-70" />
-                      {inheritedFrom === 'global' ? 'Padrão' : 'Da persona'} (
-                      {inheritedEnabled ? 'ligada' : 'desligada'})
-                    </>
-                  ) : v ? (
-                    'Ligada'
-                  ) : (
-                    'Desligada'
-                  )}
-                </button>
-              )
-            })}
-          </div>
+          <InheritChoice
+            label={`Chamada de voz ${where}`}
+            testId="voice-call-enabled"
+            options={[
+              { value: true, label: 'Ligada' },
+              { value: false, label: 'Desligada' }
+            ]}
+            value={voice.enabled}
+            inherited={inheritedEnabled}
+            inheritedFrom={
+              inheritedFrom === 'global'
+                ? 'Padrão global (Configurações → Áudio → Chamada de voz)'
+                : `Padrão da ${inheritedFrom}`
+            }
+            onChange={(v) => set({ enabled: v })}
+          />
         </div>
         {!enabled && (
           <p data-testid="voice-call-disabled-note" className="text-[11.5px] text-warning">
@@ -200,7 +180,9 @@ export function VoiceCallConfigSection({
                   : defaults.endCall
               }
               inheritedFrom={
-                scope === 'chat' && personaVoice?.endCall != null ? 'Da persona' : 'Padrão'
+                scope === 'chat' && personaVoice?.endCall != null
+                  ? 'Padrão da persona'
+                  : 'Padrão global'
               }
               onChange={(endCall) => set({ endCall })}
             />
@@ -209,9 +191,32 @@ export function VoiceCallConfigSection({
               inherited={
                 scope === 'chat' && personaVoice?.promptMode ? personaVoice.promptMode : 'append'
               }
-              inheritedFrom={scope === 'chat' && personaVoice?.promptMode ? 'persona' : 'padrão'}
+              inheritedFrom={
+                scope === 'chat' && personaVoice?.promptMode ? 'Padrão da persona' : 'Padrão global'
+              }
               basePromptOn={defaults.basePromptEnabled}
               onChange={(promptMode) => set({ promptMode })}
+            />
+            <AudioTagsField
+              value={voice.audioTags ?? null}
+              inherited={
+                scope === 'chat' && personaVoice?.audioTags != null
+                  ? personaVoice.audioTags
+                  : defaults.audioTags
+              }
+              inheritedFrom={
+                scope === 'chat' && personaVoice?.audioTags != null
+                  ? 'Padrão da persona'
+                  : 'Padrão global'
+              }
+              prompt={voice.audioTagsPrompt ?? null}
+              inheritedPrompt={
+                (scope === 'chat' ? personaVoice?.audioTagsPrompt : null) ??
+                defaults.audioTagsPrompt ??
+                DEFAULT_AUDIO_TAGS_PROMPT
+              }
+              onChange={(audioTags) => set({ audioTags })}
+              onPromptChange={(audioTagsPrompt) => set({ audioTagsPrompt })}
             />
             {resolved.promptMode !== 'none' && (
               <VoicePromptField
@@ -233,8 +238,8 @@ export function VoiceCallConfigSection({
 }
 
 /**
- * "O agente pode encerrar a chamada" (tool `end_call` nos turnos de voz): ★ herda (persona no chat;
- * Configurações → Áudio na persona) / Sim / Não.
+ * "O agente pode encerrar a chamada" (tool `end_call` nos turnos de voz): Sim / Não com ★ no valor
+ * herdado (persona no chat; Configurações → Áudio na persona) — escolher o ★ volta a herdar.
  */
 function EndCallField({
   value,
@@ -259,42 +264,18 @@ function EndCallField({
           </p>
         </ApiInfo>
       </span>
-      <div
-        role="radiogroup"
-        aria-label="O agente pode encerrar a chamada"
-        data-testid="voice-call-end-call"
-        data-effective={(value ?? inherited) ? 'on' : 'off'}
-        className="flex rounded-lg border border-border bg-bg/60 p-0.5"
-      >
-        {([null, true, false] as const).map((v) => {
-          const selected = value === v
-          return (
-            <button
-              key={String(v)}
-              type="button"
-              role="radio"
-              aria-checked={selected}
-              data-value={v === null ? 'inherit' : v ? 'on' : 'off'}
-              onClick={() => onChange(v)}
-              className={cn(
-                'flex items-center gap-1 rounded-md px-2 py-0.5 text-[11.5px] transition-colors',
-                selected ? 'bg-active text-fg shadow-sm' : 'text-subtle hover:text-fg'
-              )}
-            >
-              {v === null ? (
-                <>
-                  <Star aria-hidden className="size-2.5 fill-current opacity-70" />
-                  {inheritedFrom} ({inherited ? 'sim' : 'não'})
-                </>
-              ) : v ? (
-                'Sim'
-              ) : (
-                'Não'
-              )}
-            </button>
-          )
-        })}
-      </div>
+      <InheritChoice
+        label="O agente pode encerrar a chamada"
+        testId="voice-call-end-call"
+        options={[
+          { value: true, label: 'Sim' },
+          { value: false, label: 'Não' }
+        ]}
+        value={value}
+        inherited={inherited}
+        inheritedFrom={inheritedFrom}
+        onChange={onChange}
+      />
     </div>
   )
 }
@@ -310,7 +291,7 @@ const PROMPT_MODE_HELP: Record<VoiceCallPromptMode, string> = {
   none: 'Sem prompt de voz: só o system prompt normal (nem o prompt-base global de voz).'
 }
 
-/** Como o prompt do modo voz compõe com o system prompt (★ = herda da persona/padrão). */
+/** Como o prompt do modo voz compõe com o system prompt (★ no modo herdado da persona/padrão). */
 function VoicePromptModeField({
   value,
   inherited,
@@ -320,7 +301,7 @@ function VoicePromptModeField({
 }: {
   value: VoiceCallPromptMode | null
   inherited: VoiceCallPromptMode
-  inheritedFrom: 'persona' | 'padrão'
+  inheritedFrom: string
   basePromptOn: boolean
   onChange: (mode: VoiceCallPromptMode | null) => void
 }): React.JSX.Element {
@@ -346,45 +327,20 @@ function VoicePromptModeField({
           </p>
         </ApiInfo>
       </div>
-      <div
-        role="radiogroup"
-        aria-label="Prompt na chamada"
-        data-testid="voice-call-prompt-mode"
-        data-effective={effective}
-        className="flex rounded-lg border border-border bg-bg/60 p-0.5"
-      >
-        {([null, ...VOICE_CALL_PROMPT_MODES] as const).map((m) => {
-          const selected = value === m
-          return (
-            <button
-              key={m ?? 'inherit'}
-              type="button"
-              role="radio"
-              aria-checked={selected}
-              data-value={m ?? 'inherit'}
-              title={
-                m
-                  ? PROMPT_MODE_HELP[m]
-                  : `Herda (${inheritedFrom}): ${PROMPT_MODE_LABEL[inherited]}`
-              }
-              onClick={() => onChange(m)}
-              className={cn(
-                'flex min-w-0 flex-1 items-center justify-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] transition-colors',
-                selected ? 'bg-active text-fg shadow-sm' : 'text-subtle hover:text-fg'
-              )}
-            >
-              {m ? (
-                PROMPT_MODE_LABEL[m]
-              ) : (
-                <>
-                  <Star aria-hidden className="size-2.5 shrink-0 fill-current opacity-70" />
-                  {PROMPT_MODE_LABEL[inherited]}
-                </>
-              )}
-            </button>
-          )
-        })}
-      </div>
+      <InheritChoice
+        label="Prompt na chamada"
+        testId="voice-call-prompt-mode"
+        stretch
+        options={VOICE_CALL_PROMPT_MODES.map((m) => ({
+          value: m,
+          label: PROMPT_MODE_LABEL[m],
+          title: PROMPT_MODE_HELP[m]
+        }))}
+        value={value}
+        inherited={inherited}
+        inheritedFrom={inheritedFrom}
+        onChange={onChange}
+      />
       <p className="mt-1 text-[11px] text-subtle">{PROMPT_MODE_HELP[effective]}</p>
     </div>
   )

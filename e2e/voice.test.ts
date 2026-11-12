@@ -1,6 +1,6 @@
 // Áudio/voz: contratos de configuração — defaults quando null/ausente, campos com significado
 // próprio preservados (silenceStopMs: 0, enabled: null ≠ false), normalização tolerante a valores
-// inválidos, política de interjeições (classes vazias → padrão) e ligação com personas
+// inválidos, o campo legado `interjections` descartado (protocolo §4.3.6) e ligação com personas
 // (PRESET_FIELDS + sanitizePresetConfig).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -8,13 +8,11 @@ import {
   applyVoiceCallChat,
   resolveVoiceCallConfig,
   DEFAULT_AUDIO_INPUT,
-  DEFAULT_INTERJECTION_POLICY,
   DEFAULT_STT_SETTINGS,
   DEFAULT_TTS_LOCAL,
   DEFAULT_TTS_SETTINGS,
   DEFAULT_VOICE_CALL_CONFIG,
   DEFAULT_VOICE_CALL_DEFAULTS,
-  DEFAULT_INTERJECTION_CLASSES,
   DEFAULT_FILLER_POOL,
   DEFAULT_TURN_TIMING,
   DEFAULT_VOICE_BASE_PROMPT,
@@ -23,7 +21,6 @@ import {
   resolveFillerPool,
   resolveTurnTiming,
   normalizeAudioInput,
-  normalizeInterjectionPolicy,
   normalizeSttSettings,
   normalizeTtsSettings,
   normalizeVoiceCallConfig,
@@ -61,10 +58,10 @@ test('os DEFAULT_* são JSON-serializáveis (round-trip igual)', () => {
     assert.deepEqual(JSON.parse(JSON.stringify(d)), d)
 })
 
-test('defaults de produto: chamada de voz, interjeições e fillers ligados; TTS local aponta o Kokoro', () => {
+test('defaults de produto: chamada de voz e preâmbulos ligados (sem interjeições); TTS local aponta o Kokoro', () => {
   assert.equal(DEFAULT_VOICE_CALL_DEFAULTS.enabled, true)
-  assert.equal(DEFAULT_INTERJECTION_POLICY.enabled, true)
-  assert.equal(DEFAULT_INTERJECTION_POLICY.shadow, false) // shadow continua desligado
+  assert.ok(!('interjections' in DEFAULT_VOICE_CALL_DEFAULTS))
+  assert.ok(!('interjections' in DEFAULT_VOICE_CALL_CONFIG))
   assert.equal(DEFAULT_VOICE_CALL_DEFAULTS.fillers.enabled, true)
   assert.deepEqual(DEFAULT_TTS_SETTINGS.local, DEFAULT_TTS_LOCAL)
   assert.deepEqual(DEFAULT_TTS_LOCAL, { engine: 'kokoro', voice: 'pf_dora', installed: false })
@@ -90,6 +87,7 @@ test('audioInput: booleanos explícitos valem, strings aparadas, null = padrão 
   })
   assert.deepEqual(s, {
     deviceId: 'mic-2',
+    activationDb: -45,
     pttEnabled: false,
     pttKey: 'Ctrl+Shift+Space',
     silenceStopEnabled: false,
@@ -102,6 +100,11 @@ test('audioInput: booleanos explícitos valem, strings aparadas, null = padrão 
   assert.equal(normalizeAudioInput({ deviceId: '   ' }).deviceId, null)
   assert.equal(normalizeAudioInput({ language: '' }).language, 'pt-BR')
   assert.equal(normalizeAudioInput({ pttKey: 7 }).pttKey, null)
+  // nível de ativação (local do dispositivo): lixo → −45; preso em −70…−20; inteiro
+  assert.equal(normalizeAudioInput({ activationDb: 'x' }).activationDb, -45)
+  assert.equal(normalizeAudioInput({ activationDb: -90 }).activationDb, -70)
+  assert.equal(normalizeAudioInput({ activationDb: -5 }).activationDb, -20)
+  assert.equal(normalizeAudioInput({ activationDb: -51.6 }).activationDb, -52)
 })
 
 // ---------------- transcrição (STT) ----------------
@@ -165,7 +168,7 @@ test('enabled: null ≠ false (null herda o padrão global)', () => {
   assert.equal(normalizeVoiceCallConfig({ enabled: false }).enabled, false)
   assert.equal(normalizeVoiceCallConfig({ enabled: true }).enabled, true)
   assert.equal(normalizeVoiceCallConfig({ enabled: 'yes' }).enabled, null)
-  // null ≠ objeto: fillers/interjections/model/tools null herdam; objeto vira config normalizada
+  // null ≠ objeto: fillers/model/tools null herdam; objeto vira config normalizada
   assert.equal(normalizeVoiceCallConfig({ fillers: null }).fillers, null)
   // objeto presente = override; enabled ausente completa com o padrão (ligado); false explícito vale
   assert.deepEqual(normalizeVoiceCallConfig({ fillers: {} }).fillers, {
@@ -173,11 +176,44 @@ test('enabled: null ≠ false (null herda o padrão global)', () => {
     prompt: null
   })
   assert.equal(normalizeVoiceCallConfig({ fillers: { enabled: false } }).fillers?.enabled, false)
-  assert.equal(normalizeVoiceCallConfig({ interjections: null }).interjections, null)
-  assert.deepEqual(normalizeVoiceCallConfig({ interjections: {} }).interjections, {
-    ...DEFAULT_INTERJECTION_POLICY,
-    classes: [...DEFAULT_INTERJECTION_CLASSES]
+})
+
+test('interjections é legado (protocolo §4.3.6): registros antigos com o campo são lidos e ele some', () => {
+  const legacy = {
+    enabled: true,
+    model: { providerId: 'p1', model: 'call/m', params: {} },
+    tools: null,
+    voicePrompt: 'curto',
+    fillers: { enabled: false, prompt: null },
+    interjections: { enabled: true, shadow: true, cooldownMs: 5000, classes: ['ACK'] },
+    endCall: false
+  }
+  const cfg = normalizeVoiceCallConfig(legacy)
+  assert.ok(!('interjections' in cfg), 'chat/persona: o campo não é copiado')
+  assert.deepEqual(cfg, {
+    enabled: true,
+    model: { providerId: 'p1', model: 'call/m', params: {} },
+    tools: null,
+    voicePrompt: 'curto',
+    fillers: { enabled: false, prompt: null },
+    endCall: false
   })
+  // null também (o padrão antigo `DEFAULT_VOICE_CALL_CONFIG` gravava `interjections: null`)
+  assert.deepEqual(normalizeVoiceCallConfig({ interjections: null }), DEFAULT_VOICE_CALL_CONFIG)
+  assert.ok(!JSON.stringify(normalizeVoiceCallConfig(legacy)).includes('interjections'))
+  // global: some igual; o resto do registro antigo continua valendo
+  const d = normalizeVoiceCallDefaults({
+    enabled: false,
+    interjections: { enabled: true, shadow: true },
+    fillers: { enabled: false }
+  })
+  assert.ok(!('interjections' in d))
+  assert.equal(d.enabled, false)
+  assert.equal(d.fillers.enabled, false)
+  // a resolução (persona → chat → global) nunca devolve o campo
+  const r = resolveVoiceCallConfig(legacy, { interjections: { enabled: true } } as never, legacy)
+  assert.ok(!('interjections' in r))
+  assert.equal(r.fillers.enabled, false)
 })
 
 test('voiceCallConfig: campos desconhecidos descartados; params preservam as chaves que não conhecem', () => {
@@ -220,59 +256,13 @@ test('voiceCallConfig: campos desconhecidos descartados; params preservam as cha
   )
 })
 
-test('interjeições: classes vazias recebem o padrão (só ACK); valores com significado próprio preservados', () => {
-  assert.deepEqual(normalizeInterjectionPolicy({ classes: [] }).classes, [
-    ...DEFAULT_INTERJECTION_CLASSES
-  ])
-  assert.deepEqual(normalizeInterjectionPolicy({ classes: ['WAT', 'THINKING'] }).classes, [
-    'THINKING'
-  ])
-  assert.deepEqual(normalizeInterjectionPolicy({ classes: 'wat' }).classes, [
-    ...DEFAULT_INTERJECTION_CLASSES
-  ])
-  const p = normalizeInterjectionPolicy({
-    enabled: true,
-    shadow: true,
-    cooldownMs: 0,
-    fireProbability: 0,
-    minSpeechMs: 0,
-    minPauseMs: 250.4
-  })
-  assert.deepEqual(p, {
-    enabled: true,
-    shadow: true,
-    cooldownMs: 0,
-    fireProbability: 0,
-    minSpeechMs: 0,
-    minPauseMs: 250,
-    classes: [...DEFAULT_INTERJECTION_CLASSES],
-    volume: 0.6
-  })
-  // fora de [0, 1] é aparado; inválido → padrão
-  assert.equal(normalizeInterjectionPolicy({ fireProbability: 1.5 }).fireProbability, 1)
-  assert.equal(normalizeInterjectionPolicy({ fireProbability: -1 }).fireProbability, 0)
-  assert.equal(normalizeInterjectionPolicy({ fireProbability: 'x' }).fireProbability, 0.5)
-  assert.equal(normalizeInterjectionPolicy({ cooldownMs: -5 }).cooldownMs, 5000)
-  // backchannel discreto: só ACK ("Uhum."/"Aham."), cooldown 5 s, probabilidade 0,5, volume 0,6
-  assert.deepEqual(DEFAULT_INTERJECTION_POLICY.classes, ['ACK'])
-  assert.equal(normalizeInterjectionPolicy({ volume: 2 }).volume, 1)
-  assert.equal(normalizeInterjectionPolicy({ volume: 'x' }).volume, 0.6)
-})
-
 test('voiceCallDefaults: parcial completa com os padrões; nested normalizado', () => {
   const d = normalizeVoiceCallDefaults({
     enabled: true,
-    interjections: { enabled: true, cooldownMs: 1000, classes: ['ACK'] },
     fillers: { prompt: 'fale "ãh"\r' }
   })
   assert.deepEqual(d, {
     enabled: true,
-    interjections: {
-      ...DEFAULT_INTERJECTION_POLICY,
-      enabled: true,
-      cooldownMs: 1000,
-      classes: ['ACK']
-    },
     fillers: { enabled: true, prompt: 'fale "ãh"', delayMs: 250, pool: null },
     turn: {
       silenceStopMs: null,
@@ -281,7 +271,11 @@ test('voiceCallDefaults: parcial completa com os padrões; nested normalizado', 
       completeSilenceMs: 600,
       statementSilenceMs: 1200,
       unfinishedSilenceMs: 1500,
-      speculativeApi: false
+      speculativeApi: false,
+      duckGain: 0.3,
+      bargeInVoicedMs: 700,
+      bargeInWords: 3,
+      duckRestoreMs: 450
     },
     model: null,
     basePromptEnabled: true,
@@ -290,11 +284,14 @@ test('voiceCallDefaults: parcial completa com os padrões; nested normalizado', 
     // frases de demora (aditivo): ausente = os padrões
     delayPhrases: {
       enabled: true,
-      keepAliveAfterMs: 3000,
-      apologyAfterMs: 5000,
+      keepAliveAfterMs: 8000,
+      apologyAfterMs: 15_000,
       keepAlivePool: null,
       apologyPool: null
-    }
+    },
+    // tags de voz (aditivo; opt-in): desligadas, instrução padrão do app
+    audioTags: false,
+    audioTagsPrompt: null
   })
   assert.deepEqual(normalizeVoiceCallDefaults({ fillers: null }), DEFAULT_VOICE_CALL_DEFAULTS)
   // "O agente pode encerrar a chamada": false explícito vale; lixo → padrão (ligado)
@@ -310,6 +307,7 @@ test('PRESET_FIELDS contém voice e sanitizePresetConfig copia voice normalizado
   assert.ok((PRESET_FIELDS as readonly string[]).includes('voice'))
   const out = sanitizePresetConfig({
     model: 'm',
+    // `interjections` legado (persona antiga): descartado na normalização
     voice: { enabled: true, interjections: { enabled: true, classes: [] } },
     desconhecido: 'sai'
   })
@@ -320,12 +318,7 @@ test('PRESET_FIELDS contém voice e sanitizePresetConfig copia voice normalizado
     model: null,
     tools: null,
     voicePrompt: null,
-    fillers: null,
-    interjections: {
-      ...DEFAULT_INTERJECTION_POLICY,
-      enabled: true,
-      classes: [...DEFAULT_INTERJECTION_CLASSES]
-    }
+    fillers: null
   })
   // voice lixo → config vazia (tudo herda); voice ausente não entra
   assert.deepEqual(sanitizePresetConfig({ voice: 'x' }).voice, DEFAULT_VOICE_CALL_CONFIG)
@@ -351,7 +344,8 @@ test('resolveTurnTiming: padrões e coerência (completa ≤ afirmação ≤ ina
     completeMs: 600,
     statementMs: 1200,
     unfinishedMs: 1500,
-    fallbackMs: 1000
+    fallbackMs: 1000,
+    bargeIn: { duckGain: 0.3, voicedMs: 700, words: 3, restoreMs: 450 }
   })
   // silenceStopMs alto (2 s) puxa o teto; completo nunca passa do fallback
   const t = resolveTurnTiming({

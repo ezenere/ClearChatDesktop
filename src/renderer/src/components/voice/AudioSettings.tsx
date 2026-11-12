@@ -4,7 +4,7 @@
 // transcrição (STT — `SttSettingsSection`) e fala (TTS — `TtsSettingsSection`) com UM seletor de
 // Modelo cada (provedores cadastrados + "Local (CPU)"/"Local (GPU)" quando há modelo instalado) e
 // os "Parâmetros" do modelo, e os padrões da chamada de voz (ligada, fim de turno, modelo da
-// chamada, interjeições/fillers). Tudo o que é modelo LOCAL (CPU e GPU — baixar/remover, runtime,
+// chamada, preâmbulos). Tudo o que é modelo LOCAL (CPU e GPU — baixar/remover, runtime,
 // Modo avançado, suas vozes) mora na sub-tela "Modelos locais" (`LocalModelsScreen`, botão ao lado
 // do título "Áudio" — `AudioTitleAside`; "← Áudio" volta). Cada controle grava na hora via
 // `saveVoiceSetting` (espelho reativo `useVoiceSettings` — o composer e a chamada acompanham) e falha
@@ -18,14 +18,16 @@ import type {
   VoiceSettingKind,
   VoiceSettingsMap
 } from '@shared/ipc'
-import type { SttSettings, TtsSettings, VoiceCallDefaults, InterjectionClass } from '@shared/voice'
+import type { SttSettings, TtsSettings, VoiceCallDefaults } from '@shared/voice'
 import {
+  BARGE_IN_RANGES,
   DEFAULT_AUDIO_INPUT,
+  DEFAULT_BARGE_IN,
   DEFAULT_STT_SETTINGS,
   DEFAULT_TTS_SETTINGS,
   DEFAULT_TURN_SILENCE_MS,
   DEFAULT_VOICE_CALL_DEFAULTS,
-  INTERJECTION_CLASSES
+  resolveBargeIn
 } from '@shared/voice'
 import type { AudioInputSettings } from '@shared/voice'
 import { api, errorMessage } from '../../lib/api'
@@ -46,6 +48,9 @@ import { TtsSettingsSection } from './TtsSettingsSection'
 import { VoiceCallModelEditor } from './VoiceCallModelEditor'
 import { DelayPhrasesSettings } from './DelayPhrasesSettings'
 import { LocalModelsScreen } from './LocalModelsScreen'
+import { MicActivationLevel } from './MicActivationLevel'
+import { AudioTagsField } from './AudioTagsField'
+import { DEFAULT_AUDIO_TAGS_PROMPT } from '@shared/audioTags'
 import type { ProviderOption } from '../../lib/voice/voiceSettingsHelpers'
 import { useInputDeviceList } from '../../lib/voice/useInputDevices'
 
@@ -65,14 +70,6 @@ const LANGUAGES: { value: string; label: string }[] = [
   { value: 'ru-RU', label: 'Russo' }
 ]
 const CUSTOM_LANGUAGE = '__custom__'
-
-/** Rótulos pt-BR das classes de interjeição (o id técnico fica no tooltip). */
-const INTERJECTION_LABELS: Record<InterjectionClass, { label: string; example: string }> = {
-  ACK: { label: 'Confirmação', example: '“uhum”, “sei”' },
-  AGREEMENT: { label: 'Concordância', example: '“isso”, “exato”' },
-  ENCOURAGEMENT: { label: 'Incentivo', example: '“boa!”, “legal”' },
-  THINKING: { label: 'Pensando', example: '“hum…”, “deixa eu ver”' }
-}
 
 /**
  * À direita do título "Áudio" (Configurações): o botão "Modelos locais" (abre a sub-tela) + (?);
@@ -118,7 +115,7 @@ export function AudioSettings(): React.JSX.Element | null {
   const [input, setInput] = useState<AudioInputSettings>(DEFAULT_AUDIO_INPUT)
   const [stt, setStt] = useState<SttSettings>(DEFAULT_STT_SETTINGS)
   const [tts, setTts] = useState<TtsSettings>(DEFAULT_TTS_SETTINGS)
-  /** Padrões globais da chamada de voz (interjeições/fillers — SPEC → "Chamada de voz"). */
+  /** Padrões globais da chamada de voz (turnos, preâmbulos… — SPEC → "Chamada de voz"). */
   const [callDefaults, setCallDefaults] = useState<VoiceCallDefaults>(DEFAULT_VOICE_CALL_DEFAULTS)
   /** Falha ao gravar alguma setting (aviso visível no topo — nada falha em silêncio). */
   const [saveError, setSaveError] = useState<string | null>(null)
@@ -330,7 +327,7 @@ export function AudioSettings(): React.JSX.Element | null {
   /** O PTT só está ATIVO com uma tecla válida — ligado sem tecla aparece desligado. */
   const pttActive = input.pttEnabled && !!input.pttKey && !pttProblem
   const turn = callDefaults.turn
-  const ij = callDefaults.interjections
+  const bargeIn = resolveBargeIn(turn)
 
   const saveErrorBox = saveError && (
     <div
@@ -516,6 +513,12 @@ export function AudioSettings(): React.JSX.Element | null {
           )}
         </div>
 
+        <MicActivationLevel
+          value={input.activationDb}
+          deviceId={input.deviceId}
+          onChange={(activationDb) => saveInput({ activationDb })}
+        />
+
         <ToggleRow
           label="Parar por silêncio"
           checked={input.silenceStopEnabled}
@@ -655,6 +658,64 @@ export function AudioSettings(): React.JSX.Element | null {
           ariaLabel="Silêncio para fala inacabada (ms)"
           onCommit={(v) => saveCallDefaults({ turn: { ...turn, unfinishedSilenceMs: v } })}
         />
+        <SubHeading>Falar por cima da resposta</SubHeading>
+        <NumberRow
+          label="Volume ao falar por cima"
+          help={`Quando você fala enquanto o assistente responde, a voz dele ABAIXA para esta fração do volume (e continua tocando) em vez de parar na hora — uma tosse, um “uhum” ou um barulho não interrompem nada. 0 = mudo; 1 = não abaixa. Padrão ${Math.round(DEFAULT_BARGE_IN.duckGain * 100)} %.`}
+          value={Math.round(bargeIn.duckGain * 100)}
+          min={0}
+          max={100}
+          step={5}
+          unit="%"
+          testId="voice-call-duck-gain"
+          ariaLabel="Volume do assistente enquanto você fala por cima (%)"
+          onCommit={(v) => saveCallDefaults({ turn: { ...turn, duckGain: v / 100 } })}
+        />
+        <NumberRow
+          label="Interromper depois de falar"
+          help={`Se você continuar falando por cima por este tempo (só o tempo com voz conta), o assistente para de falar e a sua fala vira o próximo turno (barge-in). Também interrompe na hora com ${DEFAULT_BARGE_IN.words}+ palavras reconhecidas na transcrição ao vivo (palavras abaixo) ou com um pedido curto de parada (“para”, “espera”, “chega”, “peraí”). Padrão ${DEFAULT_BARGE_IN.voicedMs} ms.`}
+          value={bargeIn.voicedMs}
+          min={BARGE_IN_RANGES.voicedMs.min}
+          max={BARGE_IN_RANGES.voicedMs.max}
+          step={50}
+          unit="ms"
+          testId="voice-call-barge-in-voiced"
+          ariaLabel="Interromper depois de falar por cima (ms de voz)"
+          onCommit={(v) => saveCallDefaults({ turn: { ...turn, bargeInVoicedMs: v } })}
+        />
+        <NumberRow
+          label="Interromper com palavras"
+          help={`Palavras reais (“uhum”, “sim”, “tá” não contam) na transcrição ao vivo da sua fala por cima que já interrompem o assistente — precisa das parciais ao vivo ligadas em Transcrição. Padrão ${DEFAULT_BARGE_IN.words}.`}
+          value={bargeIn.words}
+          min={BARGE_IN_RANGES.words.min}
+          max={BARGE_IN_RANGES.words.max}
+          step={1}
+          testId="voice-call-barge-in-words"
+          ariaLabel="Interromper com quantas palavras"
+          onCommit={(v) => saveCallDefaults({ turn: { ...turn, bargeInWords: v } })}
+        />
+        <NumberRow
+          label="Volume volta depois de"
+          help={`Você parou de falar por cima antes de interromper: depois deste silêncio o volume do assistente volta ao normal e o som curto é descartado (não vira turno). Padrão ${DEFAULT_BARGE_IN.restoreMs} ms.`}
+          value={bargeIn.restoreMs}
+          min={BARGE_IN_RANGES.restoreMs.min}
+          max={BARGE_IN_RANGES.restoreMs.max}
+          step={50}
+          unit="ms"
+          testId="voice-call-duck-restore"
+          ariaLabel="Volume volta depois de (ms de silêncio)"
+          onCommit={(v) => saveCallDefaults({ turn: { ...turn, duckRestoreMs: v } })}
+        />
+        <AudioTagsField
+          global
+          value={callDefaults.audioTags}
+          inherited={callDefaults.audioTags}
+          inheritedFrom="Padrão do app"
+          prompt={callDefaults.audioTagsPrompt}
+          inheritedPrompt={DEFAULT_AUDIO_TAGS_PROMPT}
+          onChange={(v) => saveCallDefaults({ audioTags: v ?? false })}
+          onPromptChange={(audioTagsPrompt) => saveCallDefaults({ audioTagsPrompt })}
+        />
         <DelayPhrasesSettings
           value={callDefaults.delayPhrases}
           onChange={(delayPhrases) => saveCallDefaults({ delayPhrases })}
@@ -671,42 +732,29 @@ export function AudioSettings(): React.JSX.Element | null {
         />
       </section>
 
-      {/* ---- chamada de voz: atos de fala curta (interjeições/fillers) ---- */}
+      {/* ---- chamada de voz: preâmbulos (fillers) ---- */}
       <AudioSection
-        title="Interjeições e fillers"
+        title="Preâmbulos"
         testId="voice-acts-settings"
         help={
           <>
             <p>
-              Atos de fala curta da chamada de voz, decididos por regras simples (sem classificador
-              treinado). Estes são os padrões GLOBAIS — persona/chat podem sobrescrever (★ da aba
-              Voz do painel).
+              Frase curta logo depois da sua fala enquanto a resposta não começa (&quot;Hum, deixa
+              eu ver aqui.&quot;), decidida por regras simples (sem classificador treinado). Estes
+              são os padrões GLOBAIS — persona/chat podem sobrescrever (★ do painel da chamada).
             </p>
             <p>
-              Interjeições entram nas pausas da sua fala (clipe curto tipo &quot;uhum&quot;); o
-              filler toca quando a resposta demora a começar. Em modo sombra nada toca: as decisões
-              só são registradas em <code className="font-mono">voice-eval/</code> para calibração.
+              A chamada é meia-duplex: você fala, o assistente responde — nada toca enquanto você
+              fala.
             </p>
           </>
         }
       >
         <ToggleRow
-          label="Interjeições"
-          checked={ij.enabled}
-          onChange={(v) => saveCallDefaults({ interjections: { ...ij, enabled: v } })}
-          help="Interjeições durante a sua fala (só em pausas, com cooldown; nunca sobre a fala do assistente)."
-        />
-        <ToggleRow
-          label="Fillers"
+          label="Preâmbulos"
           checked={callDefaults.fillers.enabled}
           onChange={(v) => saveCallDefaults({ fillers: { ...callDefaults.fillers, enabled: v } })}
-          help='Preâmbulo curto logo depois da sua fala ("Hum, deixa eu ver aqui.", "Beleza, só um minutinho.") escolhido pelo tipo de pedido, enquanto a resposta não começa. No máximo 1 por turno; a resposta espera ele terminar.'
-        />
-        <ToggleRow
-          label="Modo sombra"
-          checked={ij.shadow}
-          onChange={(v) => saveCallDefaults({ interjections: { ...ij, shadow: v } })}
-          help="O motor decide mas NÃO toca — as decisões ficam no log de avaliação (voice-eval) para calibração. Vale para interjeições E fillers."
+          help='Preâmbulo curto logo depois da sua fala ("Hum, deixa eu ver aqui.", "Beleza, só um minutinho.") escolhido pelo tipo de pedido, enquanto a resposta não começa. No máximo 1 por turno; a resposta espera ele terminar. Fala muito curta ("sim", "valeu") não ganha preâmbulo.'
         />
         <NumberRow
           label="Preâmbulo após"
@@ -720,97 +768,6 @@ export function AudioSettings(): React.JSX.Element | null {
           ariaLabel="Espera do preâmbulo (ms)"
           onCommit={(v) => saveCallDefaults({ fillers: { ...callDefaults.fillers, delayMs: v } })}
         />
-        <NumberRow
-          label="Cooldown entre interjeições"
-          help="Intervalo mínimo entre interjeições."
-          value={ij.cooldownMs}
-          min={0}
-          step={100}
-          unit="ms"
-          testId="voice-interjection-cooldown"
-          ariaLabel="Cooldown entre interjeições (ms)"
-          onCommit={(v) => saveCallDefaults({ interjections: { ...ij, cooldownMs: v } })}
-        />
-        <NumberRow
-          label="Probabilidade de disparo"
-          help="Probabilidade de a interjeição sair quando as regras deixam (0–1; 0 = nunca, 1 = sempre)."
-          value={ij.fireProbability}
-          min={0}
-          max={1}
-          step={0.05}
-          testId="voice-interjection-probability"
-          ariaLabel="Probabilidade de disparo (0 a 1)"
-          onCommit={(v) => saveCallDefaults({ interjections: { ...ij, fireProbability: v } })}
-        />
-        <NumberRow
-          label="Fala mínima"
-          help="Tempo com voz da sua fala (do primeiro ao último trecho falado — o silêncio do fim de turno não conta) antes de uma interjeição poder sair. Vale também para o preâmbulo: fala com menos voz que isto não ganha o “Hum, deixa eu ver…”."
-          value={ij.minSpeechMs}
-          min={0}
-          step={100}
-          unit="ms"
-          testId="voice-interjection-min-speech"
-          ariaLabel="Fala mínima para interjeição (ms)"
-          onCommit={(v) => saveCallDefaults({ interjections: { ...ij, minSpeechMs: v } })}
-        />
-        <NumberRow
-          label="Pausa mínima"
-          help="Sua pausa contínua em que a interjeição pode entrar."
-          value={ij.minPauseMs}
-          min={0}
-          step={50}
-          unit="ms"
-          testId="voice-interjection-min-pause"
-          ariaLabel="Pausa mínima para interjeição (ms)"
-          onCommit={(v) => saveCallDefaults({ interjections: { ...ij, minPauseMs: v } })}
-        />
-        <div>
-          <Label
-            help={
-              "Tipos de interjeição que podem sair (os clipes vêm de 'Gerar clipes de voz' em Fala). Nenhum marcado = todos.\nO tipo vem do fim da transcrição parcial: pergunta evita 'Pensando'; negação/incerteza não interjeita; sem confiança sai 'Confirmação'."
-            }
-          >
-            Interjeições permitidas
-          </Label>
-          <div
-            className="grid grid-cols-2 gap-x-4 gap-y-2"
-            data-testid="voice-interjection-classes"
-          >
-            {INTERJECTION_CLASSES.map((cls) => {
-              const checked = ij.classes.includes(cls)
-              return (
-                <label
-                  key={cls}
-                  title={`${cls} — ex.: ${INTERJECTION_LABELS[cls].example}`}
-                  className="flex cursor-pointer items-center gap-2 text-[13px] text-fg/90"
-                >
-                  <input
-                    type="checkbox"
-                    checked={checked}
-                    aria-label={`Interjeição: ${INTERJECTION_LABELS[cls].label}`}
-                    data-class={cls}
-                    onChange={() => {
-                      const classes = checked
-                        ? ij.classes.filter((c) => c !== cls)
-                        : [...ij.classes, cls]
-                      saveCallDefaults({
-                        interjections: {
-                          ...ij,
-                          classes: INTERJECTION_CLASSES.filter((c) =>
-                            classes.includes(c as InterjectionClass)
-                          ) as InterjectionClass[]
-                        }
-                      })
-                    }}
-                    className="size-3.5 accent-accent-strong"
-                  />
-                  {INTERJECTION_LABELS[cls].label}
-                  <span className="text-[11px] text-faint">{INTERJECTION_LABELS[cls].example}</span>
-                </label>
-              )
-            })}
-          </div>
-        </div>
         {/* `fillers.prompt` ainda não é consumido (a decisão é por regra): campo escondido até ser */}
       </AudioSection>
     </div>

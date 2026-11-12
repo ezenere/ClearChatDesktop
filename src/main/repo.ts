@@ -8,6 +8,7 @@ import { DEFAULT_CHAT_CONFIG } from '@shared/defaults'
 import { normalizeAppSignatureId } from '@shared/appSignatures'
 import { isChatProvider, providerKind } from '@shared/providerKinds'
 import { migrateConfigTools } from '@shared/toolRename'
+import { normalizeVoiceCallConfig } from '@shared/voice'
 import {
   activeLeaf,
   activePath,
@@ -662,7 +663,12 @@ const toChat = (r: ChatRow): Chat => {
       ...cfg,
       // ids antigos de assinatura (ex.: 'cleartchat') resolvem para o atual
       appSignature: normalizeAppSignatureId(cfg.appSignature),
-      params: { ...(cfg.params ?? {}) }
+      params: { ...(cfg.params ?? {}) },
+      // normalizada como na persona (`sanitizePresetConfig`): campos legados de registros antigos
+      // (`interjections` — protocolo §4.3.6) somem aqui e nunca voltam a ser gravados
+      ...(cfg.voice && typeof cfg.voice === 'object'
+        ? { voice: normalizeVoiceCallConfig(cfg.voice) }
+        : {})
     },
     mainSessionId: r.main_session_id ?? '',
     createdAt: r.created_at,

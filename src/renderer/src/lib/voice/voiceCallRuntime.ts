@@ -5,7 +5,7 @@
 import { create } from 'zustand'
 import type { GpuCallPlan } from './gpu/gpuUi'
 
-/** Clipes de interjeição/filler da voz atual (sem eles os atos de fala curta não tocam). */
+/** Clipes dos preâmbulos da voz atual (sem eles os preâmbulos não tocam). */
 export type VoiceClipsState = 'unknown' | 'missing' | 'ok' | 'generating'
 
 export interface VoiceCallRuntime {

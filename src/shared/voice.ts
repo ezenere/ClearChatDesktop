@@ -4,6 +4,8 @@
 // `undefined` nos writers); sincronizam desde o protocolo 1.5.0, menos as partes do dispositivo
 // (microfone, `installed`, modo/bloco da GPU — `src/main/sync/records.ts`, SPEC → "Áudio no
 // sync"). Ver SPEC.md → "Áudio".
+import { DEFAULT_ACTIVATION_DB, normalizeActivationDb } from './speechGate'
+import { AUDIO_TAGS_PROMPT_MAX, DEFAULT_AUDIO_TAGS_PROMPT } from './audioTags'
 import {
   normalizeToolList,
   type Chat,
@@ -46,8 +48,15 @@ export const VOICE_CALL_DEFAULTS_SETTING = 'voiceCallDefaults'
 // ---------------- ditado: entrada de áudio (settings `audioInput`) ----------------
 
 export interface AudioInputSettings {
-  /** Microfone (deviceId do sistema); null = padrão do sistema. */
+  /** Microfone (deviceId do sistema); null = padrão do sistema. Local do dispositivo (não sincroniza). */
   deviceId: string | null
+  /**
+   * Nível de ativação do microfone (dBFS de RMS; padrão `DEFAULT_ACTIVATION_DB` = −45; faixa
+   * −70…−20): abaixo dele nada é fala — o portão de ativação (`@shared/speechGate`) não manda o
+   * trecho ao STT (ditado e chamada). Depende do microfone/sala: **local do dispositivo** como o
+   * `deviceId` (nunca sai no registro do sync; o recebido não o sobrescreve).
+   */
+  activationDb: number
   /** Push-to-talk: a captura só corre enquanto a tecla (ou o botão) estiver pressionada (padrão true). */
   pttEnabled: boolean
   /** Tecla do push-to-talk (ex.: 'Ctrl+Shift+Space'); null = sem tecla (só clique/segurar no botão). */
@@ -62,6 +71,7 @@ export interface AudioInputSettings {
 
 export const DEFAULT_AUDIO_INPUT: AudioInputSettings = {
   deviceId: null,
+  activationDb: DEFAULT_ACTIVATION_DB,
   pttEnabled: true,
   pttKey: null,
   silenceStopEnabled: true,
@@ -314,51 +324,6 @@ export const DEFAULT_TTS_SETTINGS: TtsSettings = {
 
 // ---------------- chamada de voz (persona/chat — `ChatConfig.voice`) ----------------
 
-/** Classes de interjeição falada que o modo voz pode soltar na fala do usuário. */
-export type InterjectionClass = 'ACK' | 'AGREEMENT' | 'ENCOURAGEMENT' | 'THINKING'
-export const INTERJECTION_CLASSES: readonly InterjectionClass[] = [
-  'ACK',
-  'AGREEMENT',
-  'ENCOURAGEMENT',
-  'THINKING'
-]
-
-export interface InterjectionPolicy {
-  /** Liga as interjeições (padrão true). */
-  enabled: boolean
-  /** Modo sombra: o app decide mas não toca áudio (padrão false) — calibra as regras sem interromper. */
-  shadow: boolean
-  /** Intervalo mínimo entre interjeições, em ms (padrão 5000 — backchannel discreto). */
-  cooldownMs: number
-  /** Probabilidade de disparar quando as regras deixam (0–1; padrão 0.5). */
-  fireProbability: number
-  /** Fala do usuário (ms) antes de uma interjeição poder sair (padrão 700). */
-  minSpeechMs: number
-  /** Pausa do usuário (ms) em que a interjeição pode entrar (padrão 450). */
-  minPauseMs: number
-  /**
-   * Classes permitidas (padrão: só `ACK` — "Uhum."/"Aham." no meio da fala; as demais ficam
-   * opcionais). Lista vazia volta ao padrão.
-   */
-  classes: InterjectionClass[]
-  /** Volume relativo do clipe de interjeição (0–1, multiplica o volume da chamada; padrão 0.6). */
-  volume: number
-}
-
-/** Classes padrão das interjeições: só o backchannel neutro (`ACK` = "Uhum."/"Aham."). */
-export const DEFAULT_INTERJECTION_CLASSES: readonly InterjectionClass[] = ['ACK']
-
-export const DEFAULT_INTERJECTION_POLICY: InterjectionPolicy = {
-  enabled: true,
-  shadow: false,
-  cooldownMs: 5000,
-  fireProbability: 0.5,
-  minSpeechMs: 700,
-  minPauseMs: 450,
-  classes: [...DEFAULT_INTERJECTION_CLASSES],
-  volume: 0.6
-}
-
 /** Falas preenchidoras ("ãh", "só um minutinho…") enquanto o modelo pensa. */
 export interface VoiceFillers {
   /** Liga as falas preenchidoras (padrão true). */
@@ -431,18 +396,21 @@ export const DEFAULT_FILLER_DELAY_MS = 250
  * Frases de demora da chamada (`voiceCallDefaults.delayPhrases`, global): sintetizadas AO VIVO pela
  * mesma voz da chamada (sem clipes pré-gerados) quando a resposta demora. Duas situações:
  * - **manter viva** (`keepAlivePool`): depois do preâmbulo, sem áudio da resposta por
- *   `keepAliveAfterMs` de silêncio → "Só mais um instante…" (no máx. 2 por turno, 1 a cada ~6 s);
+ *   `keepAliveAfterMs` de silêncio → "Só mais um instante…" (no máx. 2 por turno, 15 s entre o fim
+ *   de uma e o início da outra);
  * - **desculpa** (`apologyPool`): a 1ª frase da resposta ficou pronta depois de `apologyAfterMs`
  *   desde o turno → "Desculpe a demora, vamos lá." antes dela (sintetizada em paralelo; só toca se
  *   ficou pronta antes da resposta — nunca atrasa a síntese da resposta).
- * Não entram no histórico (como os preâmbulos); os caracteres contam no custo da voz da chamada.
+ * Espaçamento global: ≥ 10 s entre o FIM de qualquer frase curta (preâmbulo/"manter viva"/desculpa)
+ * e o início da próxima "manter viva" ou desculpa (`DELAY_MIN_GAP_MS`; a desculpa que violaria é
+ * pulada). Não entram no histórico (como os preâmbulos); os caracteres contam no custo da voz.
  */
 export interface VoiceDelayPhrases {
   /** Liga as frases de demora (padrão true). */
   enabled: boolean
-  /** Silêncio (ms) esperando a resposta antes de uma frase "manter viva" (padrão 3000). */
+  /** Silêncio (ms) esperando a resposta antes de uma frase "manter viva" (padrão 8000). */
   keepAliveAfterMs: number
-  /** Espera (ms) desde o turno acima da qual a resposta ganha uma desculpa antes (padrão 5000). */
+  /** Espera (ms) desde o turno acima da qual a resposta ganha uma desculpa antes (padrão 15000). */
   apologyAfterMs: number
   /** Frases "manter viva"; null = `DEFAULT_KEEPALIVE_POOL`. */
   keepAlivePool: string[] | null
@@ -472,11 +440,22 @@ export const DELAY_PHRASE_MAX_CHARS = 80
 
 export const DEFAULT_DELAY_PHRASES: VoiceDelayPhrases = {
   enabled: true,
-  keepAliveAfterMs: 3000,
-  apologyAfterMs: 5000,
+  keepAliveAfterMs: 8000,
+  apologyAfterMs: 15_000,
   keepAlivePool: null,
   apologyPool: null
 }
+
+/**
+ * Padrões ANTIGOS dos tempos das frases de demora (até 2026-11-12): gravados explicitamente nas
+ * instalações existentes (`voiceCallDefaults.delayPhrases`, sincronizado). O normalizador migra o
+ * valor EXATAMENTE igual ao padrão antigo para o novo (`DEFAULT_DELAY_PHRASES`); outros valores
+ * escolhidos pelo usuário ficam como estão.
+ */
+export const LEGACY_DELAY_PHRASE_DEFAULTS = {
+  keepAliveAfterMs: 3000,
+  apologyAfterMs: 5000
+} as const
 
 /** Limites dos tempos das frases de demora (ms) — fora deles o valor é preso no limite. */
 export const DELAY_PHRASE_MS_RANGE = { min: 1000, max: 60_000 } as const
@@ -501,8 +480,9 @@ export interface VoiceCallToolsConfig {
 
 /**
  * Configuração da chamada de voz por persona/chat (`ChatConfig.voice`). Cada campo `null` herda o
- * padrão: `enabled`/`fillers`/`interjections` de `voiceCallDefaults` (global); `model`/`tools` do
- * chat. Ausente = tudo null (= segue os padrões). Ver SPEC → "Áudio → Chamada de voz".
+ * padrão: `enabled`/`fillers` de `voiceCallDefaults` (global); `model`/`tools` do chat. Ausente =
+ * tudo null (= segue os padrões). Ver SPEC → "Áudio → Chamada de voz". O campo `interjections` de
+ * registros antigos é legado (protocolo §4.3.6): o normalizador o descarta e nada o grava.
  */
 export interface VoiceCallConfig {
   /** Liga a chamada de voz; null = segue o padrão global (`voiceCallDefaults.enabled`). */
@@ -520,13 +500,19 @@ export interface VoiceCallConfig {
   promptMode?: VoiceCallPromptMode | null
   /** Falas preenchidoras; null = segue o padrão global. */
   fillers: VoiceFillers | null
-  /** Política de interjeições; null = segue o padrão global. */
-  interjections: InterjectionPolicy | null
   /**
    * "O agente pode encerrar a chamada" (tool `end_call`); null/ausente = segue o padrão global
    * (`voiceCallDefaults.endCall`, ligado). Aditivo: só gravado quando escolhido.
    */
   endCall?: boolean | null
+  /**
+   * Tags de voz ("[laughs]", "[sussurra]"…): a instrução `audioTagsPrompt` entra no prompt da
+   * chamada — só quando a voz da chamada as interpreta (`supportsAudioTags`). null/ausente = herda
+   * (persona → global `voiceCallDefaults.audioTags`, desligado). Opt-in explícito; aditivo.
+   */
+  audioTags?: boolean | null
+  /** Texto da instrução das tags; null/ausente = herda (persona → global → `DEFAULT_AUDIO_TAGS_PROMPT`). */
+  audioTagsPrompt?: string | null
 }
 
 /**
@@ -542,14 +528,13 @@ export const VOICE_CALL_PROMPT_MODES: readonly VoiceCallPromptMode[] = ['append'
 
 /**
  * Padrões GLOBAIS da chamada de voz (setting `voiceCallDefaults`). Por padrão a chamada está
- * **disponível** (ligada aqui, com interjeições e fillers): dá para desligar globalmente nestes
- * padrões ou por chat/persona em `VoiceCallConfig.enabled: false`.
+ * **disponível** (ligada aqui, com os preâmbulos): dá para desligar globalmente nestes padrões ou
+ * por chat/persona em `VoiceCallConfig.enabled: false`. O `interjections` de registros antigos é
+ * legado (protocolo §4.3.6): o normalizador o descarta e nada o grava.
  */
 export interface VoiceCallDefaults {
   /** Chamada de voz ligada por padrão (padrão true). */
   enabled: boolean
-  /** Política de interjeições padrão. */
-  interjections: InterjectionPolicy
   /** Falas preenchidoras padrão (+ pool de preâmbulos e espera — globais). */
   fillers: VoiceFillerDefaults
   /** Turnos da chamada (silêncio que encerra a fala do usuário; fim de turno adaptativo). */
@@ -571,6 +556,10 @@ export interface VoiceCallDefaults {
    * lá.") — ver `VoiceDelayPhrases`. Aditivo (ausente no registro = os padrões).
    */
   delayPhrases: VoiceDelayPhrases
+  /** Tags de voz na chamada (padrão false — opt-in). Aditivo (ausente = false). */
+  audioTags: boolean
+  /** Instrução das tags; null = `DEFAULT_AUDIO_TAGS_PROMPT`. Aditivo. */
+  audioTagsPrompt: string | null
 }
 
 /**
@@ -604,7 +593,46 @@ export interface VoiceCallTurnConfig {
   unfinishedSilenceMs: number
   /** Permite a transcrição especulativa pela API no modo 'api' (custa 1 request por pausa; padrão false). */
   speculativeApi: boolean
+  /**
+   * Barge-in com histerese ("ducking" — aditivo; ausente = os padrões): a fala do usuário por cima
+   * da resposta primeiro ABAIXA o áudio do assistente para `duckGain` (0–1; padrão 0.3) e ele
+   * continua tocando; só vira barge-in (para a resposta) com `bargeInVoicedMs` de voz no episódio
+   * (padrão 700) ou `bargeInWords` palavras reais na transcrição parcial (padrão 3; "uhum"/"sim"
+   * não contam) — ou uma palavra de parada ("para", "espera"…). Parou antes disso: depois de
+   * `duckRestoreMs` de silêncio (padrão 450) o volume volta e o som curto é descartado.
+   */
+  duckGain?: number
+  bargeInVoicedMs?: number
+  bargeInWords?: number
+  duckRestoreMs?: number
 }
+
+/** Limiares do barge-in com histerese (resolvidos de `VoiceCallTurnConfig` — `resolveBargeIn`). */
+export interface BargeInConfig {
+  /** Ganho do áudio do assistente enquanto o usuário fala por cima (0–1). */
+  duckGain: number
+  /** Voz do usuário (ms de quadros com voz no episódio) que confirma o barge-in. */
+  voicedMs: number
+  /** Palavras reais (fora backchannel) na transcrição parcial que confirmam o barge-in. */
+  words: number
+  /** Silêncio (ms) que devolve o volume e descarta o som curto. */
+  restoreMs: number
+}
+
+export const DEFAULT_BARGE_IN: BargeInConfig = {
+  duckGain: 0.3,
+  voicedMs: 700,
+  words: 3,
+  restoreMs: 450
+}
+
+/** Faixas aceitas dos limiares do barge-in (fora delas o valor é preso no limite). */
+export const BARGE_IN_RANGES = {
+  duckGain: { min: 0, max: 1 },
+  voicedMs: { min: 200, max: 5000 },
+  words: { min: 1, max: 10 },
+  restoreMs: { min: 150, max: 3000 }
+} as const
 
 /** Silêncio de turno padrão da chamada sem transcrição especulativa (ms). */
 export const DEFAULT_TURN_SILENCE_MS = 1000
@@ -616,7 +644,11 @@ export const DEFAULT_VOICE_CALL_TURN: VoiceCallTurnConfig = {
   completeSilenceMs: 600,
   statementSilenceMs: 1200,
   unfinishedSilenceMs: 1500,
-  speculativeApi: false
+  speculativeApi: false,
+  duckGain: DEFAULT_BARGE_IN.duckGain,
+  bargeInVoicedMs: DEFAULT_BARGE_IN.voicedMs,
+  bargeInWords: DEFAULT_BARGE_IN.words,
+  duckRestoreMs: DEFAULT_BARGE_IN.restoreMs
 }
 
 /**
@@ -635,14 +667,15 @@ export const DEFAULT_VOICE_BASE_PROMPT = [
 
 export const DEFAULT_VOICE_CALL_DEFAULTS: VoiceCallDefaults = {
   enabled: true,
-  interjections: { ...DEFAULT_INTERJECTION_POLICY, classes: [...DEFAULT_INTERJECTION_CLASSES] },
   fillers: { enabled: true, prompt: null, delayMs: DEFAULT_FILLER_DELAY_MS, pool: null },
   turn: { ...DEFAULT_VOICE_CALL_TURN },
   model: null,
   basePromptEnabled: true,
   basePrompt: null,
   endCall: true,
-  delayPhrases: { ...DEFAULT_DELAY_PHRASES }
+  delayPhrases: { ...DEFAULT_DELAY_PHRASES },
+  audioTags: false,
+  audioTagsPrompt: null
 }
 
 /** Config "vazia": tudo null = herda os padrões globais (`voiceCallDefaults`) e o próprio chat. */
@@ -651,8 +684,7 @@ export const DEFAULT_VOICE_CALL_CONFIG: VoiceCallConfig = {
   model: null,
   tools: null,
   voicePrompt: null,
-  fillers: null,
-  interjections: null
+  fillers: null
 }
 
 // ---------------- normalizadores ----------------
@@ -686,10 +718,11 @@ const intOrNull = (v: unknown): number | null => {
 const promptOrNull = (v: unknown): string | null =>
   typeof v === 'string' && v.trim() ? v.replace(/\r/g, '') : null
 
-/** Probabilidade em [0, 1] (0 válido); inválida → o padrão. */
-const probabilityOr = (v: unknown, def: number): number => {
-  const n = typeof v === 'number' && Number.isFinite(v) ? v : NaN
-  return Number.isNaN(n) ? def : Math.min(1, Math.max(0, n))
+/** Instrução das tags de voz: aparada, sem CR, até `AUDIO_TAGS_PROMPT_MAX`; vazio/lixo → null. */
+export function normalizeAudioTagsPrompt(v: unknown): string | null {
+  if (typeof v !== 'string') return null
+  const t = v.replace(/\r/g, '').trim().slice(0, AUDIO_TAGS_PROMPT_MAX).trim()
+  return t || null
 }
 
 /** Params como em `presets.ts` (`cleanParams`): só valores definidos (≠ null/NaN); chaves desconhecidas preservadas. */
@@ -711,6 +744,7 @@ export function normalizeAudioInput(v: unknown): AudioInputSettings {
   if (!src) return { ...DEFAULT_AUDIO_INPUT }
   return {
     deviceId: strOrNull(src.deviceId),
+    activationDb: normalizeActivationDb(src.activationDb),
     pttEnabled: boolOr(src.pttEnabled, DEFAULT_AUDIO_INPUT.pttEnabled),
     pttKey: strOrNull(src.pttKey),
     silenceStopEnabled: boolOr(src.silenceStopEnabled, DEFAULT_AUDIO_INPUT.silenceStopEnabled),
@@ -827,27 +861,6 @@ export function normalizeTtsSettings(v: unknown): TtsSettings {
   }
 }
 
-/** Política completa de interjeições (ausente/inválido → `DEFAULT_INTERJECTION_POLICY`). */
-export function normalizeInterjectionPolicy(v: unknown): InterjectionPolicy {
-  const src = asObject(v)
-  const d = DEFAULT_INTERJECTION_POLICY
-  if (!src) return { ...d, classes: [...d.classes] }
-  const classes = Array.isArray(src.classes)
-    ? INTERJECTION_CLASSES.filter((c) => (src.classes as unknown[]).includes(c))
-    : [...d.classes]
-  return {
-    enabled: boolOr(src.enabled, d.enabled),
-    shadow: boolOr(src.shadow, d.shadow),
-    cooldownMs: intOr(src.cooldownMs, d.cooldownMs),
-    fireProbability: probabilityOr(src.fireProbability, d.fireProbability),
-    minSpeechMs: intOr(src.minSpeechMs, d.minSpeechMs),
-    minPauseMs: intOr(src.minPauseMs, d.minPauseMs),
-    // lista vazia (ou só classes desconhecidas) volta ao padrão (só ACK)
-    classes: classes.length ? classes : [...d.classes],
-    volume: probabilityOr(src.volume, d.volume)
-  }
-}
-
 /** Pool de preâmbulos normalizado: frases válidas (texto aparado ≤ 80 chars), no máximo `FILLER_POOL_MAX`; vazio/lixo → null. */
 export function normalizeFillerPool(v: unknown): FillerPhrase[] | null {
   if (!Array.isArray(v)) return null
@@ -889,7 +902,40 @@ export function normalizeVoiceCallTurn(v: unknown): VoiceCallTurnConfig {
     completeSilenceMs: pos(t?.completeSilenceMs, d.completeSilenceMs),
     statementSilenceMs: pos(t?.statementSilenceMs, d.statementSilenceMs),
     unfinishedSilenceMs: pos(t?.unfinishedSilenceMs, d.unfinishedSilenceMs),
-    speculativeApi: boolOr(t?.speculativeApi, d.speculativeApi)
+    speculativeApi: boolOr(t?.speculativeApi, d.speculativeApi),
+    // barge-in com histerese (aditivo): lixo → padrão; fora da faixa → preso no limite
+    ...(() => {
+      const b = resolveBargeIn(t)
+      return {
+        duckGain: b.duckGain,
+        bargeInVoicedMs: b.voicedMs,
+        bargeInWords: b.words,
+        duckRestoreMs: b.restoreMs
+      }
+    })()
+  }
+}
+
+/** Limiares do barge-in com histerese a partir do `turn` (ausente/lixo → `DEFAULT_BARGE_IN`). */
+export function resolveBargeIn(turn: unknown): BargeInConfig {
+  const t = asObject(turn)
+  const d = DEFAULT_BARGE_IN
+  const r = BARGE_IN_RANGES
+  const num = (
+    v: unknown,
+    def: number,
+    range: { min: number; max: number },
+    int: boolean
+  ): number => {
+    if (typeof v !== 'number' || !Number.isFinite(v)) return def
+    const n = int ? Math.round(v) : Math.round(v * 100) / 100
+    return Math.min(range.max, Math.max(range.min, n))
+  }
+  return {
+    duckGain: num(t?.duckGain, d.duckGain, r.duckGain, false),
+    voicedMs: num(t?.bargeInVoicedMs, d.voicedMs, r.voicedMs, true),
+    words: num(t?.bargeInWords, d.words, r.words, true),
+    restoreMs: num(t?.duckRestoreMs, d.restoreMs, r.restoreMs, true)
   }
 }
 
@@ -915,9 +961,10 @@ const promptModeOrNull = (v: unknown): VoiceCallPromptMode | null =>
 export function normalizeVoiceCallConfig(v: unknown): VoiceCallConfig {
   const src = asObject(v)
   if (!src) return { ...DEFAULT_VOICE_CALL_CONFIG }
+  // só os campos conhecidos são copiados: o `interjections` de registros antigos (legado —
+  // protocolo §4.3.6) some aqui e nunca volta a ser gravado nem enviado
   const tools = asObject(src.tools)
   const fillers = asObject(src.fillers)
-  const interjections = asObject(src.interjections)
   const promptMode = promptModeOrNull(src.promptMode)
   return {
     enabled: typeof src.enabled === 'boolean' ? src.enabled : null,
@@ -938,9 +985,14 @@ export function normalizeVoiceCallConfig(v: unknown): VoiceCallConfig {
           prompt: promptOrNull(fillers.prompt)
         }
       : null,
-    interjections: interjections ? normalizeInterjectionPolicy(interjections) : null,
     // aditivo: só gravado quando escolhido (ausente = herda o global)
-    ...(typeof src.endCall === 'boolean' ? { endCall: src.endCall } : {})
+    ...(typeof src.endCall === 'boolean' ? { endCall: src.endCall } : {}),
+    // tags de voz (aditivo; opt-in): só gravados quando escolhidos — lixo some
+    ...(typeof src.audioTags === 'boolean' ? { audioTags: src.audioTags } : {}),
+    ...(() => {
+      const p = normalizeAudioTagsPrompt(src.audioTagsPrompt)
+      return p ? { audioTagsPrompt: p } : {}
+    })()
   }
 }
 
@@ -951,7 +1003,7 @@ export function normalizeVoiceCallDefaults(v: unknown): VoiceCallDefaults {
   const d = DEFAULT_VOICE_CALL_DEFAULTS
   return {
     enabled: boolOr(src?.enabled, d.enabled),
-    interjections: normalizeInterjectionPolicy(src?.interjections),
+    // `interjections` (legado — protocolo §4.3.6) é descartado: nunca regravado nem enviado
     fillers: {
       enabled: boolOr(fillers?.enabled, d.fillers.enabled),
       prompt: promptOrNull(fillers?.prompt),
@@ -966,7 +1018,9 @@ export function normalizeVoiceCallDefaults(v: unknown): VoiceCallDefaults {
     basePromptEnabled: boolOr(src?.basePromptEnabled, d.basePromptEnabled),
     basePrompt: promptOrNull(src?.basePrompt),
     endCall: boolOr(src?.endCall, d.endCall),
-    delayPhrases: normalizeDelayPhrases(src?.delayPhrases)
+    delayPhrases: normalizeDelayPhrases(src?.delayPhrases),
+    audioTags: boolOr(src?.audioTags, d.audioTags),
+    audioTagsPrompt: normalizeAudioTagsPrompt(src?.audioTagsPrompt)
   }
 }
 
@@ -986,19 +1040,23 @@ export function normalizeDelayPhrasePool(v: unknown): string[] | null {
   return out.length ? out : null
 }
 
-/** Frases de demora completas (ausente/lixo → `DEFAULT_DELAY_PHRASES`; tempos presos em 1–60 s). */
+/**
+ * Frases de demora completas (ausente/lixo → `DEFAULT_DELAY_PHRASES`; tempos presos em 1–60 s; o
+ * valor igual ao padrão antigo — `LEGACY_DELAY_PHRASE_DEFAULTS` — vira o padrão novo).
+ */
 export function normalizeDelayPhrases(v: unknown): VoiceDelayPhrases {
   const src = asObject(v)
   const d = DEFAULT_DELAY_PHRASES
-  const ms = (x: unknown, def: number): number => {
+  const ms = (x: unknown, def: number, legacy: number): number => {
     const n = typeof x === 'number' && Number.isFinite(x) ? Math.round(x) : NaN
-    if (Number.isNaN(n) || n <= 0) return def
+    if (Number.isNaN(n) || n <= 0 || n === legacy) return def
     return Math.min(DELAY_PHRASE_MS_RANGE.max, Math.max(DELAY_PHRASE_MS_RANGE.min, n))
   }
+  const legacy = LEGACY_DELAY_PHRASE_DEFAULTS
   return {
     enabled: boolOr(src?.enabled, d.enabled),
-    keepAliveAfterMs: ms(src?.keepAliveAfterMs, d.keepAliveAfterMs),
-    apologyAfterMs: ms(src?.apologyAfterMs, d.apologyAfterMs),
+    keepAliveAfterMs: ms(src?.keepAliveAfterMs, d.keepAliveAfterMs, legacy.keepAliveAfterMs),
+    apologyAfterMs: ms(src?.apologyAfterMs, d.apologyAfterMs, legacy.apologyAfterMs),
     keepAlivePool: normalizeDelayPhrasePool(src?.keepAlivePool),
     apologyPool: normalizeDelayPhrasePool(src?.apologyPool)
   }
@@ -1053,6 +1111,8 @@ export interface TurnTiming {
    * turno fecha no silêncio fixo e a final reaproveita a especulação em voo.
    */
   pendingMs?: number
+  /** Barge-in com histerese (ducking) — ausente = `DEFAULT_BARGE_IN`. */
+  bargeIn?: BargeInConfig
 }
 
 export function resolveTurnTiming(turn: VoiceCallTurnConfig | null | undefined): TurnTiming {
@@ -1067,7 +1127,8 @@ export function resolveTurnTiming(turn: VoiceCallTurnConfig | null | undefined):
     completeMs,
     statementMs,
     unfinishedMs,
-    fallbackMs
+    fallbackMs,
+    bargeIn: resolveBargeIn(t)
   }
 }
 
@@ -1088,6 +1149,8 @@ export function layerVoiceCallConfig(
   const p = normalizeVoiceCallConfig(persona)
   const mode = c.promptMode ?? p.promptMode ?? null
   const endCall = c.endCall ?? p.endCall ?? null
+  const audioTags = c.audioTags ?? p.audioTags ?? null
+  const audioTagsPrompt = c.audioTagsPrompt ?? p.audioTagsPrompt ?? null
   return {
     enabled: c.enabled ?? p.enabled,
     model: c.model ?? p.model,
@@ -1095,8 +1158,9 @@ export function layerVoiceCallConfig(
     voicePrompt: c.voicePrompt ?? p.voicePrompt,
     ...(mode ? { promptMode: mode } : {}),
     fillers: c.fillers ?? p.fillers,
-    interjections: c.interjections ?? p.interjections,
-    ...(endCall !== null ? { endCall } : {})
+    ...(endCall !== null ? { endCall } : {}),
+    ...(audioTags !== null ? { audioTags } : {}),
+    ...(audioTagsPrompt !== null ? { audioTagsPrompt } : {})
   }
 }
 
@@ -1137,12 +1201,19 @@ export interface ResolvedVoiceCall {
   promptMode: VoiceCallPromptMode
   /** Falas preenchidoras efetivas (consumidas pela chamada — ver SPEC → "Fillers"). */
   fillers: VoiceFillers
-  /** Interjeições efetivas (consumidas pela chamada — ver SPEC → "Interjeições (regras)"). */
-  interjections: InterjectionPolicy
   /** Prompt-base do modo voz (global); null = desligado. */
   basePrompt: string | null
   /** O agente pode encerrar a chamada (tool `end_call`) — chat > persona > global (padrão true). */
   endCall: boolean
+  /** Tags de voz pedidas (chat > persona > global; padrão false) — ver `audioTagsActive`. */
+  audioTags: boolean
+  /** Instrução efetiva das tags (chat > persona > global > `DEFAULT_AUDIO_TAGS_PROMPT`). */
+  audioTagsPrompt: string
+  /**
+   * A voz da chamada em andamento interpreta tags (`ttsSupportsAudioTags` — só no contexto do turno,
+   * `VoiceCallManager.callContextFor`): com `audioTags` ligado, a instrução entra no prompt.
+   */
+  audioTagsActive?: boolean
   /**
    * Id da chamada em andamento (só no contexto do turno — `VoiceCallManager.callContextFor`): vai
    * em `meta.voice.callId` das mensagens faladas. Ausente fora da chamada/na resolução da UI.
@@ -1170,28 +1241,33 @@ export function resolveVoiceCallConfig(
     voicePrompt: c.voicePrompt,
     promptMode: c.promptMode ?? 'append',
     fillers: c.fillers ?? { enabled: d.fillers.enabled, prompt: d.fillers.prompt },
-    interjections: c.interjections ?? d.interjections,
     basePrompt: d.basePromptEnabled ? (d.basePrompt ?? DEFAULT_VOICE_BASE_PROMPT) : null,
-    endCall: c.endCall ?? d.endCall
+    endCall: c.endCall ?? d.endCall,
+    audioTags: c.audioTags ?? d.audioTags,
+    audioTagsPrompt: c.audioTagsPrompt ?? d.audioTagsPrompt ?? DEFAULT_AUDIO_TAGS_PROMPT
   }
 }
 
 /**
  * System prompt dos turnos de voz pelo modo (ver `VoiceCallPromptMode`): `append` = system +
  * prompt-base + prompt do modo voz; `replace` = prompt-base + prompt do modo voz no lugar do system
- * (sem prompt do modo voz → como `append`); `none` = só o system. Separados por linha em branco.
+ * (sem prompt do modo voz → como `append`); `none` = só o system. Separados por linha em branco. A
+ * instrução das tags de voz entra no FIM (em qualquer modo — é um opt-in explícito) só com as tags
+ * pedidas (`audioTags`) E a voz da chamada as interpretando (`audioTagsActive`).
  */
 export function voiceSystemPrompt(
   systemPrompt: string,
-  call: Pick<ResolvedVoiceCall, 'basePrompt' | 'voicePrompt' | 'promptMode'>
+  call: Pick<ResolvedVoiceCall, 'basePrompt' | 'voicePrompt' | 'promptMode'> &
+    Partial<Pick<ResolvedVoiceCall, 'audioTags' | 'audioTagsPrompt' | 'audioTagsActive'>>
 ): string {
   const join = (parts: (string | null | undefined)[]): string =>
     parts.filter((x): x is string => !!x?.trim()).join('\n\n')
+  const tags = call.audioTags && call.audioTagsActive ? (call.audioTagsPrompt ?? null) : null
   const mode = call.promptMode ?? 'append'
-  if (mode === 'none') return systemPrompt
+  if (mode === 'none') return tags ? join([systemPrompt, tags]) : systemPrompt
   if (mode === 'replace' && call.voicePrompt?.trim())
-    return join([call.basePrompt, call.voicePrompt])
-  return join([systemPrompt, call.basePrompt, call.voicePrompt])
+    return join([call.basePrompt, call.voicePrompt, tags])
+  return join([systemPrompt, call.basePrompt, call.voicePrompt, tags])
 }
 
 /**

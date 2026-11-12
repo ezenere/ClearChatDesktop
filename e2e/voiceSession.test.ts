@@ -39,6 +39,12 @@ const sttSettings = (over: Partial<SttSettings> = {}): SttSettings => ({
 })
 
 const bytes = (n: number, fill = 1): Uint8Array => new Uint8Array(n).fill(fill)
+/**
+ * Fala "de verdade" para o portão de ativação (`@shared/speechGate`): 500 ms de PCM com amostras
+ * 0x0101 (≈ −42 dBFS, acima do nível de ativação padrão −45) — trechos com menos de 280 ms de voz
+ * nem chamam o STT.
+ */
+const VOICED = 16_000
 
 interface FetchSpy {
   calls: { url: string; init: RequestInit }[]
@@ -387,7 +393,7 @@ test('stop: hybrid com motor local injetado cai no local em falha de disponibili
     { settings: sttSettings({ mode: 'hybrid' }) },
     { now: clock().now, local: local.backend }
   )
-  s.push(bytes(4_000), VOICE_SAMPLE_RATE)
+  s.push(bytes(VOICED), VOICE_SAMPLE_RATE)
   const r = await s.stop()
   assert.deepEqual(
     { text: r.text, backend: r.backend, fellBack: r.fellBack },
@@ -397,7 +403,7 @@ test('stop: hybrid com motor local injetado cai no local em falha de disponibili
   assert.equal(m.calls.length, 1, 'a API foi tentada primeiro')
   assert.equal(local.calls.length, 1)
   assert.ok(
-    sameBytes(wavPcm(local.calls[0]), bytes(4_000)),
+    sameBytes(wavPcm(local.calls[0]), bytes(VOICED)),
     'o local recebeu o buffer inteiro (wav)'
   )
 })
@@ -412,7 +418,7 @@ test('stop: modo "local" com motor pronto transcreve local (a API nunca é chama
     { settings: sttSettings({ mode: 'local' }) },
     { now: clock().now, local: local.backend }
   )
-  s.push(bytes(4_000), VOICE_SAMPLE_RATE)
+  s.push(bytes(VOICED), VOICE_SAMPLE_RATE)
   const r = await s.stop()
   assert.deepEqual(
     { text: r.text, backend: r.backend, fellBack: r.fellBack },
@@ -421,7 +427,7 @@ test('stop: modo "local" com motor pronto transcreve local (a API nunca é chama
   assert.equal(m.calls.length, 0, 'modo local nunca vaza áudio para a API')
 
   const s2 = startTranscribeSession({ settings: sttSettings({ mode: 'local' }) })
-  s2.push(bytes(4_000), VOICE_SAMPLE_RATE)
+  s2.push(bytes(VOICED), VOICE_SAMPLE_RATE)
   await assert.rejects(() => s2.stop(), /motor local de transcrição não está pronto/)
 })
 
@@ -463,7 +469,7 @@ test('autocura: a final em voo da anterior termina mesmo com uma nova sessão ab
   const m = mockFetch(delayedFetch(20, 'final antiga'))
   t.after(m.restore)
   const s1 = startTranscribeSession({ settings: sttSettings() })
-  s1.push(bytes(4_000), VOICE_SAMPLE_RATE)
+  s1.push(bytes(VOICED), VOICE_SAMPLE_RATE)
   const p = s1.stop()
   assert.equal(activeTranscribeSession(), null, 'o stop libera a vaga de captura na hora')
   assert.equal(findTranscribeSession(s1.id)?.id, s1.id, 'a que está transcrevendo segue viva')

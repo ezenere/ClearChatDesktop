@@ -1055,7 +1055,9 @@ export class ElevenLabsCallTts implements TtsTextFeed {
         model,
         backend: 'api',
         t0: item.cutAt,
-        chunks: turn.seg.stream(item.index, signal)
+        chunks: turn.seg.stream(item.index, signal),
+        // alinhamento por letra desta sentença: o "ouvido" exato do barge-in em palavras
+        unitStartsMs: () => turn.seg.unitStartsMs(item.index)
       }
     }
     const ctx = this.#newContext(sock)

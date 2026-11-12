@@ -33,7 +33,7 @@ import {
 
 // ---------------- resolução do VoiceCallConfig (herança persona→chat→global) ----------------
 
-test('resolveVoiceCallConfig: null/ausente herda tudo (enabled/fillers/interjections do global; model/tools do chat)', () => {
+test('resolveVoiceCallConfig: null/ausente herda tudo (enabled/fillers do global; model/tools do chat)', () => {
   const r = resolveVoiceCallConfig(null, DEFAULT_VOICE_CALL_DEFAULTS)
   assert.equal(r.enabled, true)
   assert.equal(r.model, null, 'model null = herda o modelo do chat')
@@ -45,7 +45,7 @@ test('resolveVoiceCallConfig: null/ausente herda tudo (enabled/fillers/interject
   })
   assert.equal(r.basePrompt, DEFAULT_VOICE_BASE_PROMPT)
   assert.equal(r.promptMode, 'append', 'prompt do modo voz complementar por padrão')
-  assert.deepEqual(r.interjections, DEFAULT_VOICE_CALL_DEFAULTS.interjections)
+  assert.ok(!('interjections' in r), 'sem interjeições (legado)')
 })
 
 test('resolveVoiceCallConfig: enabled null herda o global; false explícito vence (null ≠ false)', () => {
@@ -59,11 +59,10 @@ test('resolveVoiceCallConfig: enabled null herda o global; false explícito venc
   )
 })
 
-test('resolveVoiceCallConfig: fillers/interjections presentes são override (parciais completam com os padrões); null herda o global', () => {
+test('resolveVoiceCallConfig: fillers presentes são override (parciais completam com os padrões); null herda o global', () => {
   const custom = {
     ...DEFAULT_VOICE_CALL_DEFAULTS,
-    fillers: { enabled: false, prompt: 'fale curto' },
-    interjections: { ...DEFAULT_VOICE_CALL_DEFAULTS.interjections, cooldownMs: 9999 }
+    fillers: { ...DEFAULT_VOICE_CALL_DEFAULTS.fillers, enabled: false, prompt: 'fale curto' }
   }
   const r = resolveVoiceCallConfig(
     { ...emptyConfig(), fillers: { enabled: true, prompt: null } },
@@ -72,13 +71,9 @@ test('resolveVoiceCallConfig: fillers/interjections presentes são override (par
   assert.deepEqual(r.fillers, { enabled: true, prompt: null }, 'override vence o global')
   const r2 = resolveVoiceCallConfig(emptyConfig(), custom)
   assert.equal(r2.fillers.prompt, 'fale curto')
-  assert.equal(r2.interjections.cooldownMs, 9999)
-  const r3 = resolveVoiceCallConfig(
-    asConfig({ ...emptyConfig(), interjections: { cooldownMs: 100 } }),
-    custom
-  )
-  assert.equal(r3.interjections.cooldownMs, 100, 'parcial completado')
-  assert.equal(r3.interjections.enabled, true, 'campos ausentes completam com o padrão')
+  assert.equal(r2.fillers.enabled, false)
+  const r3 = resolveVoiceCallConfig(asConfig({ ...emptyConfig(), fillers: {} }), custom)
+  assert.equal(r3.fillers.enabled, true, 'parcial: enabled ausente completa com o padrão (ligado)')
 })
 
 test('resolveVoiceCallConfig: model/tools passam pelo normalizador (model sem providerId+model → null)', () => {
@@ -596,8 +591,7 @@ function emptyConfig(): VoiceCallConfig {
     model: null,
     tools: null,
     voicePrompt: null,
-    fillers: null,
-    interjections: null
+    fillers: null
   }
 }
 

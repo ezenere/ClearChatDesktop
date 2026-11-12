@@ -8,7 +8,7 @@
 // suas). Modelo remoto: "Parâmetros" (ElevenLabs: formato de saída, voice_settings, normalização,
 // frases completas; OpenRouter/OpenAI: velocidade, instruções). "Testar voz", "Gerar clipes de voz"
 // e a contagem dos clipes. Endereço e chave ficam só no provedor cadastrado.
-import { Play, Settings2, Square } from 'lucide-react'
+import { Play, Square } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { TtsVoicesView, VoiceModelInfo, VoiceRuntimeStatus } from '@shared/ipc'
 import type { ModelRef } from '@shared/models'
@@ -16,7 +16,10 @@ import { ttsCallTransport, type TtsSettings } from '@shared/voice'
 import {
   CALL_TTS_RECOMMENDED,
   describeVoice,
+  fishVoiceIdFrom,
+  isFishAudioModel,
   orderVoicesForPt,
+  supportsAudioTags,
   voiceProviderSupport,
   VOICE_PREVIEW_PHRASE,
   type VoiceCatalogVoice,
@@ -51,9 +54,6 @@ import { GpuTtsPanel } from './gpu/GpuBackendPanels'
 
 /** Mensagem do IPC sem o prefixo da classe (`TtsError: …`) — o texto do main já é legível. */
 const ipcError = (e: unknown): string => errorMessage(e).replace(/^[A-Z]\w*Error: /, '')
-
-/** Atalho "Usar OpenRouter (ElevenLabs Flash)" (com um OpenRouter cadastrado em Provedores). */
-const OPENROUTER_PRESET = { model: 'elevenlabs/eleven-flash-v2.5', voice: 'sarah' } as const
 
 type Clips = {
   busy: boolean
@@ -235,22 +235,6 @@ export function TtsSettingsSection({
       }
     : undefined
 
-  const openRouter = providers.find((p) => voiceProviderSupport(p) === 'openrouter') ?? null
-  const presetActive = isApi && family === 'openrouter' && tts.api.model === OPENROUTER_PRESET.model
-  const applyPreset = (): void => {
-    if (!openRouter) return setSettingsOpen(true, 'providers')
-    void commit({
-      ...tts,
-      backend: 'api',
-      api: {
-        ...tts.api,
-        providerId: openRouter.id,
-        model: OPENROUTER_PRESET.model,
-        voice: OPENROUTER_PRESET.voice
-      }
-    })
-  }
-
   const play = (
     audio: Uint8Array,
     mime: string,
@@ -333,7 +317,7 @@ export function TtsSettingsSection({
       })
   }
 
-  /** "Gerar clipes de voz": pré-gera as falas curtas (interjeições/fillers) da voz atual. */
+  /** "Gerar clipes de voz": pré-gera os preâmbulos da chamada com a voz atual. */
   const runClips = (): void => {
     setClips((c) => ({ ...c, busy: true, done: 0, total: 0, error: null }))
     void voiceApi.tts.clips
@@ -408,37 +392,19 @@ export function TtsSettingsSection({
           recommended={isApi ? recommended : undefined}
           localGroups={localGroups}
         />
+        {isApi && provider && tts.api.model && (
+          <p data-testid="tts-audio-tags-note" className="mt-1 text-[11.5px] text-subtle">
+            {supportsAudioTags(family, tts.api.model)
+              ? 'Este modelo interpreta tags de voz ([risos], [sussurra]…) — ative em Chamada de voz → Tags de voz.'
+              : 'Tags de voz como [risos] funcionam com ElevenLabs v3/v4 e Fish Audio Drama 3/S2 — com este modelo elas são tiradas da fala.'}
+          </p>
+        )}
       </div>
 
       {missing && (
         <WarnNote testId="tts-provider-missing">
           O provedor do modelo escolhido não existe mais — escolha outro modelo acima.
         </WarnNote>
-      )}
-
-      {!presetActive && (
-        <div className="flex flex-wrap items-center gap-2" data-testid="tts-preset">
-          <Button
-            size="sm"
-            variant="secondary"
-            data-testid="tts-preset-openrouter"
-            icon={openRouter ? undefined : <Settings2 className="size-3.5" />}
-            onClick={applyPreset}
-          >
-            {openRouter ? 'Usar OpenRouter (ElevenLabs Flash)' : 'Cadastrar o OpenRouter'}
-          </Button>
-          <span className="text-[11.5px] text-subtle">
-            {openRouter
-              ? `fala rápida pela API, com o provedor “${openRouter.name}”`
-              : 'em Provedores, para a fala rápida pela API (ElevenLabs Flash)'}
-          </span>
-          <HelpTip label="Fala rápida pela API">
-            Combinação recomendada para a chamada de voz: fala pelo OpenRouter com o ElevenLabs
-            Flash v2.5 (~0,5 s até o 1º áudio; o áudio chega em streaming) e transcrição com o motor
-            local como reserva. O texto falado vai ao OpenRouter (cobrança por caractere). O Kokoro
-            local continua disponível offline.
-          </HelpTip>
-        </div>
       )}
 
       {isApi && provider && (
@@ -450,13 +416,28 @@ export function TtsSettingsSection({
             <VoicePicker
               groups={groupCatalogVoices(voices)}
               value={tts.api.voice}
-              onChange={(voice) => saveApi({ voice })}
+              // Fish Audio: o link colado da biblioteca (fish.audio/m/<id>) vira o id da voz
+              onChange={(voice) =>
+                saveApi({
+                  voice:
+                    voice && isFishAudioModel(tts.api.model)
+                      ? (fishVoiceIdFrom(voice) ?? voice)
+                      : voice
+                })
+              }
               onPreview={runPreview}
               previewing={preview}
               defaultLabel={
                 family === 'openai' || noVoiceList ? 'Voz padrão da API (sem voice)' : undefined
               }
             />
+            {noVoiceList && (
+              <p data-testid="tts-voice-hint" className="mt-1 text-[11.5px] text-subtle">
+                {isFishAudioModel(tts.api.model)
+                  ? 'Este modelo não lista vozes: cole o id (ou o link) de uma voz do Fish Audio, ou use a voz padrão.'
+                  : 'Este modelo não lista vozes: digite o id de uma voz que o provedor aceite, ou use a voz padrão.'}
+              </p>
+            )}
           </div>
           <CallTransport tts={tts} family={family} onCommit={commit} />
           <ApiParamsEditor
@@ -589,10 +570,10 @@ export function TtsSettingsSection({
           {clips.stale || clips.count ? 'Gerar clipes de novo' : 'Gerar clipes de voz'}
         </Button>
         <HelpTip label="Clipes de voz">
-          Os clipes (interjeições e falas de espera da chamada de voz) são gerados com a voz e o
-          provedor atuais (provedor de API, Kokoro ou o motor da GPU) e ficam em cache em{' '}
-          <C>userData/voice-clips</C>, um cache por voz. Ao trocar a voz ou as frases, gere de novo
-          — sem clipes, interjeições e falas de espera não tocam.
+          Os clipes (os preâmbulos da chamada de voz — &quot;Hum, deixa eu ver aqui.&quot;) são
+          gerados com a voz e o provedor atuais (provedor de API, Kokoro ou o motor da GPU) e ficam
+          em cache em <C>userData/voice-clips</C>, um cache por voz. Ao trocar a voz ou as frases,
+          gere de novo — sem clipes, os preâmbulos não tocam.
         </HelpTip>
         {clips.busy && (
           <span className="text-[11.5px] text-subtle tabular-nums" data-testid="tts-clips-progress">

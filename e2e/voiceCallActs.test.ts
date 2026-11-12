@@ -1,35 +1,35 @@
-// Atos de fala curta da chamada de voz — fillers pós-turno, interjeições/backchannel e modo
-// sombra: política pura (`@shared/voicePolicy`) + `VoiceCallManager` sobre um turno MOCKADO
-// (sendTurn fake + eventos do runner injetados; síntese/clipes falsos, relógio e PRNG injetáveis).
+// Atos de fala curta da chamada de voz — preâmbulos (fillers) pós-turno e o backchannel × barge-in
+// do usuário durante a reprodução (a chamada é meia-duplex: nada toca durante a fala do usuário):
+// política pura (`@shared/voicePolicy`) + `VoiceCallManager` sobre um turno MOCKADO (sendTurn fake
+// + eventos do runner injetados; síntese/clipes falsos, relógio e PRNG injetáveis).
 // Rodar: node --import ./e2e/ts-hooks.mjs --test e2e/voiceCallActs.test.ts
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { AgentEvent, ChatConfig } from '@shared/types'
 import type { VoiceCallTimelineEvent } from '@shared/ipc'
 import {
+  BARGE_IN_RANGES,
   DEFAULT_AUDIO_INPUT,
-  DEFAULT_INTERJECTION_POLICY,
+  DEFAULT_BARGE_IN,
   DEFAULT_STT_SETTINGS,
   DEFAULT_TTS_SETTINGS,
   DEFAULT_FILLER_POOL,
   DEFAULT_VOICE_CALL_DEFAULTS,
-  type InterjectionPolicy
+  normalizeVoiceCallTurn,
+  resolveBargeIn,
+  resolveTurnTiming
 } from '@shared/voice'
 import {
-  BACKCHANNEL_MAX_MS,
+  DUCK_FADE_MS,
   EMPTY_FILLER_STATE,
   FILLER_DELAY_MS,
-  INTERJECTION_MAX_AGE_MS,
-  InterjectionWatcher,
-  PlaybackHold,
-  SpeechMeter,
-  classifyInterjectionTail,
-  decideInterjection,
+  FILLER_MIN_SPEECH_MS,
+  PlaybackDuck,
+  countRealWords,
+  fillerBelowMinSpeech,
   fillerShouldFire,
-  pickClipVariant,
-  type FillerState,
-  type InterjectionContext,
-  type InterjectionObservation
+  isStopCommand,
+  type FillerState
 } from '@shared/voicePolicy'
 import { VoiceCallManager, type VoiceCallUtterance } from '../src/main/voice/call.ts'
 import type { VoiceEvalEvent } from '../src/main/voice/evalLog.ts'
@@ -58,8 +58,6 @@ async function waitFor<T>(
 interface HarnessOpts {
   /** `fillers.enabled` resolvido (padrão true). */
   fillers?: boolean
-  /** `interjections.shadow` resolvido (padrão false). */
-  shadow?: boolean
   /** PRNG do manager (padrão Math.random). */
   rng?: () => number
   /** Espera do filler em ms (padrão 25 — o limiar de 1,2 s é testado na política pura). */
@@ -70,8 +68,6 @@ interface HarnessOpts {
   gateClips?: boolean
   /** Clip dep devolve null (clipes não gerados). */
   noClips?: boolean
-  /** Overrides da política de interjeições (cooldown/probabilidade/classes/min*). */
-  interjections?: Partial<InterjectionPolicy>
 }
 
 interface Harness {
@@ -86,7 +82,7 @@ interface Harness {
   clips: { cls: string; n: number }[]
   /** Eventos da timeline emitidos pelo manager. */
   timeline: VoiceCallTimelineEvent[]
-  /** Decisões registradas no log de avaliação (`logEval`). */
+  /** Decisões de preâmbulo registradas no log de diagnóstico (`logEval`). */
   evals: VoiceEvalEvent[]
   emit(e: AgentEvent): void
   advance(ms: number): void
@@ -105,12 +101,7 @@ function harness(opts: HarnessOpts = {}): Harness {
   let clipGate: { open: () => void } | null = null
   const defaults = {
     ...DEFAULT_VOICE_CALL_DEFAULTS,
-    fillers: { enabled: opts.fillers !== false, prompt: null },
-    interjections: {
-      ...DEFAULT_INTERJECTION_POLICY,
-      shadow: opts.shadow === true,
-      ...(opts.interjections ?? {})
-    }
+    fillers: { ...DEFAULT_VOICE_CALL_DEFAULTS.fillers, enabled: opts.fillers !== false }
   }
   const m = new VoiceCallManager({
     sendTurn: (_sid, text) => sent.push(text),
@@ -224,47 +215,12 @@ test('fillerShouldFire: limiar de FILLER_DELAY_MS (250 ms; 0 = já), tools dispa
   assert.equal(fillerShouldFire(base, 1000, -5), false, 'negativo → o padrão')
 })
 
-test('pickClipVariant: uniforme 1..3, rotação sem repetir a última, rng lixo é aparado', () => {
-  assert.equal(
-    pickClipVariant(() => 0, null),
-    1
-  )
-  assert.equal(
-    pickClipVariant(() => 0.5, null),
-    2
-  )
-  assert.equal(
-    pickClipVariant(() => 0.99, null),
-    3
-  )
-  // sorteou a última → a seguinte na rotação
-  assert.equal(
-    pickClipVariant(() => 0.99, 3),
-    1
-  )
-  assert.equal(
-    pickClipVariant(() => 0, 1),
-    2
-  )
-  assert.equal(
-    pickClipVariant(() => 0.5, 2),
-    3
-  )
-  // lixo/fora de faixa nunca sai de 1..variants
-  assert.equal(
-    pickClipVariant(() => 1.5, null),
-    3
-  )
-  assert.equal(
-    pickClipVariant(() => -1, null),
-    1
-  )
-  assert.equal(pickClipVariant(() => Number.NaN, null, 3) >= 1, true)
-  assert.equal(
-    pickClipVariant(() => 0.5, null, 1),
-    1,
-    'uma variante só'
-  )
+test('fillerBelowMinSpeech: fala com menos VOZ que FILLER_MIN_SPEECH_MS não ganha preâmbulo', () => {
+  assert.equal(FILLER_MIN_SPEECH_MS, 700)
+  assert.equal(fillerBelowMinSpeech(500), true)
+  assert.equal(fillerBelowMinSpeech(700), false)
+  assert.equal(fillerBelowMinSpeech(null), false, 'desconhecido (digitado) não barra')
+  assert.equal(fillerBelowMinSpeech(500, 400), false, 'mínimo explícito')
 })
 
 // ---------------- fillers no turno mockado ----------------
@@ -336,24 +292,25 @@ test('filler: tools em execução disparam o filler já (sem esperar o limiar)',
   h.m.stop()
 })
 
-test('filler: fillers desligados não tocam; modo sombra decide mas não toca', async () => {
+test('filler: desligado não toca; ligado toca e a decisão vai para o log de diagnóstico', async () => {
   const off = harness({ fillers: false, fillerDelayMs: 15 })
   speakTurn(off, LONG)
   await sleep(80)
   assert.equal(off.emitted.length, 0)
   assert.equal(off.clips.length, 0, 'desligado não carrega clipe')
+  assert.equal(off.evals.length, 0)
   off.m.stop()
 
-  const shadow = harness({ shadow: true, fillerDelayMs: 15 })
-  speakTurn(shadow, LONG)
-  await sleep(80)
-  assert.equal(shadow.emitted.length, 0, 'sombra: não toca')
-  assert.equal(shadow.clips.length, 1, 'sombra: decide (carrega o clipe que tocaria)')
-  assert.equal(shadow.evals.length, 1, 'sombra: a decisão vai para o log de avaliação')
-  assert.equal(shadow.evals[0].kind, 'filler')
-  assert.equal(shadow.evals[0].played, false)
-  assert.equal(shadow.evals[0].shadow, true)
-  shadow.m.stop()
+  const on = harness({ fillerDelayMs: 15 })
+  speakTurn(on, LONG)
+  await waitFor(() => on.emitted.length > 0, 2000, 'filler emitido')
+  assert.equal(on.emitted[0].kind, 'filler')
+  assert.equal(on.evals.length, 1, 'uma linha por decisão')
+  assert.equal(on.evals[0].kind, 'filler')
+  assert.equal(on.evals[0].played, true)
+  assert.equal(on.evals[0].variant, on.clips[0].n, 'variante = a frase do pool tocada')
+  assert.ok(!('shadow' in on.evals[0]), 'sem modo sombra')
+  on.m.stop()
 })
 
 test('filler: frase pelo contexto e sem repetir nenhuma das últimas 4 entre turnos', async () => {
@@ -463,303 +420,173 @@ test('UtteranceQueue.drop: cancela só a utterance alvo (tocando ou na fila)', (
   assert.equal(q.state, 'idle')
 })
 
-// ---------------- política pura: interjeições ----------------
+// ---------------- fala por cima da resposta: ducking × barge-in (renderer, puros) ----------------
 
-// política "legada" (todas as classes, p 0,8, cooldown 2,5 s) para os portões; os padrões novos
-// (backchannel discreto) têm teste próprio abaixo
-const P: InterjectionPolicy = {
-  ...DEFAULT_INTERJECTION_POLICY,
-  classes: ['ACK', 'AGREEMENT', 'ENCOURAGEMENT', 'THINKING'],
-  fireProbability: 0.8,
-  cooldownMs: 2500
-}
-const obs = (over: Partial<InterjectionObservation> = {}): InterjectionObservation => ({
-  speechMs: 1000,
-  pauseMs: 500,
-  tail: 'aí eu fui lá e falei sim',
-  observedAt: 1_000,
-  ...over
-})
-const ctx = (over: Partial<InterjectionContext> = {}): InterjectionContext => ({
-  now: 1_000,
-  lastFiredAt: null,
-  ...over
-})
-/** PRNG fake: consome a sequência e repete o último valor. */
-const rngSeq = (...vals: number[]): (() => number) => {
-  let i = 0
-  return () => vals[Math.min(i++, vals.length - 1)]
+/** Quadros de 50 ms: `voz`/`sil` em ms → RMS acima/abaixo do limiar 0,01. */
+function duckFrames(d: PlaybackDuck, ...parts: ['voz' | 'sil', number][]): string[] {
+  const out: string[] = []
+  for (const [k, ms] of parts)
+    for (let i = 0; i < ms / 50; i++) out.push(d.frame(k === 'voz' ? 0.2 : 0.001, 50, 0.01))
+  return out
 }
 
-test('decideInterjection: portões — desligada, observação velha, fala curta, pausa curta, cooldown', () => {
-  // habilitada + tudo ok + rng 0 → dispara a classe da cauda ('… sim' → AGREEMENT)
-  const ok = decideInterjection(obs(), P, ctx(), rngSeq(0))
-  assert.equal(ok.class, 'AGREEMENT')
-  assert.equal(ok.class === 'AGREEMENT' && ok.variant >= 1, true)
-
-  assert.deepEqual(decideInterjection(obs(), { ...P, enabled: false }, ctx(), rngSeq(0)), {
-    class: 'NONE',
-    reason: 'disabled'
+test('barge-in com histerese: padrões e normalização dos limiares (voiceCallDefaults.turn)', () => {
+  assert.deepEqual(DEFAULT_BARGE_IN, { duckGain: 0.3, voicedMs: 700, words: 3, restoreMs: 450 })
+  assert.equal(DUCK_FADE_MS, 80)
+  assert.deepEqual(resolveBargeIn(null), DEFAULT_BARGE_IN)
+  assert.deepEqual(resolveBargeIn({ duckGain: 'x', bargeInVoicedMs: NaN }), DEFAULT_BARGE_IN)
+  assert.deepEqual(
+    resolveBargeIn({ duckGain: 2, bargeInVoicedMs: 50, bargeInWords: 99.6, duckRestoreMs: 10 }),
+    {
+      duckGain: BARGE_IN_RANGES.duckGain.max,
+      voicedMs: BARGE_IN_RANGES.voicedMs.min,
+      words: BARGE_IN_RANGES.words.max,
+      restoreMs: BARGE_IN_RANGES.restoreMs.min
+    },
+    'fora da faixa → preso no limite'
+  )
+  assert.equal(resolveBargeIn({ duckGain: 0 }).duckGain, 0, '0 = mudo (válido)')
+  // no turno normalizado (aditivo: ausente → padrões) e no TurnTiming que vai ao renderer
+  const t = normalizeVoiceCallTurn({ bargeInVoicedMs: 900, duckGain: 0.25 })
+  assert.equal(t.bargeInVoicedMs, 900)
+  assert.equal(t.duckGain, 0.25)
+  assert.equal(t.bargeInWords, 3)
+  assert.equal(t.duckRestoreMs, 450)
+  assert.deepEqual(resolveTurnTiming(t).bargeIn, {
+    duckGain: 0.25,
+    voicedMs: 900,
+    words: 3,
+    restoreMs: 450
   })
-  // expiração: > 600 ms desde a observação é tarde demais; no limite ainda decide
-  assert.equal(
-    decideInterjection(obs(), P, ctx({ now: 1_000 + INTERJECTION_MAX_AGE_MS + 1 }), rngSeq(0))
-      .reason,
-    'stale'
-  )
-  assert.equal(
-    decideInterjection(obs(), P, ctx({ now: 1_000 + INTERJECTION_MAX_AGE_MS }), rngSeq(0)).reason,
-    'ok'
-  )
-  assert.equal(
-    decideInterjection(obs({ speechMs: 699 }), P, ctx(), rngSeq(0)).reason,
-    'short-speech'
-  )
-  assert.equal(decideInterjection(obs({ pauseMs: 449 }), P, ctx(), rngSeq(0)).reason, 'short-pause')
-  assert.equal(
-    decideInterjection(obs(), P, ctx({ lastFiredAt: 1_000 - 2_499 }), rngSeq(0)).reason,
-    'cooldown'
-  )
-  assert.equal(
-    decideInterjection(obs(), P, ctx({ lastFiredAt: 1_000 - P.cooldownMs }), rngSeq(0)).reason,
-    'ok'
-  )
+  assert.deepEqual(resolveTurnTiming(null).bargeIn, DEFAULT_BARGE_IN)
 })
 
-test('decideInterjection: fireProbability com PRNG fake (2 sorteios: probabilidade + variante)', () => {
-  assert.equal(decideInterjection(obs(), P, ctx(), rngSeq(0.79, 0)).reason, 'ok', '0.79 < 0.8')
-  assert.equal(
-    decideInterjection(obs(), P, ctx(), rngSeq(0.8, 0)).reason,
-    'probability',
-    '0.8 = não dispara'
+test('PlaybackDuck: tosse/"uhum" curto → volume volta depois do silêncio e o som é descartado', () => {
+  const d = new PlaybackDuck(DEFAULT_BARGE_IN)
+  d.start(0.2, 50, 0.01)
+  assert.equal(d.open, true, 'abaixou (o chamador aplica o duckGain)')
+  // 250 ms de voz (contando o start) e silêncio: aos 450 ms de silêncio volta
+  const ev = duckFrames(d, ['voz', 200], ['sil', 400])
+  assert.ok(
+    ev.every((e) => e === 'pending'),
+    'nada antes do restore'
   )
-  assert.equal(
-    decideInterjection(obs(), { ...P, fireProbability: 0 }, ctx(), rngSeq(0, 0)).reason,
-    'probability',
-    'p = 0 nunca dispara'
+  assert.equal(d.frame(0.001, 50, 0.01), 'restore')
+  assert.equal(d.open, false)
+  assert.equal(d.reason, null, 'não virou barge-in')
+  assert.equal(d.voicedMs, 250)
+  // pausas curtas no meio da fala NÃO devolvem o volume (o silêncio é contínuo)
+  const e = new PlaybackDuck(DEFAULT_BARGE_IN)
+  e.start(0.2, 50, 0.01)
+  assert.ok(
+    duckFrames(e, ['voz', 100], ['sil', 300], ['voz', 100], ['sil', 300]).every(
+      (x) => x === 'pending'
+    )
   )
-  const always = decideInterjection(obs(), { ...P, fireProbability: 1 }, ctx(), rngSeq(0.999, 0.5))
-  assert.equal(always.reason, 'ok', 'p = 1 sempre dispara')
-  assert.equal(always.class === 'ACK' || always.class === 'AGREEMENT', true)
+  assert.equal(e.open, true)
 })
 
-test('decideInterjection/classifyInterjectionTail: cauda "?" evita THINKING; negação → NONE; classes filtradas', () => {
-  // pergunta → ACK (THINKING evitado), mesmo com marcador de hesitação antes
-  assert.equal(classifyInterjectionTail('hum, deixa eu ver, como é que fica?'), 'ACK')
-  assert.equal(classifyInterjectionTail('isso funciona?'), 'ACK')
-  // negação/incerteza → NONE
-  assert.equal(classifyInterjectionTail('não, acho que não'), 'NONE')
-  assert.equal(classifyInterjectionTail('talvez, depende'), 'NONE')
-  // hesitação → THINKING; concordância → AGREEMENT; progresso → ENCOURAGEMENT
-  assert.equal(classifyInterjectionTail('hum, deixa eu ver'), 'THINKING')
-  assert.equal(classifyInterjectionTail('exato, isso mesmo'), 'AGREEMENT')
-  assert.equal(classifyInterjectionTail('consegui, deu certo'), 'ENCOURAGEMENT')
-  // sem confiança → ACK neutro
-  assert.equal(classifyInterjectionTail('a resposta é quarenta e dois'), 'ACK')
-  assert.equal(classifyInterjectionTail(''), 'ACK')
-
-  assert.equal(
-    decideInterjection(obs({ tail: 'eu fui e não sei não' }), P, ctx(), rngSeq(0)).reason,
-    'tail-skip'
-  )
-  // `classes` filtra as permitidas: THINKING fora da lista não sai (e não vira outra classe)
-  const onlyAgreement: InterjectionPolicy = { ...P, classes: ['AGREEMENT'] }
-  assert.equal(
-    decideInterjection(obs({ tail: 'hum' }), onlyAgreement, ctx(), rngSeq(0)).reason,
-    'class-filtered'
-  )
-  const agr = decideInterjection(
-    obs({ tail: 'foi bem assim, concordo' }),
-    onlyAgreement,
-    ctx(),
-    rngSeq(0)
-  )
-  assert.equal(agr.class, 'AGREEMENT')
+test('PlaybackDuck: o usuário insiste (700 ms de voz no episódio) → barge-in uma vez', () => {
+  const d = new PlaybackDuck(DEFAULT_BARGE_IN)
+  d.start(0.2, 50, 0.01)
+  // voz com pausas curtas: a voz do EPISÓDIO soma (50 + 300 + 350 = 700 ms)
+  const ev = duckFrames(d, ['voz', 300], ['sil', 200], ['voz', 350], ['voz', 200])
+  assert.equal(ev.filter((x) => x === 'barge-in').length, 1, 'uma única transição')
+  assert.equal(d.reason, 'voiced')
+  assert.equal(d.open, false, 'o episódio fecha: a fala segue como turno normal')
+  assert.equal(d.frame(0.2, 50, 0.01), 'pending', 'fechado não decide mais')
+  // limiar configurável
+  const fast = new PlaybackDuck({ ...DEFAULT_BARGE_IN, voicedMs: 300 })
+  fast.start(0.2, 50, 0.01)
+  assert.ok(duckFrames(fast, ['voz', 250]).includes('barge-in'))
 })
 
-test('decideInterjection: variante com rotação (não repete a última da classe) e NONE domina', () => {
-  const r1 = decideInterjection(
-    obs({ tail: 'uhum' }),
-    P,
-    ctx({ lastVariant: { ACK: 1 } }),
-    rngSeq(0, 0)
-  )
-  assert.equal(r1.class, 'ACK')
-  assert.equal(r1.class === 'ACK' && r1.variant, 2, 'sorteou a última → a seguinte')
-  const r2 = decideInterjection(
-    obs({ tail: 'uhum' }),
-    P,
-    ctx({ lastVariant: { ACK: 2 } }),
-    rngSeq(0.5, 0.99)
-  )
-  assert.equal(r2.class, 'ACK')
-  assert.equal(r2.class === 'ACK' && r2.variant, 3)
+test('PlaybackDuck: palavras reais na parcial e ordem de parada interrompem já; backchannel não', () => {
+  const d = new PlaybackDuck(DEFAULT_BARGE_IN)
+  d.start(0.2, 50, 0.01)
+  assert.equal(d.transcript('uhum'), 'pending')
+  assert.equal(d.transcript('sim, tá'), 'pending', 'backchannel não conta')
+  assert.equal(d.transcript('não, mas'), 'pending', '2 palavras < 3')
+  assert.equal(d.transcript('não, mas eu queria'), 'barge-in')
+  assert.equal(d.reason, 'words')
+  // ordem de parada (atalho): mesmo curta
+  for (const t of ['para', 'Pare!', 'espera aí', 'chega', 'Peraí.', 'para, para', 'stop']) {
+    const s = new PlaybackDuck(DEFAULT_BARGE_IN)
+    s.start(0.2, 50, 0.01)
+    assert.equal(s.transcript(t), 'barge-in', t)
+    assert.equal(s.reason, 'stop-word', t)
+  }
+  assert.equal(isStopCommand('para casa'), false, 'preposição + conteúdo não é parada')
+  assert.equal(isStopCommand('para de falar agora por favor'), false, 'longa demais')
+  assert.equal(isStopCommand('espera um pouco'), true)
+  assert.equal(countRealWords('uhum, aham, sim'), 0)
+  assert.equal(countRealWords('a pasta src'), 3)
+  // fechado: texto não decide
+  const c = new PlaybackDuck(DEFAULT_BARGE_IN)
+  assert.equal(c.transcript('para'), 'pending')
+})
 
-  // NONE é de longe o resultado mais comum: a maioria das observações não é pausa elegível
-  let none = 0
-  let fired = 0
-  for (let speech = 0; speech <= 1200; speech += 100) {
-    for (let pause = 0; pause <= 700; pause += 100) {
-      const d = decideInterjection(
-        obs({ speechMs: speech, pauseMs: pause, tail: 'uhum' }),
-        P,
-        ctx({ lastFiredAt: null }),
-        rngSeq(0.5)
-      )
-      if (d.class === 'NONE') none++
-      else fired++
+test('UtteranceQueue.setDuck: abaixa com rampa e continua tocando; volta ao normal; vale para a próxima', async () => {
+  const vols: number[][] = []
+  const players: UtterancePlayer[] = []
+  const q = new UtteranceQueue({
+    playerFactory: () => {
+      const i = players.length
+      vols.push([])
+      const p: UtterancePlayer = {
+        play: () => {},
+        pause: () => {},
+        onended: null,
+        onerror: null,
+        get volume() {
+          return vols[i].at(-1) ?? 1
+        },
+        set volume(v: number) {
+          vols[i].push(v)
+        }
+      }
+      players.push(p)
+      return p
     }
-  }
-  assert.equal(none > fired * 2, true, `NONE dominante (none=${none}, fired=${fired})`)
-})
-
-test('SpeechMeter/InterjectionWatcher: fala/pausa e UMA observação por episódio de pausa', () => {
-  const meter = new SpeechMeter()
-  meter.push(0.5, 100, 0.01)
-  meter.push(0.5, 100, 0.01)
-  meter.push(0, 100, 0.01)
-  assert.equal(meter.speechMs, 200)
-  assert.equal(meter.pauseMs, 100)
-  meter.push(0.5, 100, 0.01)
-  assert.equal(meter.pauseMs, 0, 'voltou a falar zera a pausa')
-
-  const w = new InterjectionWatcher(450)
-  const frame = (rms: number, t: number): ReturnType<InterjectionWatcher['push']> =>
-    w.push(rms, 33, 0.01, t)
-  assert.equal(frame(0.5, 0), null)
-  assert.equal(frame(0.5, 33), null)
-  let seen = frame(0, 66)
-  for (let t = 100; t < 400 && !seen; t += 33) seen = frame(0, t)
-  assert.equal(seen, null, 'pausa ainda curta')
-  while (!seen) seen = frame(0, 500)
-  assert.ok(seen, 'observação na virada do limiar')
-  assert.equal(seen!.pauseMs >= 450, true)
-  for (let t = 600; t < 1200; t += 33) {
-    assert.equal(frame(0, t), null, 'só UMA observação por episódio')
-  }
-  frame(0.5, 1300) // fala de novo: episódio novo
-  assert.equal(frame(0, 1333), null)
-  let second = frame(0, 1366)
-  for (let t = 1400; t < 2200 && !second; t += 33) second = frame(0, t)
-  assert.ok(second, 'segundo episódio gera nova observação')
-})
-
-test('PlaybackHold: fala curta durante a reprodução é backchannel; longa é barge-in (uma vez)', () => {
-  assert.equal(BACKCHANNEL_MAX_MS, 800, 'limiar documentado: ~800 ms')
-  const hold = new PlaybackHold()
-  // fala curta (~500 ms) → nada é cancelado
-  hold.start(0.5, 100, 0.01)
-  for (let i = 0; i < 4; i++) assert.equal(hold.frame(0.5, 100, 0.01), 'pending')
-  assert.equal(hold.speechMs, 500)
-  assert.equal(hold.end(), 'backchannel')
-  assert.equal(hold.open, false)
-  // fala longa (~900 ms) → barge-in exatamente na transição, e `end` confirma
-  hold.start(0.5, 100, 0.01)
-  const events: string[] = []
-  for (let i = 0; i < 8; i++) events.push(hold.frame(0.5, 100, 0.01))
-  assert.equal(events.filter((e) => e === 'barge-in').length, 1, 'uma única transição')
-  assert.equal(hold.end(), 'barge-in')
-  // limite exato ainda é backchannel (≤ 800 ms)
-  hold.start(0.5, 100, 0.01)
-  for (let i = 0; i < 7; i++) hold.frame(0.5, 100, 0.01) // 800 ms contando o start
-  assert.equal(hold.end(), 'backchannel')
-  assert.equal(new PlaybackHold().end(), 'none', 'sem fala retida não classifica')
-})
-
-// ---------------- interjeições no turno mockado ----------------
-
-const interject = (
-  h: Harness,
-  over: Partial<{ speechMs: number; pauseMs: number; tail: string; observedAt: number }> = {}
-): void =>
-  h.m.interjectionObserved({
-    speechMs: 1200,
-    pauseMs: 600,
-    tail: 'uhum',
-    observedAt: Date.now(), // relógio real por padrão (com relógio fake, passar observedAt)
-    ...over
   })
-
-test('interjeição: pausa elegível na fala do usuário toca o clipe da classe decidida', async () => {
-  const h = harness({ rng: () => 0 })
-  h.m.speechBegin()
-  interject(h, { speechMs: 1200, pauseMs: 600, tail: 'uhum...' })
-  await waitFor(() => h.emitted.length > 0, 2000, 'interjeição emitida')
-  assert.equal(h.emitted[0].kind, 'interjection')
-  assert.equal(h.clips[0].cls, 'ACK')
-  assert.equal(
-    h.timeline.find((e) => e.kind === 'decision')?.played,
-    true,
-    'decisão registrada como tocada'
-  )
-  h.m.stop()
+  q.setVolume(0.8)
+  q.enqueue({ id: 's1', audio: new Uint8Array([1]), mime: 'audio/wav', kind: 'sentence' })
+  q.setDuck(0.3, 40)
+  await sleep(80)
+  assert.ok(Math.abs(players[0].volume - 0.24) < 1e-9, `0,8 × 0,3: ${players[0].volume}`)
+  assert.ok(vols[0].length > 3, 'em passos (rampa, sem degrau)')
+  assert.equal(q.state, 'playing', 'continua tocando')
+  // a próxima já nasce abaixada enquanto o ducking vale
+  q.enqueue({ id: 's2', audio: new Uint8Array([2]), mime: 'audio/wav', kind: 'sentence' })
+  players[0].onended!()
+  assert.ok(Math.abs(players[1].volume - 0.24) < 1e-9)
+  q.setDuck(1, 40)
+  await sleep(80)
+  assert.ok(Math.abs(players[1].volume - 0.8) < 1e-9, 'volume de volta')
+  q.setDuck(0.5) // sem rampa = na hora
+  assert.ok(Math.abs(players[1].volume - 0.4) < 1e-9)
+  assert.equal(q.duck, 0.5)
 })
 
-test('interjeição: NUNCA durante a reprodução nem depois de a resposta começar a falar', async () => {
-  const h = harness({ rng: () => 0, fillerDelayMs: 10_000 })
-  speakTurn(h, 'algo')
-  h.emit(draft('Resposta longa.'))
-  h.emit(assistantMsg('Resposta longa.'))
-  await waitFor(() => h.emitted.some((u) => u.kind === 'sentence'), 2000, 'sentença emitida')
-  // reprodução em curso → descartada
-  interject(h, { speechMs: 1200, pauseMs: 600, tail: 'uhum' })
-  await sleep(20)
-  assert.equal(h.emitted.filter((u) => u.kind === 'interjection').length, 0, 'sobre a reprodução')
-  // reprodução terminou, mas a resposta JÁ falou neste turno → descartada
-  h.m.playbackIdle()
-  interject(h, { speechMs: 1200, pauseMs: 600, tail: 'uhum' })
-  await sleep(20)
-  assert.equal(h.emitted.filter((u) => u.kind === 'interjection').length, 0, 'resposta já falou')
-  assert.equal(h.clips.length, 0, 'nem carregou o clipe')
+test('barge-in: o motivo (voz/palavras/parada) e a voz do episódio vão à timeline do main', async () => {
+  const h = harness({ fillerDelayMs: 10_000 })
+  speakTurn(h, LONG)
+  h.emit(draft('Uma resposta longa. Com várias frases.'))
+  await waitFor(() => h.emitted.some((u) => u.kind === 'sentence'), 2000, 'sentença')
+  h.m.bargeIn({ playedIds: [h.emitted[0].id], reason: 'stop-word', speechMs: 320 })
+  const e = h.timeline.find((x) => x.kind === 'barge-in')!
+  assert.equal(e.reason, 'stop-word')
+  assert.equal(e.speechMs, 320)
+  // motivo desconhecido não entra
+  const g = harness({ fillerDelayMs: 10_000 })
+  speakTurn(g, LONG)
+  g.m.bargeIn({ reason: 'hack' })
+  assert.equal(g.timeline.find((x) => x.kind === 'barge-in')!.reason, undefined)
   h.m.stop()
+  g.m.stop()
 })
 
-test('interjeição: modo sombra decide mas não toca; expirada é descartada na hora do áudio', async () => {
-  const sh = harness({ rng: () => 0, shadow: true })
-  sh.m.speechBegin()
-  interject(sh, { speechMs: 1200, pauseMs: 600, tail: 'uhum' })
-  await waitFor(() => sh.clips.length > 0, 2000, 'decisão (sombra)')
-  assert.equal(sh.emitted.length, 0, 'sombra: não toca')
-  const d = sh.timeline.find((e) => e.kind === 'decision')
-  assert.equal(d?.played, false)
-  assert.equal(d?.reason, 'shadow')
-  assert.equal(sh.evals.length, 1, 'sombra: decisão registrada no log de avaliação')
-  assert.equal(sh.evals[0].class, 'ACK')
-  assert.equal(sh.evals[0].tail, 'uhum')
-  assert.equal(sh.evals[0].speechMs, 1200)
-  assert.equal(sh.evals[0].pauseMs, 600)
-  assert.equal(sh.evals[0].shadow, true)
-  assert.equal(sh.evals[0].played, false)
-  sh.m.stop()
-
-  // decisão válida, mas o clipe só resolve tarde demais (> 600 ms) → descartada
-  const h = harness({ rng: () => 0, fakeClock: true, gateClips: true })
-  h.m.speechBegin()
-  interject(h, { speechMs: 1200, pauseMs: 600, tail: 'uhum', observedAt: 1_000_000 })
-  await waitFor(() => h.clips.length > 0, 2000, 'carga do clipe')
-  h.advance(INTERJECTION_MAX_AGE_MS + 100)
-  h.openClip()
-  await sleep(30)
-  assert.equal(h.emitted.length, 0, 'decisão que chega tarde demais não toca')
-  assert.equal(h.timeline.find((e) => e.kind === 'decision')?.reason, 'stale')
-  h.m.stop()
-})
-
-test('interjeição: cooldown entre interjeições (sem cooldown, toca de novo)', async () => {
-  const h = harness({ rng: () => 0, fakeClock: true, interjections: { cooldownMs: 2_500 } })
-  h.m.speechBegin()
-  interject(h, { speechMs: 1200, pauseMs: 600, tail: 'uhum', observedAt: 1_000_000 })
-  await waitFor(() => h.emitted.length > 0, 2000, '1ª interjeição')
-  h.m.playbackIdle() // o clipe terminou
-  h.advance(100)
-  interject(h, { speechMs: 1200, pauseMs: 600, tail: 'uhum', observedAt: 1_000_100 })
-  await sleep(20)
-  assert.equal(h.emitted.length, 1, 'cooldown segura a 2ª')
-  h.advance(2_600)
-  interject(h, { speechMs: 1200, pauseMs: 600, tail: 'uhum', observedAt: 1_002_700 })
-  await waitFor(() => h.emitted.length > 1, 2000, '2ª interjeição após o cooldown')
-  h.m.stop()
-})
+// ---------------- meia-duplex no turno mockado ----------------
 
 test('backchannel: registra na timeline sem cancelar nada nem virar turno', async () => {
   const h = harness()
@@ -774,34 +601,32 @@ test('backchannel: registra na timeline sem cancelar nada nem virar turno', asyn
   h.m.stop()
 })
 
-test('integração: fala com interjeição no meio + preâmbulo na resposta (a 1ª sentença espera, sem corte)', async () => {
+test('integração: nada toca durante a fala do usuário (meia-duplex) + preâmbulo na resposta (a 1ª sentença espera, sem corte)', async () => {
   const h = harness({ rng: () => 0, fillerDelayMs: 25 })
-  // usuário falando: pausa no meio → interjeição ACK toca; depois o turno sai
+  // usuário falando, com pausas no meio: o assistente não emite nada (sem backchannel)
   h.m.speechBegin()
-  interject(h, { speechMs: 1500, pauseMs: 700, tail: 'então, sobre o relatório' })
-  await waitFor(() => h.emitted.length > 0, 2000, 'interjeição')
-  assert.equal(h.emitted[0].kind, 'interjection')
-  h.m.playbackIdle() // o clipe da interjeição terminou
+  await sleep(60)
+  assert.deepEqual(h.emitted, [], 'nada durante a fala do usuário')
+  assert.equal(h.clips.length, 0, 'nem carrega clipe')
   h.m.speechEnd()
-  h.m.turn('então, sobre o relatório')
+  h.m.turn('então, sobre o relatório do trimestre passado')
   // resposta demora → preâmbulo; resposta começa → a sentença entra na fila depois dele
   await waitFor(() => h.emitted.some((u) => u.kind === 'filler'), 2000, 'filler')
   h.emit(draft('Claro. Segue o resumo.'))
   h.emit(assistantMsg('Claro. Segue o resumo.'))
-  await waitFor(() => h.emitted.some((u) => u.kind === 'sentence'), 2000, 'sentença')
+  await waitFor(() => h.emitted.filter((u) => u.kind === 'sentence').length > 1, 2000, 'sentenças')
   assert.deepEqual(
     h.emitted.map((u) => u.kind),
-    ['interjection', 'filler', 'sentence', 'sentence'],
-    'ordem: interjeição → filler → resposta (2 sentenças)'
+    ['filler', 'sentence', 'sentence'],
+    'ordem: preâmbulo → resposta (2 sentenças)'
   )
   assert.equal(h.cancelled.length, 0, 'o preâmbulo nunca é cortado pela resposta')
-  assert.equal(h.emitted[0].gain, 0.6, 'interjeição toca mais baixo (volume 0,6)')
-  const kinds = h.timeline.map((e) => e.kind)
-  assert.equal(
-    kinds.filter((k) => k === 'decision').length,
-    2,
-    'decisões do filler e da interjeição'
+  assert.ok(
+    h.emitted.every((u) => !('gain' in u)),
+    'sem ganho por utterance (tudo no volume da chamada)'
   )
+  const kinds = h.timeline.map((e) => e.kind)
+  assert.equal(kinds.filter((k) => k === 'decision').length, 1, 'só a decisão do preâmbulo')
   assert.equal(kinds.includes('turn-sent'), true)
   assert.equal(kinds.includes('clip-cancelled'), false)
   assert.equal(kinds.includes('sentence-emitted'), true)

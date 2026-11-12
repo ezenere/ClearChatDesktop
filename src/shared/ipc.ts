@@ -267,7 +267,6 @@ export const IPC = {
     callTurn: 'voice:call:turn',
     callPlaybackIdle: 'voice:call:playback-idle',
     callBargeIn: 'voice:call:barge-in',
-    callInterjectionObserved: 'voice:call:interjection-observed',
     callBackchannel: 'voice:call:backchannel',
     callGetState: 'voice:call:get-state',
     runtimeStatus: 'voice:runtime:status',
@@ -618,7 +617,7 @@ export interface VoiceApi {
     test(input?: { voice?: string | null; model?: string; text?: string }): Promise<TtsSynthResult>
     clips: {
       /**
-       * Gera os clipes de interjeição/filler da voz atual (cache em `userData/voice-clips`),
+       * Gera os clipes dos preâmbulos da voz atual (cache em `userData/voice-clips`),
        * emitindo `voice:tts:clips:progress` a cada clipe. Cache válido (mesma voz/definição) é
        * reutilizado; voz muda → gera no diretório da voz nova.
        */
@@ -657,7 +656,7 @@ export interface VoiceApi {
     /**
      * Transcrição final da fala → turno. `speechMs` = tempo com VOZ da fala (do 1º ao último quadro
      * acima do limiar — sem o silêncio antes/depois nem a espera do fim de turno); o preâmbulo
-     * compara com a "Fala mínima" (`interjections.minSpeechMs`). Ausente = desconhecido.
+     * compara com a fala mínima (`FILLER_MIN_SPEECH_MS`). Ausente = desconhecido.
      */
     turn(input: { text: string; speechMs?: number }): Promise<VoiceCallState>
     /** A fila de reprodução do renderer esvaziou (tudo que foi emitido já tocou). */
@@ -667,20 +666,18 @@ export interface VoiceApi {
      * agente é parado e o histórico fica só com o que foi FALADO). `playedIds` = utterances de
      * sentença que começaram a tocar (a que estava tocando conta).
      */
-    bargeIn(input?: { playedIds?: string[] }): Promise<VoiceCallState>
-    /**
-     * Observação do detector de pausas na fala do usuário (SPEC → "Interjeições (regras)"): a
-     * política pura decide e o main toca o clipe (ou não, em modo sombra). `observedAt` = momento
-     * da observação em ms (decisão que chega > 600 ms tarde demais é descartada).
-     */
-    interjectionObserved(input: {
-      speechMs: number
-      pauseMs: number
-      tail: string
-      observedAt: number
-      /** Veredito do fim de turno adaptativo da pausa (`UtteranceEnd`); ausente = sem especulação. */
-      end?: string | null
-    }): Promise<void>
+    bargeIn(input?: {
+      playedIds?: string[]
+      /** Por que virou barge-in (`BargeInReason`: voz, palavras, ordem de parada) — timeline. */
+      reason?: string
+      /** Voz do usuário no episódio (ms) — timeline. */
+      speechMs?: number
+      /**
+       * A frase que tocava: quanto dela tocou (ms — posição do player) e a duração quando conhecida
+       * — o histórico fica só com as PALAVRAS ouvidas (`@shared/heardText`).
+       */
+      current?: { id: string; playedMs: number; durationMs?: number | null }
+    }): Promise<VoiceCallState>
     /**
      * Backchannel do usuário durante a reprodução (fala curta ≤ ~800 ms): só registra — NÃO
      * cancela a resposta nem vira turno (fala longa é barge-in, via `bargeIn`).
@@ -807,7 +804,7 @@ export interface VoiceModelProgressEvent {
   total: number
 }
 
-// ---- TTS: síntese de fala e clipes de interjeição/filler (`voice:tts:*`) ----
+// ---- TTS: síntese de fala e clipes dos preâmbulos (`voice:tts:*`) ----
 
 /** Resultado de uma síntese de fala (`voice:tts:synth`/`voice:tts:test`) — bytes completos. */
 export interface TtsSynthResult {
@@ -879,17 +876,14 @@ export interface VoiceCallUtteranceEvent {
   /** MIME do áudio ('audio/wav' | 'audio/mpeg'). */
   mime: string
   /**
-   * Origem do áudio (timeline/UI; ausente = 'sentence'): sentença da resposta, filler pós-turno
-   * ou interjeição na fala do usuário (clipes `resolveClip` — SPEC → "Chamada de voz") ou frase de
-   * demora sintetizada ao vivo ("Só mais um instante…", "Desculpe a demora…" — tratada como clipe:
-   * pulada se não tocar, descartada quando o usuário fala, nunca no histórico).
+   * Origem do áudio (timeline/UI; ausente = 'sentence'): sentença da resposta, preâmbulo pós-turno
+   * (clipe `resolveClip` — SPEC → "Chamada de voz") ou frase de demora sintetizada ao vivo ("Só
+   * mais um instante…", "Desculpe a demora…" — tratada como clipe: pulada se não tocar, descartada
+   * quando o usuário fala, nunca no histórico).
    */
-  kind?: 'sentence' | 'filler' | 'interjection' | 'delay'
-  /**
-   * Ganho relativo da utterance (0–1, multiplica o volume da chamada); ausente = 1. Interjeições
-   * (backchannel) tocam mais baixo (`interjections.volume`, padrão 0.6).
-   */
-  gain?: number
+  kind?: 'sentence' | 'filler' | 'delay'
+  /** Sentença da resposta: o texto dela (a leitura ao vivo do chat esmaece o que ainda não tocou). */
+  text?: string
   /**
    * Utterance em streaming (TTS de API que devolve PCM progressivo — ex.: OpenRouter/ElevenLabs):
    * `audio` traz só o começo (PCM16 LE mono cru, ~200 ms) com `mime` `audio/pcm;rate=N`, e o resto
@@ -917,17 +911,17 @@ export interface VoiceCallUtteranceCancelEvent {
 }
 
 /**
- * Evento da timeline da chamada de voz (canal `voice:call:timeline`; SPEC → "Modo sombra e
- * timeline"). O main emite decisões/emissões/envio; o renderer acrescenta os eventos do sensor
- * (fala/pausa/reprodução/barge-in/backchannel) — tudo com `ts` e relativo ao início da chamada.
+ * Evento da timeline da chamada de voz (canal `voice:call:timeline`; SPEC → "Timeline e log de
+ * diagnóstico"). O main emite decisões/emissões/envio; o renderer acrescenta os eventos do sensor
+ * (fala/veredito/reprodução/barge-in/backchannel) — tudo com `ts` e relativo ao início da chamada.
  */
 export interface VoiceCallTimelineEvent {
   /** Momento do evento (ms desde epoch). */
   ts: number
   kind:
-    /** Decisão de ato de fala (filler/interjeição) — tocou, sombra ou descartada (`reason`). */
+    /** Decisão de ato de fala curta (preâmbulo/frase de demora) — tocou ou não (`reason`). */
     | 'decision'
-    /** Clique (filler/interjeição) emitido ao renderer. */
+    /** Clipe (preâmbulo/frase de demora) emitido ao renderer. */
     | 'clip-emitted'
     /** Clipe cancelado (filler interrompido pela 1ª sentença/reset). */
     | 'clip-cancelled'
@@ -939,16 +933,26 @@ export interface VoiceCallTimelineEvent {
     | 'speech-start'
     /** Silêncio encerrou a fala do usuário (renderer). */
     | 'speech-end'
-    /** Pausa na fala do usuário que virou observação de interjeição (renderer). */
-    | 'pause'
     /** Reprodução de clipe começou/terminou (renderer). */
     | 'clip-start'
     | 'clip-end'
     /** Reprodução de sentença começou/terminou (renderer). */
     | 'sentence-start'
     | 'sentence-end'
-    /** Fala longa do usuário durante a reprodução cancelou a fala do assistente (renderer). */
+    /**
+     * O usuário insistiu falando por cima (voz/palavras/ordem de parada — `reason`): a fala do
+     * assistente foi cancelada e a dele segue como turno (main).
+     */
     | 'barge-in'
+    /**
+     * Barge-in no meio de uma frase: o prefixo OUVIDO dela (`text`), quanto tocou (`latencyMs`) e o
+     * modo do mapeamento (`reason` `heard-exact`/`heard-estimated`) — main.
+     */
+    | 'heard'
+    /** Fala do usuário por cima da resposta: o áudio do assistente abaixou (ducking — renderer). */
+    | 'duck'
+    /** A fala por cima parou antes de confirmar: volume de volta, som descartado (renderer). */
+    | 'duck-restore'
     /** Fala curta do usuário durante a reprodução (backchannel — só registrou). */
     | 'backchannel'
     /** Veredito do fim de turno adaptativo numa pausa (renderer — `text` = especulativa, `reason` = veredito). */
@@ -971,13 +975,13 @@ export interface VoiceCallTimelineEvent {
      * `reason` = mensagem, `id`/`class` = a utterance): nunca mais calada (painel + erro do dock).
      */
     | 'playback-error'
-  /** Classe do ato ('FILLER'/'ACK'/…); ausente em eventos sem classe. */
+  /** Classe do ato ('FILLER'/'KEEPALIVE'/'APOLOGY'); ausente em eventos sem classe. */
   class?: string | null
   /** Id da utterance dona do evento (pareia decisão → áudio). */
   id?: string | null
-  /** Variante do clipe decidida (1..3). */
+  /** Variante do clipe decidida (frase do pool de preâmbulos, 1-based). */
   variant?: number | null
-  /** Tocou de fato (false = sombra/descartada). */
+  /** Tocou de fato (false = descartada). */
   played?: boolean
   /** Fala do usuário até o evento (ms). */
   speechMs?: number | null

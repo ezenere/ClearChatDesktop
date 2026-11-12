@@ -12,6 +12,7 @@ import { contributeCtx } from '../../lib/contextMenu'
 import { cn } from '../../lib/format'
 import { normalizeMath } from '../../lib/math'
 import { tableMinWidthEm, type HastLike } from '../../lib/tableWidth'
+import { remarkVoiceText, type VoiceTextOptions } from '../../lib/voiceText'
 
 function textOf(node: ReactNode): string {
   if (node == null || typeof node === 'boolean') return ''
@@ -104,10 +105,16 @@ const rehypePlugins: React.ComponentProps<typeof ReactMarkdown>['rehypePlugins']
 export const Markdown = memo(function Markdown({
   text,
   streaming,
-  resolveImage
+  resolveImage,
+  voice
 }: {
   text: string
   streaming?: boolean
+  /**
+   * Mensagem da chamada de voz: tags de voz esmaecidas (`tags`) e o trecho ainda não falado
+   * esmaecido a partir de `dimFrom` (offset em `text`) — ver `lib/voiceText.ts`.
+   */
+  voice?: VoiceTextOptions
   /**
    * Visualizador de arquivos: resolve o `src` relativo de uma imagem contra a pasta do arquivo
    * (protocolo clearchat-file://); null = não mostra. Sem a prop, imagens seguem o padrão.
@@ -116,6 +123,22 @@ export const Markdown = memo(function Markdown({
 }): React.JSX.Element {
   // Cercas aninhadas → uma cerca externa mais longa; \[ \] e \( \) → $$ e $; preços escapados.
   const source = useMemo(() => normalizeMath(normalizeFences(text), streaming), [text, streaming])
+  const voiceTags = !!voice?.tags
+  // o offset é do `text`; a normalização (cercas/fórmulas) quase nunca muda a fala — se mudar,
+  // proporcional
+  const dimFrom =
+    voice?.dimFrom == null
+      ? null
+      : source.length === text.length
+        ? voice.dimFrom
+        : Math.round((voice.dimFrom / Math.max(1, text.length)) * source.length)
+  const plugins = useMemo<typeof remarkPlugins>(
+    () =>
+      voiceTags || dimFrom != null
+        ? [...(remarkPlugins ?? []), [remarkVoiceText, { tags: voiceTags, dimFrom }]]
+        : remarkPlugins,
+    [voiceTags, dimFrom]
+  )
   const comps = useMemo<Components>(
     () =>
       resolveImage
@@ -136,7 +159,7 @@ export const Markdown = memo(function Markdown({
   )
   return (
     <div className={cn('md', streaming && 'stream-caret')}>
-      <ReactMarkdown remarkPlugins={remarkPlugins} rehypePlugins={rehypePlugins} components={comps}>
+      <ReactMarkdown remarkPlugins={plugins} rehypePlugins={rehypePlugins} components={comps}>
         {source}
       </ReactMarkdown>
     </div>

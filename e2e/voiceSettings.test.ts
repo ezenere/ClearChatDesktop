@@ -74,6 +74,7 @@ test('audioInput: set normaliza e grava; get devolve o mesmo (silenceStopMs 0 pr
   })
   assert.deepEqual(saved, {
     deviceId: 'mic-1',
+    activationDb: -45,
     pttEnabled: true,
     pttKey: 'Ctrl+K',
     silenceStopEnabled: true,
@@ -90,16 +91,12 @@ test('voiceCallDefaults: parcial completa com os padrões; get devolve o gravado
   const v = await voice()
   const saved = v.setVoiceSetting('voiceCallDefaults', {
     enabled: false,
+    // legado (protocolo §4.3.6): aceito na entrada e descartado — nunca gravado
     interjections: { cooldownMs: 1000 },
     fillers: {}
   })
   assert.equal(saved.enabled, false)
-  assert.equal(saved.interjections.cooldownMs, 1000)
-  assert.equal(
-    saved.interjections.enabled,
-    DEFAULT_VOICE_CALL_DEFAULTS.interjections.enabled,
-    'campos ausentes completam com o padrão'
-  )
+  assert.ok(!('interjections' in saved), 'campo legado descartado')
   assert.deepEqual(saved.fillers, DEFAULT_VOICE_CALL_DEFAULTS.fillers)
   assert.deepEqual(v.getVoiceSettingsView().voiceCallDefaults, saved)
 })

@@ -1231,8 +1231,7 @@ async function main(): Promise<void> {
             model: null,
             tools: null,
             voicePrompt: 'fale como no PC',
-            fillers: null,
-            interjections: null
+            fillers: null
           }
         }
       })

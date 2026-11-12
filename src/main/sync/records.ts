@@ -172,15 +172,21 @@ function onlineSettingValue(conn: Database.Database, id: string): unknown {
 }
 
 /**
+ * Partes do dispositivo do `audioInput`: o microfone desta máquina (`deviceId`) e o nível de
+ * ativação dele (`activationDb` — depende do microfone/sala). Nunca saem; o recebido não as troca.
+ */
+const AUDIO_INPUT_DEVICE_FIELDS = ['deviceId', 'activationDb'] as const
+
+/**
  * Valor local de uma setting de áudio → `value` do registro, sem as partes do dispositivo:
- * `audioInput.deviceId` (microfone desta máquina); em stt/tts o bloco `gpu` (motor/voz/parâmetros
+ * `audioInput.deviceId`/`activationDb` (microfone desta máquina e o nível dele); em stt/tts o bloco `gpu` (motor/voz/parâmetros
  * da GPU local), `local.installed` (modelo baixado AQUI), endereço/chave que o main resolve, e o
  * modo `gpu` (troca pelo valor online, ou o padrão). Objeto vazio → null.
  */
 export function voiceSettingOut(conn: Database.Database, id: string, value: unknown): unknown {
   if (!isObj(value)) return value ?? null
   const out = JSON.parse(JSON.stringify(value)) as Plain
-  if (id === 'audioInput') delete out.deviceId
+  if (id === 'audioInput') for (const k of AUDIO_INPUT_DEVICE_FIELDS) delete out[k]
   const mode = VOICE_MODE_FIELD[id]
   if (mode) {
     delete out.gpu
@@ -205,11 +211,13 @@ export function voiceSettingIn(id: string, incoming: unknown, cur: unknown): unk
   const local = isObj(cur) ? cur : null
   const inc = isObj(incoming) ? (JSON.parse(JSON.stringify(incoming)) as Plain) : null
   if (id === 'audioInput') {
-    const dev = typeof local?.deviceId === 'string' && local.deviceId ? local.deviceId : null
-    if (!inc) return dev ? { deviceId: dev } : null
-    delete inc.deviceId
-    if (dev) inc.deviceId = dev
-    return inc
+    const dev: Plain = {}
+    if (typeof local?.deviceId === 'string' && local.deviceId) dev.deviceId = local.deviceId
+    if (typeof local?.activationDb === 'number' && Number.isFinite(local.activationDb))
+      dev.activationDb = local.activationDb
+    if (!inc) return Object.keys(dev).length ? dev : null
+    for (const k of AUDIO_INPUT_DEVICE_FIELDS) delete inc[k]
+    return { ...inc, ...dev }
   }
   const mode = VOICE_MODE_FIELD[id]
   if (!mode) return incoming ?? null
@@ -340,10 +348,31 @@ export function sameRecordPlain(
 const LOCAL_ONLY_CONFIG_KEYS = ['cwd'] as const
 
 const stripLocalOnly = (cfg: Plain): Plain => {
-  const out = { ...cfg }
+  const out = withoutLegacyVoice({ ...cfg })
   for (const k of LOCAL_ONLY_CONFIG_KEYS) delete out[k]
   return out
 }
+
+/**
+ * Campos de voz LEGADOS (§4.3.6): `interjections` (em `config.voice` de chat/persona e em
+ * `voiceCallDefaults`) — a chamada não tem mais interjeições nem modo sombra. Escritores não
+ * enviam; leitores ignoram, inclusive em registros antigos que ainda o tragam: some na ida e na
+ * volta (nunca é gravado nem reenviado).
+ */
+const LEGACY_VOICE_KEYS = ['interjections'] as const
+
+/** Cópia do objeto de voz sem os campos legados (não-objeto volta como veio). */
+export function stripLegacyVoiceKeys(v: unknown): unknown {
+  if (!isObj(v)) return v
+  if (!LEGACY_VOICE_KEYS.some((k) => k in v)) return v
+  const out = { ...v }
+  for (const k of LEGACY_VOICE_KEYS) delete out[k]
+  return out
+}
+
+/** Config de chat/persona com `voice` sem os campos legados. */
+const withoutLegacyVoice = (cfg: Plain): Plain =>
+  isObj(cfg.voice) ? { ...cfg, voice: stripLegacyVoiceKeys(cfg.voice) } : cfg
 
 // ---------------- local → plaintext ----------------
 
@@ -404,7 +433,9 @@ export function buildLocal(
       const raw = settingValue(conn, id)
       const value = (VOICE_SETTING_IDS as readonly string[]).includes(id)
         ? voiceSettingOut(conn, id, raw)
-        : raw
+        : id === 'voiceCallDefaults'
+          ? stripLegacyVoiceKeys(raw)
+          : raw
       return { scope: null, plain: { sv: 1, value } }
     }
     case 'preset': {
@@ -826,6 +857,7 @@ export function applyRemote(
         setSetting(conn, 'defaultModel', value ? strOrNull(v.model) : null)
       } else if ((VOICE_SETTING_IDS as readonly string[]).includes(id))
         setSetting(conn, id, voiceSettingIn(id, value, settingValue(conn, id)))
+      else if (id === 'voiceCallDefaults') setSetting(conn, id, stripLegacyVoiceKeys(value))
       else if ((SETTING_IDS as readonly string[]).includes(id)) setSetting(conn, id, value)
       res.scopes.add('settings')
       if ((VOICE_SETTING_IDS as readonly string[]).includes(id) || id === 'voiceCallDefaults')
@@ -839,7 +871,7 @@ export function applyRemote(
       const cur = conn.prepare('SELECT config_json FROM presets WHERE id = ?').get(id) as
         { config_json: string } | undefined
       const localCwd = cur ? parse<Plain>(cur.config_json, {}).cwd : undefined
-      const cfg: Plain = { ...((p.config ?? {}) as Plain) }
+      const cfg: Plain = withoutLegacyVoice({ ...((p.config ?? {}) as Plain) })
       delete cfg.cwd
       if (typeof localCwd === 'string' && localCwd) cfg.cwd = localCwd
       conn
@@ -939,7 +971,7 @@ export function applyRemote(
       const cur = conn.prepare('SELECT config_json FROM chats WHERE id = ?').get(id) as
         { config_json: string } | undefined
       const localCwd = cur ? parse<Plain>(cur.config_json, {}).cwd : undefined
-      const cfg: Plain = { ...((p.config ?? {}) as Plain) }
+      const cfg: Plain = withoutLegacyVoice({ ...((p.config ?? {}) as Plain) })
       delete cfg.cwd
       cfg.cwd =
         typeof localCwd === 'string' && localCwd ? localCwd : (ctx.defaultCwd?.() ?? homedir())

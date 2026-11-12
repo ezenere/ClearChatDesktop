@@ -32,6 +32,10 @@ export interface UtterancePlayer {
   readonly chains?: boolean
   /** Parada anunciada (rampa de saída começando): não agenda mais nada e solta o relógio. */
   detach?(): void
+  /** Quanto já tocou (ms) — o "ouvido" do barge-in em palavras e a leitura ao vivo. */
+  readonly positionMs?: number
+  /** Duração total (ms) quando conhecida (stream terminado / mídia carregada); null = ainda não. */
+  readonly durationMs?: number | null
 }
 
 /**
@@ -120,6 +124,16 @@ class DomAudioPlayer implements UtterancePlayer {
 
   set volume(v: number) {
     this.#el.volume = v
+  }
+
+  get positionMs(): number {
+    const t = this.#el.currentTime
+    return Number.isFinite(t) ? t * 1000 : 0
+  }
+
+  get durationMs(): number | null {
+    const d = this.#el.duration
+    return Number.isFinite(d) && d > 0 ? d * 1000 : null
   }
 
   /** Devolve a promise do `<audio>`: rejeição (autoplay/decodificação) chega à fila, que avança. */
@@ -299,6 +313,9 @@ export class WebAudioPcmPlayer implements UtterancePlayer {
   #detached = false
   /** Quadro (exclusivo) onde termina o último nó agendado por este player. */
   #lastEnd: number | null = null
+  /** Quadro do 1º nó agendado (o começo audível desta utterance) e quadros agendados no total. */
+  #firstFrame: number | null = null
+  #frames = 0
 
   readonly #contextFor: (rate: number) => AudioContext
 
@@ -318,6 +335,18 @@ export class WebAudioPcmPlayer implements UtterancePlayer {
   set volume(v: number) {
     this.#volume = v
     if (this.#gain) this.#gain.gain.value = v
+  }
+
+  get positionMs(): number {
+    const ctx = this.#ctx
+    if (!ctx || this.#firstFrame == null) return 0
+    const ms = (ctx.currentTime - this.#firstFrame / ctx.sampleRate) * 1000
+    return Math.max(0, Math.min(ms, (this.#frames / ctx.sampleRate) * 1000))
+  }
+
+  get durationMs(): number | null {
+    const ctx = this.#ctx
+    return ctx && this.#streamEnded ? (this.#frames / ctx.sampleRate) * 1000 : null
   }
 
   async play(): Promise<void> {
@@ -360,6 +389,8 @@ export class WebAudioPcmPlayer implements UtterancePlayer {
     const { startFrame, gap } = clock.place(samples.length, ctx.currentTime)
     if (fresh || gap) applyFadeIn(samples, (PCM_FADE_IN_MS / 1000) * ctx.sampleRate)
     this.#lastEnd = startFrame + samples.length
+    this.#firstFrame ??= startFrame
+    this.#frames += samples.length
     const buffer = ctx.createBuffer(1, samples.length, ctx.sampleRate)
     buffer.getChannelData(0).set(samples)
     const node = ctx.createBufferSource()
@@ -413,12 +444,6 @@ export class WebAudioPcmPlayer implements UtterancePlayer {
     this.#gain?.disconnect()
     this.#gain = null
   }
-}
-
-/** Ganho relativo da utterance (`gain` 0..1; ausente/lixo = 1). */
-function gainOf(u: VoiceCallUtteranceEvent | null): number {
-  const g = u?.gain
-  return typeof g === 'number' && Number.isFinite(g) ? Math.min(1, Math.max(0, g)) : 1
 }
 
 /**
@@ -526,6 +551,9 @@ export class UtteranceQueue {
   #next: Entry | null = null
   #state: UtteranceState = 'idle'
   #volume = 1
+  /** Fator do ducking (1 = normal; < 1 = o usuário fala por cima — `setDuck`). */
+  #duck = 1
+  #duckTimer: ReturnType<typeof setInterval> | null = null
 
   constructor(options: UtteranceQueueOptions = {}) {
     this.#factory = options.playerFactory ?? domPlayerFactory
@@ -548,6 +576,21 @@ export class UtteranceQueue {
     return this.#cur?.item ?? null
   }
 
+  /**
+   * Posição da utterance tocando agora: quanto já tocou e a duração total quando conhecida (o
+   * barge-in em palavras e a leitura ao vivo). null = nada tocando.
+   */
+  currentPosition(): { id: string; playedMs: number; durationMs: number | null } | null {
+    const e = this.#cur
+    if (!e || !e.started) return null
+    const p = e.player
+    return {
+      id: e.item.id,
+      playedMs: Math.max(0, Math.round(p.positionMs ?? 0)),
+      durationMs: p.durationMs != null ? Math.round(p.durationMs) : null
+    }
+  }
+
   /** Ids das utterances aguardando (na ordem; sem a que está tocando — a pré-iniciada entra). */
   get queuedIds(): string[] {
     return [...(this.#next ? [this.#next.item.id] : []), ...this.#queue.map((u) => u.id)]
@@ -560,7 +603,45 @@ export class UtteranceQueue {
 
   setVolume(volume: number): void {
     this.#volume = Number.isFinite(volume) ? Math.min(1, Math.max(0, volume)) : 1
-    for (const e of [this.#cur, this.#next]) if (e) e.player.volume = this.#volume * gainOf(e.item)
+    this.#applyVolume()
+  }
+
+  /** Fator do ducking atual (1 = normal). */
+  get duck(): number {
+    return this.#duck
+  }
+
+  /**
+   * Ducking (barge-in com histerese): o áudio do assistente vai ao fator `gain` (0..1; 1 = volta ao
+   * normal) numa rampa linear de `fadeMs` (passos de ~10 ms) e CONTINUA tocando — vale para o que
+   * toca e para o que vier depois, até o próximo `setDuck`. `fadeMs` 0 = na hora.
+   */
+  setDuck(gain: number, fadeMs = 0): void {
+    const target = Number.isFinite(gain) ? Math.min(1, Math.max(0, gain)) : 1
+    if (this.#duckTimer) clearInterval(this.#duckTimer)
+    this.#duckTimer = null
+    const from = this.#duck
+    if (!(fadeMs > 0) || typeof setInterval !== 'function' || from === target) {
+      this.#duck = target
+      this.#applyVolume()
+      return
+    }
+    const steps = Math.max(1, Math.round(fadeMs / 10))
+    let i = 0
+    this.#duckTimer = setInterval(() => {
+      i++
+      this.#duck = from + (target - from) * Math.min(1, i / steps)
+      this.#applyVolume()
+      if (i >= steps && this.#duckTimer) {
+        clearInterval(this.#duckTimer)
+        this.#duckTimer = null
+      }
+    }, fadeMs / steps)
+  }
+
+  #applyVolume(): void {
+    const v = this.#volume * this.#duck
+    for (const e of [this.#cur, this.#next]) if (e) e.player.volume = v
   }
 
   /** Enfileira uma utterance (bytes completos) — toca na ordem, sem sobreposição. */
@@ -675,7 +756,7 @@ export class UtteranceQueue {
       failed: null,
       scheduled: false
     }
-    player.volume = this.#volume * gainOf(item)
+    player.volume = this.#volume * this.#duck
     player.onended = () => this.#ended(entry)
     player.onerror = (reason?: string) => this.#failed(entry, reason || 'erro ao tocar')
     if (player.chains)

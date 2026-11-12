@@ -13,7 +13,13 @@
 // - sem fronteira há muito tempo: corte forçado no último espaço antes de `maxChars` (padrão 240)
 //   — resposta sem pontuação nunca espera o fim inteiro para começar a falar;
 // - `commaCutMin` (1º pedaço da resposta): vírgula + espaço depois de ≥ N chars também corta — o
-//   TTS começa a falar antes (a 1ª frase longa vira duas utterances).
+//   TTS começa a falar antes (a 1ª frase longa vira duas utterances);
+// - **tags de voz** (`@shared/audioTags` — "[laughs]", "[nervous, whispering]"): nunca há corte
+//   DENTRO dos colchetes (marca, vírgula nem corte forçado — inclusive com a tag ainda chegando no
+//   streaming); uma tag que sobra sozinha entre sentenças vai para o começo da seguinte (ela modula
+//   o que vem depois) ou, no fim da resposta, para o fim da anterior — nunca vira uma utterance.
+import { audioTagRe, isOnlyAudioTags } from '@shared/audioTags'
+
 export interface SentenceSplit {
   /** Sentenças completas, na ordem, já aparadas (uma por utterance do TTS). */
   sentences: string[]
@@ -112,6 +118,24 @@ function dotCuts(
 }
 
 /**
+ * Trechos de `buffer` dentro de tags de voz (`[início, fim)`) — inclusive uma tag ainda aberta no fim
+ * do buffer (streaming: o "]" ainda não chegou), desde que curta o bastante para ser uma tag.
+ */
+function tagSpans(buffer: string): [number, number][] {
+  const spans: [number, number][] = []
+  for (const m of buffer.matchAll(audioTagRe())) spans.push([m.index, m.index + m[0].length])
+  const open = buffer.lastIndexOf('[')
+  if (
+    open >= 0 &&
+    buffer.indexOf(']', open) < 0 &&
+    buffer.length - open <= 42 &&
+    /^\[\p{L}?[\p{L} ,.!?'’-]*$/u.test(buffer.slice(open))
+  )
+    spans.push([open, buffer.length])
+  return spans
+}
+
+/**
  * Corta as sentenças completas de `buffer`. `final: true` trata o fim do buffer como fronteira
  * (flush do fim da resposta); `maxChars` limita o `rest` acumulado (corte forçado em espaço).
  * `rest` volta sem espaço à esquerda (o que vem depois de um corte é início de sentença).
@@ -120,6 +144,51 @@ export function splitSentences(
   buffer: string,
   opts: { final?: boolean; maxChars?: number; commaCutMin?: number } = {}
 ): SentenceSplit {
+  const split = splitRaw(buffer, opts)
+  return attachLoneTags(split, !!opts.final)
+}
+
+/**
+ * Tag de voz sozinha entre as sentenças vai para o começo da seguinte; no fim: com `final`, para o
+ * fim da anterior (sem anterior, sai — uma tag sozinha nunca vira utterance); em streaming, volta ao
+ * `rest` (espera o texto que ela modula).
+ */
+function attachLoneTags(split: SentenceSplit, final: boolean): SentenceSplit {
+  const out: string[] = []
+  let carry = ''
+  for (const s of split.sentences) {
+    if (isOnlyAudioTags(s)) {
+      carry = carry ? `${carry} ${s}` : s
+      continue
+    }
+    out.push(carry ? `${carry} ${s}` : s)
+    carry = ''
+  }
+  let rest = split.rest
+  // streaming: resto que é só tag (ou uma tag ainda chegando) segura a última sentença — se nada
+  // vier depois, no fim a tag fecha a frase anterior em vez de sobrar sozinha
+  if (!final && out.length && (isOnlyAudioTags(rest) || /^\s*\[[^\]]*$/.test(rest)) && !carry) {
+    rest = `${out.pop()} ${rest.trim()}`
+    return { sentences: out, rest }
+  }
+  // no fim da resposta, o resto que é só tag ("Isso é ótimo. [sighs]") fecha a sentença anterior
+  if (final && isOnlyAudioTags(rest)) {
+    carry = carry ? `${carry} ${rest.trim()}` : rest.trim()
+    rest = ''
+  }
+  if (carry) {
+    if (!final) rest = rest ? `${carry} ${rest}` : carry
+    else if (out.length) out[out.length - 1] = `${out[out.length - 1]} ${carry}`
+  }
+  return { sentences: out, rest }
+}
+
+function splitRaw(
+  buffer: string,
+  opts: { final?: boolean; maxChars?: number; commaCutMin?: number }
+): SentenceSplit {
+  const spans = tagSpans(buffer)
+  const inTag = (k: number): boolean => spans.some(([a, b]) => k > a && k < b)
   const commaMin =
     typeof opts.commaCutMin === 'number' && opts.commaCutMin > 0 ? opts.commaCutMin : 0
   const maxChars =
@@ -135,6 +204,7 @@ export function splitSentences(
       commaMin &&
       !sentences.length &&
       buffer[i] === ',' &&
+      !inTag(i) &&
       i + 1 < buffer.length &&
       /\s/.test(buffer[i + 1]) &&
       buffer.slice(segStart, i).trim().length >= commaMin
@@ -145,7 +215,7 @@ export function splitSentences(
       i = i + 1
       continue
     }
-    if (!isMark(buffer[i])) {
+    if (!isMark(buffer[i]) || inTag(i)) {
       i++
       continue
     }
@@ -172,8 +242,9 @@ export function splitSentences(
   // corte forçado: sem fronteira há mais que maxChars → corta no último espaço (ou em maxChars)
   if (rest.length > maxChars) {
     let cut = -1
+    const base = buffer.length - rest.length
     for (let k = Math.min(maxChars, rest.length - 1); k > 0; k--) {
-      if (/\s/.test(rest[k])) {
+      if (/\s/.test(rest[k]) && !inTag(base + k)) {
         cut = k
         break
       }

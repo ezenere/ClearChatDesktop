@@ -118,9 +118,11 @@ before(async () => {
       const reply =
         key === 'duas'
           ? 'Primeira frase. Segunda frase.'
-          : key === 'ok'
-            ? 'Certo.'
-            : 'Resposta simples.'
+          : key === 'longa'
+            ? 'Esta é uma frase bem longa sobre gatos e cachorros. Segunda frase.'
+            : key === 'ok'
+              ? 'Certo.'
+              : 'Resposta simples.'
       const mid = Math.ceil(reply.length / 2)
       res.write(chunk(body.model, { role: 'assistant', content: reply.slice(0, mid) }))
       await new Promise((r) => setTimeout(r, 25))
@@ -278,7 +280,7 @@ async function boot(): Promise<{ manager: Manager }> {
       emittedIds.push(u.id)
       queue?.enqueue(u)
     },
-    // fillers/interjeições ficam fora destes testes (clip ausente = nada toca; ver
+    // os preâmbulos ficam fora destes testes (clip ausente = nada toca; ver
     // `e2e/voiceCallActs.test.ts` para os atos de fala curta)
     emitUtteranceCancel: (id) => queue?.drop(id),
     emitTimeline: () => {},
@@ -477,6 +479,68 @@ test('barge-in: fala durante a reprodução cancela a fala e o histórico fica s
   assert.equal(msgs[1].meta.interrupted, true, 'marcada como interrompida')
   m.stop()
   synthMode = 'auto'
+})
+
+test('barge-in no MEIO de uma frase: o histórico fica só com as palavras ouvidas + "…"; o resto é só de exibição', async () => {
+  synthMode = 'gated'
+  gates.length = 0
+  synthCalls.length = 0
+  emitted.length = 0
+  players.length = 0
+  playerLog.length = 0
+  const { manager: m } = await boot()
+  m.stop()
+  const { sid } = await newChat()
+  m.start(sid)
+  m.speechBegin()
+  m.speechEnd()
+  m.turn('longa')
+  await waitFor(() => synthCalls.length >= 1, 8000, '1ª síntese')
+  openGate(0)
+  await waitFor(() => emitted.length >= 1, 8000, '1ª utterance')
+  const firstId = emittedIds[emittedIds.length - 1]
+  await waitFor(() => synthCalls.length >= 2, 8000, '2ª síntese em voo')
+  // o usuário insiste no meio da 1ª frase: tocou 1,65 s de 3 s (o player informa a posição)
+  queue!.cancel()
+  m.bargeIn({
+    playedIds: [firstId],
+    reason: 'voiced',
+    current: { id: firstId, playedMs: 1650, durationMs: 3000 }
+  })
+  openGate(1)
+  await idle(sid)
+  const full = 'Esta é uma frase bem longa sobre gatos e cachorros. Segunda frase.'
+  await waitFor(
+    () => textOf(path(sid)[1]?.message.content).endsWith('…'),
+    8000,
+    'histórico truncado às palavras ouvidas'
+  )
+  const asst = path(sid)[1]
+  const heard = textOf(asst.message.content)
+  assert.ok(heard.startsWith('Esta é uma'), heard)
+  assert.ok(!heard.includes('cachorros'), `só o ouvido: ${heard}`)
+  assert.ok(full.startsWith(heard.slice(0, -1)), 'prefixo do original, em fronteira de palavra')
+  assert.ok(/\p{L}…$/u.test(heard), 'termina numa palavra inteira + "…"')
+  assert.equal(asst.meta.interrupted, true)
+  assert.equal(asst.meta.voice?.spoken, 'partial')
+  assert.equal(
+    `${heard.slice(0, -1)} ${asst.meta.voice?.unheard}`,
+    full,
+    'o resto não ouvido fica em meta.voice.unheard (exibição)'
+  )
+  // a próxima request leva SÓ o texto ouvido (o resto nunca vai ao modelo)
+  synthMode = 'auto'
+  const before = requests.length
+  m.speechBegin()
+  m.speechEnd()
+  m.turn('ok')
+  await waitFor(() => requests.length > before, 8000, 'próxima request')
+  await idle(sid)
+  const sent = requests[before].body.messages as any[]
+  const prev = sent.find((x) => x.role === 'assistant')
+  assert.equal(textOf(prev.content), heard, 'o modelo vê só o que foi ouvido + "…"')
+  assert.ok(!JSON.stringify(sent).includes('cachorros'), 'nada do trecho não ouvido na request')
+  m.stop()
 })
 
 test('turno continuado: falar de novo antes de ouvir a resposta une as falas e apaga a resposta não ouvida', async () => {

@@ -2,15 +2,15 @@
 // largura do card do composer; texto, anexos, mic e enviar somem — nada é digitado no rascunho por
 // engano, e o rascunho volta intacto quando a chamada acaba). Mostra a fase ("Ouvindo…/
 // Transcrevendo…/Pensando…/Falando…"), waveform do microfone, mudo (captura pausada), volume,
-// painel de timeline/toggles ("Atos de fala curta"), indicador de modo sombra, "Encerrar", o aviso
-// de clipes ausentes (CTA "Gerar clipes") e o card de erro. Em OUTROS chats o composer funciona e
+// painel de timeline/toggles ("Atos de fala curta"), "Encerrar", o aviso de clipes ausentes (CTA
+// "Gerar clipes") e o card de erro. Em OUTROS chats o composer funciona e
 // mostra a pílula "Chamada ativa em <chat>" (`VoiceCallElsewhere`) que leva de volta.
 //
 // A captura/reprodução vive em `lib/voice/useVoiceCall`, rodada UMA vez por `VoiceCallController`
 // (em `App`); o estado de runtime vem de `useVoiceCallRuntime`. O chat continua normal por cima.
 // Testids: `voice-call-dock`, `voice-call-status`, `voice-call-waveform`, `voice-call-mute`,
 // `voice-call-volume`, `voice-call-end`, `voice-call-error`, `voice-call-pending`,
-// `voice-call-panel-toggle`, `voice-call-shadow`, `voice-call-clips-hint`, `voice-call-elsewhere`
+// `voice-call-panel-toggle`, `voice-call-clips-hint`, `voice-call-elsewhere`
 // (painel: `voice-call-panel`); GPU local: `voice-call-preparing` (andamento da fase "Preparando a
 // GPU…" — o microfone ainda não abriu), `voice-call-gpu-notice` (+ `-ok` "Entendi", uma vez por
 // sessão do app) e `voice-call-gpu-warning` (pouca VRAM livre — avisa, não barra).
@@ -29,7 +29,7 @@ import {
   Volume2,
   X
 } from 'lucide-react'
-import type { VoiceCallPhase } from '@shared/voice'
+import { DEFAULT_FILLER_POOL, type VoiceCallPhase } from '@shared/voice'
 import { api } from '../../lib/api'
 import { cn } from '../../lib/format'
 import { useStore } from '../../store'
@@ -130,20 +130,15 @@ function CallClock({ startedAt }: { startedAt?: number }): React.JSX.Element {
 export function VoiceCallDock(): React.JSX.Element | null {
   const call = useStore((s) => s.voiceCall)
   const stopVoiceCall = useStore((s) => s.stopVoiceCall)
-  const timeline = useStore((s) => s.voiceCallTimeline)
   const runtimeError = useVoiceCallRuntime((s) => s.error)
   const volume = useVoiceCallRuntime((s) => s.volume)
   const toggleMute = useVoiceCallRuntime((s) => s.toggleMute)
   const setVolume = useVoiceCallRuntime((s) => s.setVolume)
   const clearError = useVoiceCallRuntime((s) => s.clearError)
   const [panelOpen, setPanelOpen] = useState(false)
-  const { resolved } = useVoiceCallConfig()
   if (!call.active) return null
   const error = call.error ?? runtimeError
   const preparing = call.preparing || null
-  const shadowCount = timeline.filter(
-    (e) => e.kind === 'decision' && !e.played && (e.reason ?? '').includes('shadow')
-  ).length
   return (
     <div className="space-y-2" onClick={(e) => e.stopPropagation()}>
       <VoiceCallPanel open={panelOpen} />
@@ -270,15 +265,6 @@ export function VoiceCallDock(): React.JSX.Element | null {
               />
             </label>
           </Tip>
-          {resolved.interjections.shadow && (
-            <span
-              data-testid="voice-call-shadow"
-              className="shrink-0 rounded-full border border-warning/40 bg-warning/10 px-1.5 py-px text-[10px] whitespace-nowrap text-warning"
-              title="Modo sombra: os atos de fala curta decidem mas não tocam (decisões no log de avaliação)"
-            >
-              modo sombra · {shadowCount}
-            </span>
-          )}
           <span className="min-w-0 flex-1 truncate text-[11px] text-faint">
             Texto desativado durante a chamada
           </span>
@@ -314,17 +300,15 @@ function DockWaveform({ muted }: { muted: boolean }): React.JSX.Element {
 }
 
 /**
- * Interjeições/fillers ligados (fora do modo sombra) mas sem clipes gerados para a voz atual:
- * nada tocaria em silêncio — o dock avisa e oferece gerar os clipes ali mesmo.
+ * Preâmbulos ligados mas sem clipes gerados para a voz atual: nada tocaria em silêncio — o dock
+ * avisa e oferece gerar os clipes ali mesmo.
  */
 function ClipsHint(): React.JSX.Element | null {
   const clips = useVoiceCallRuntime((s) => s.clips)
   const progress = useVoiceCallRuntime((s) => s.clipsProgress)
   const generate = useVoiceCallRuntime((s) => s.generateClips)
   const { resolved } = useVoiceCallConfig()
-  const wants =
-    !resolved.interjections.shadow && (resolved.interjections.enabled || resolved.fillers.enabled)
-  if (!wants || (clips !== 'missing' && clips !== 'generating')) return null
+  if (!resolved.fillers.enabled || (clips !== 'missing' && clips !== 'generating')) return null
   return (
     <div
       data-testid="voice-call-clips-hint"
@@ -333,8 +317,8 @@ function ClipsHint(): React.JSX.Element | null {
       <Sparkles className="size-3.5 shrink-0" />
       <span className="min-w-0 flex-1">
         {clips === 'generating'
-          ? `Gerando clipes de voz… ${progress?.done ?? 0}/${progress?.total || 15}`
-          : 'Interjeições e falas de espera estão ligadas, mas ainda não há clipes para a voz atual — nada vai tocar até gerar.'}
+          ? `Gerando clipes de voz… ${progress?.done ?? 0}/${progress?.total || DEFAULT_FILLER_POOL.length}`
+          : 'Os preâmbulos estão ligados, mas ainda não há clipes para a voz atual — nada vai tocar até gerar.'}
       </span>
       {clips === 'missing' && (
         <button

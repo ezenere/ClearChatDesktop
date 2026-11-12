@@ -1,4 +1,4 @@
-// Fim de turno adaptativo, turno continuado e backchannel discreto da chamada de voz — políticas
+// Fim de turno adaptativo, turno continuado e preâmbulos da chamada de voz — políticas
 // puras (`@shared/voiceTurn`, `@shared/voicePolicy`, `sentences.ts`, `tools/util.ts`) e os fluxos
 // do `VoiceCallManager` com fakes (runner/síntese/clipes falsos; nada de rede).
 // Rodar: node --import ./e2e/ts-hooks.mjs --test e2e/voiceTurnEnd.test.ts
@@ -11,7 +11,6 @@ import type { AgentEvent, ChatConfig } from '@shared/types'
 import {
   DEFAULT_AUDIO_INPUT,
   DEFAULT_FILLER_POOL,
-  DEFAULT_INTERJECTION_POLICY,
   DEFAULT_STT_SETTINGS,
   DEFAULT_TTS_SETTINGS,
   DEFAULT_TURN_TIMING,
@@ -24,12 +23,7 @@ import {
   spokenPrefix,
   turnSilenceFor
 } from '@shared/voiceTurn'
-import {
-  classifyFillerContext,
-  decideInterjection,
-  fillerTooShort,
-  pickFillerPhrase
-} from '@shared/voicePolicy'
+import { classifyFillerContext, fillerTooShort, pickFillerPhrase } from '@shared/voicePolicy'
 import { splitSentences } from '../src/main/voice/sentences.ts'
 import { caseInsensitiveMatch } from '../src/main/tools/util.ts'
 import {
@@ -266,43 +260,9 @@ test('pickFillerPhrase: frase do contexto, nunca uma das últimas 4; pool pequen
   )
 })
 
-// ---------------- backchannel discreto ----------------
+// ---------------- fila: volume e fade ----------------
 
-test('decideInterjection: pergunta/comando (veredito ou cauda) nunca ganham backchannel', () => {
-  const P = { ...DEFAULT_INTERJECTION_POLICY, fireProbability: 1 }
-  const base = { speechMs: 2000, pauseMs: 500, observedAt: 1000 }
-  const ctx = { now: 1000, lastFiredAt: null }
-  const q = decideInterjection({ ...base, tail: 'qual é a diferença?' }, P, ctx, () => 0)
-  assert.equal(q.reason, 'turn-end')
-  const cmd = decideInterjection({ ...base, tail: 'lista os arquivos da pasta' }, P, ctx, () => 0)
-  assert.equal(cmd.reason, 'turn-end')
-  const v = decideInterjection({ ...base, tail: 'perto de casa', end: 'complete' }, P, ctx, () => 0)
-  assert.equal(v.reason, 'turn-end', 'veredito da especulação manda')
-  const story = decideInterjection(
-    { ...base, tail: 'ontem eu fui no mercado perto de casa,', end: 'unfinished' },
-    P,
-    { ...ctx, variants: { ACK: 2 } },
-    () => 0.99
-  )
-  assert.equal(story.class, 'ACK', 'meio de história: só "Uhum."/"Aham."')
-  assert.ok(story.class === 'ACK' && story.variant <= 2)
-  // padrões: cooldown 5 s, probabilidade 0,5
-  assert.equal(DEFAULT_INTERJECTION_POLICY.cooldownMs, 5000)
-  assert.equal(DEFAULT_INTERJECTION_POLICY.fireProbability, 0.5)
-  assert.equal(
-    decideInterjection(
-      { ...base, tail: 'e aí,', end: 'unfinished' },
-      DEFAULT_INTERJECTION_POLICY,
-      { ...ctx, lastFiredAt: 1000 - 4999 },
-      () => 0
-    ).reason,
-    'cooldown'
-  )
-})
-
-// ---------------- fila: ganho e fade ----------------
-
-test('UtteranceQueue: ganho por utterance (interjeição 0,6) e corte com fade (sem corte seco)', async () => {
+test('UtteranceQueue: volume da chamada e corte com fade (sem corte seco)', async () => {
   const vols: number[] = []
   const log: string[] = []
   let player: UtterancePlayer | null = null
@@ -329,10 +289,9 @@ test('UtteranceQueue: ganho por utterance (interjeição 0,6) e corte com fade (
     id: 'i1',
     audio: new Uint8Array([1]),
     mime: 'audio/wav',
-    kind: 'interjection',
-    gain: 0.6
+    kind: 'filler'
   })
-  assert.equal(vols[0], 0.3, 'volume da chamada × ganho da interjeição')
+  assert.equal(vols[0], 0.5, 'volume da chamada')
   assert.ok(player)
   q.drop('i1', 40)
   assert.deepEqual(log, ['play'], 'ainda em fade')

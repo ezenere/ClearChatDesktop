@@ -1,6 +1,6 @@
-// Log de avaliação (`<userData>/voice-eval/*.jsonl`) e métricas da timeline da chamada de voz:
-// schema das linhas de decisão (filler/interjeição — tocadas, sombra, descartadas), escrita
-// tolerante em arquivos por dia e as métricas do painel (interjeições/min, p50/p95 decisão→áudio).
+// Log de diagnóstico dos preâmbulos (`<userData>/voice-eval/*.jsonl`) e métricas da timeline da
+// chamada de voz: schema das linhas de decisão (preâmbulo tocado ou não), escrita tolerante em
+// arquivos por dia e as contagens do painel (preâmbulos/frases de demora tocados, motivos).
 // Rodar: node --import ./e2e/ts-hooks.mjs --test e2e/voiceCallEval.test.ts
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -8,6 +8,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { VoiceCallTimelineEvent } from '@shared/ipc'
+import { FILLER_POOL_MAX } from '@shared/voice'
 import { computeVoiceCallMetrics } from '@shared/voiceTimeline'
 import {
   createEvalLogger,
@@ -18,57 +19,50 @@ import {
 
 const BASE = (): VoiceEvalEvent => ({
   ts: 1_700_000_000_000,
-  kind: 'interjection',
-  class: 'ACK',
-  variant: 2,
+  kind: 'filler',
+  variant: 7,
   played: true,
-  shadow: false,
-  speechMs: 1200,
-  pauseMs: 500,
-  tail: 'uhum, entendi',
   latencyMs: 40,
-  reason: 'ok'
+  reason: 'delay/question'
 })
 
 // ---------------- schema ----------------
 
-test('normalizeEvalEvent: round-trip válido; lixo/campos inválidos viram null; tail truncado', () => {
-  const e = normalizeEvalEvent(BASE())
-  assert.deepEqual(e, BASE())
+test('normalizeEvalEvent: round-trip válido; lixo/campos inválidos viram null', () => {
+  assert.deepEqual(normalizeEvalEvent(BASE()), BASE())
 
   assert.equal(normalizeEvalEvent(null), null)
   assert.equal(normalizeEvalEvent('x'), null)
   assert.equal(
-    normalizeEvalEvent({ ...BASE(), class: 'DROP TABLE' }),
+    normalizeEvalEvent({ ...BASE(), variant: FILLER_POOL_MAX + 1 }),
     null,
-    'classe fora da whitelist'
+    'variante fora do pool'
   )
-  assert.equal(normalizeEvalEvent({ ...BASE(), variant: 9 }), null, 'variante fora de 1..3')
+  assert.equal(normalizeEvalEvent({ ...BASE(), variant: 0 }), null, 'variante 1-based')
+  // linhas de outros kinds não são aceitas
   assert.equal(normalizeEvalEvent({ ...BASE(), kind: 'x' }), null, 'kind desconhecido')
   assert.equal(normalizeEvalEvent({ ...BASE(), ts: Number.NaN }), null, 'ts inválido')
-
-  const long = normalizeEvalEvent({ ...BASE(), tail: 'x'.repeat(300) })
-  assert.equal(long?.tail?.length, 80, 'cauda truncada')
+  // variantes até o teto do pool (16) — antes só 1..3 entravam e os preâmbulos 4+ sumiam do log
+  assert.equal(normalizeEvalEvent({ ...BASE(), variant: FILLER_POOL_MAX })?.variant, 16)
 
   const rough = normalizeEvalEvent({
     ...BASE(),
     ts: 1.6,
     variant: 2.7,
-    speechMs: -5,
-    pauseMs: 10.2,
     latencyMs: 7.9,
     played: 1,
-    shadow: 'yes',
+    shadow: true, // campo antigo: descartado
+    tail: 'fala do usuário', // nada da fala é gravado
     reason: 'r'.repeat(200)
   })
-  assert.equal(rough?.ts, 2)
-  assert.equal(rough?.variant, 3)
-  assert.equal(rough?.speechMs, 0, 'negativo vira 0')
-  assert.equal(rough?.pauseMs, 10)
-  assert.equal(rough?.latencyMs, 8)
-  assert.equal(rough?.played, false, 'só boolean true conta')
-  assert.equal(rough?.shadow, false)
-  assert.equal(rough?.reason.length, 64)
+  assert.deepEqual(rough, {
+    ts: 2,
+    kind: 'filler',
+    variant: 3,
+    played: false,
+    latencyMs: 8,
+    reason: 'r'.repeat(64)
+  })
 })
 
 // ---------------- escrita ----------------
@@ -77,18 +71,10 @@ test('createEvalLogger: um JSONL por dia com UMA linha por decisão; inválido n
   const dir = await mkdtemp(join(tmpdir(), 'clearchat-eval-'))
   try {
     const logger = createEvalLogger(dir)
-    const filler: VoiceEvalEvent = {
-      ...BASE(),
-      kind: 'filler',
-      class: 'FILLER',
-      variant: 1,
-      tail: null,
-      speechMs: null,
-      pauseMs: null
-    }
-    logger.log(filler)
+    const skipped: VoiceEvalEvent = { ...BASE(), variant: 1, played: false, reason: 'delay/spoken' }
+    logger.log(skipped)
     logger.log(BASE())
-    logger.log({ ...BASE(), class: 'NOPE' } as VoiceEvalEvent) // inválido: fora
+    logger.log({ ...BASE(), variant: 99 }) // inválido: fora
     // as escritas são serializadas numa cadeia: espera o arquivo do dia
     const file = evalLogFile(dir, new Date(BASE().ts))
     assert.equal(file, logger.file(new Date(BASE().ts)))
@@ -100,13 +86,8 @@ test('createEvalLogger: um JSONL por dia com UMA linha por decisão; inválido n
     const lines = text.split('\n').filter(Boolean)
     assert.equal(lines.length, 2, 'uma linha por decisão (a inválida não entra)')
     const parsed = lines.map((l) => normalizeEvalEvent(JSON.parse(l)))
-    assert.equal(parsed[0]?.kind, 'filler')
-    assert.equal(parsed[0]?.class, 'FILLER')
-    assert.equal(parsed[0]?.speechMs, null)
-    assert.equal(parsed[1]?.kind, 'interjection')
-    assert.equal(parsed[1]?.tail, 'uhum, entendi')
-    assert.equal(parsed[1]?.latencyMs, 40)
-    assert.deepEqual(parsed[0], normalizeEvalEvent(filler))
+    assert.deepEqual(parsed[0], skipped)
+    assert.deepEqual(parsed[1], BASE())
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
@@ -140,48 +121,40 @@ const ev = (
   extra: Partial<VoiceCallTimelineEvent> = {}
 ): VoiceCallTimelineEvent => ({ ts, kind, ...extra })
 
-test('computeVoiceCallMetrics: interjeições/min, contagens e p50/p95 decisão→áudio', () => {
+test('computeVoiceCallMetrics: preâmbulos e frases de demora tocados; motivos por balde', () => {
   const events: VoiceCallTimelineEvent[] = [
     ev(1_000, 'speech-start'),
-    ev(1_100, 'pause', { pauseMs: 500 }),
-    ev(1_200, 'decision', { class: 'ACK', variant: 1, played: true, id: 'u1' }),
-    ev(1_250, 'clip-emitted', { class: 'ACK', id: 'u1' }),
-    ev(1_300, 'clip-start', { id: 'u1' }), // 100 ms decisão→áudio
-    ev(2_000, 'decision', { class: 'FILLER', variant: 2, played: true, id: 'u2' }), // filler não conta
+    ev(2_000, 'decision', { class: 'FILLER', variant: 2, played: true }),
     ev(2_010, 'clip-start', { id: 'u2' }),
-    ev(3_000, 'decision', { class: 'AGREEMENT', variant: 1, played: true, id: 'u3' }),
-    ev(3_120, 'clip-start', { id: 'u3' }), // 120 ms
-    ev(3_200, 'decision', { class: 'THINKING', variant: 3, played: false, reason: 'shadow' }), // sombra: sem áudio
-    ev(3_870, 'decision', { class: 'ACK', variant: 2, played: true, id: 'u4' }),
-    ev(4_000, 'clip-start', { id: 'u4' }) // 130 ms
+    ev(3_000, 'decision', { class: 'FILLER', played: false, reason: 'short-speech' }),
+    ev(3_100, 'decision', { class: 'FILLER', variant: 4, played: false, reason: 'delay/no-clip' }),
+    ev(3_200, 'decision', { class: 'KEEPALIVE', played: true, id: 'u5' }),
+    ev(3_300, 'decision', { class: 'APOLOGY', played: false, reason: 'not-ready' }),
+    ev(3_400, 'decision', { class: 'APOLOGY', played: true, id: 'u6' }),
+    // decisões de classes desconhecidas não entram em balde nenhum
+    ev(3_500, 'decision', { class: 'ACK', played: false, reason: 'cooldown' }),
+    ev(4_000, 'speech-end')
   ]
   const m = computeVoiceCallMetrics(events)
   assert.equal(m.elapsedMs, 3_000, '1000 → 4000')
-  assert.equal(m.decisions, 4, 'decisões de interjeição (filler não conta)')
-  assert.equal(m.played, 3)
-  assert.equal(m.interjectionsPerMin, 80, '4 decisões em 0,05 min')
-  assert.deepEqual(m.decisionToAudioMs, { p50: 120, p95: 130 })
-
-  // sem pares (decisão sem id / áudio nunca começou) → null
-  const noPairs = computeVoiceCallMetrics([
-    ev(0, 'decision', { class: 'ACK', played: true, reason: 'ok' }),
-    ev(1_000, 'speech-end')
-  ])
-  assert.equal(noPairs.decisionToAudioMs, null)
-  assert.equal(noPairs.decisions, 1)
-  assert.equal(noPairs.interjectionsPerMin, 60, '1 decisão em 1 s = 60/min')
+  assert.equal(m.fillerPlayed, 1)
+  assert.deepEqual(m.delayPlayed, { keepAlive: 1, apology: 1 })
+  assert.deepEqual(m.skipped, {
+    filler: { 'short-speech': 1, 'delay/no-clip': 1 },
+    delay: { 'not-ready': 1 }
+  })
 
   // sem eventos: zeros
   const empty = computeVoiceCallMetrics([])
-  assert.equal(empty.decisions, 0)
-  assert.equal(empty.interjectionsPerMin, 0)
-  assert.equal(empty.decisionToAudioMs, null)
+  assert.equal(empty.elapsedMs, 0)
+  assert.equal(empty.fillerPlayed, 0)
+  assert.deepEqual(empty.skipped, { filler: {}, delay: {} })
 
   // `now` fecha o tempo da chamada
   const short = computeVoiceCallMetrics(
-    [ev(1_000, 'decision', { class: 'ACK', played: false })],
+    [ev(1_000, 'decision', { class: 'FILLER', played: false })],
     2_000
   )
   assert.equal(short.elapsedMs, 1_000)
-  assert.equal(short.interjectionsPerMin, 60)
+  assert.deepEqual(short.skipped.filler, { '?': 1 })
 })

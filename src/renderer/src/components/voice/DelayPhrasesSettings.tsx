@@ -10,6 +10,7 @@ import {
   normalizeDelayPhrasePool,
   type VoiceDelayPhrases
 } from '@shared/voice'
+import { DELAY_MIN_GAP_MS } from '@shared/voicePolicy'
 import { ToggleRow } from '../panel/fields'
 import { Button } from '../ui/controls'
 import { NumberRow, SubHeading } from './audioUi'
@@ -92,8 +93,9 @@ export function DelayPhrasesSettings({
         onChange={(enabled) => set({ enabled })}
         help={
           'Quando a resposta demora (raciocínio longo, tools), a chamada fala uma frase curta com a MESMA voz, sintetizada na hora (sem clipes pré-gerados):\n' +
-          '• "manter viva" — depois do preâmbulo, sem áudio da resposta pelo tempo abaixo: "Só mais um instante…" (no máximo 2 por turno, 1 a cada ~6 s);\n' +
-          '• desculpa — a resposta ficou pronta depois do tempo abaixo: "Desculpe a demora, vamos lá." antes dela (só se já estiver pronta — a resposta nunca espera por ela; não sai logo depois de um "manter viva").\n' +
+          '• "manter viva" — depois do preâmbulo, sem áudio da resposta pelo tempo abaixo: "Só mais um instante…" (no máximo 2 por turno, 15 s entre o fim de uma e o início da outra);\n' +
+          '• desculpa — a resposta ficou pronta depois do tempo abaixo: "Desculpe a demora, vamos lá." antes dela (só se já estiver pronta — a resposta nunca espera por ela).\n' +
+          'Espaçadas: sempre pelo menos 10 s de silêncio entre o fim de qualquer frase curta (preâmbulo, "manter viva", desculpa) e a próxima "manter viva" ou desculpa — a desculpa que cairia antes disso é pulada.\n' +
           'Nunca enquanto você fala, depois de um barge-in ou da despedida. Não entram no histórico; os caracteres contam no custo da voz da chamada.'
         }
       />
@@ -101,7 +103,7 @@ export function DelayPhrasesSettings({
         <>
           <NumberRow
             label="Manter viva após"
-            help="Silêncio esperando a resposta (depois do preâmbulo) até a frase “manter viva”."
+            help={`Silêncio esperando a resposta (depois do preâmbulo, ou do envio da sua fala) até a frase “manter viva” — padrão ${DEFAULT_DELAY_PHRASES.keepAliveAfterMs / 1000} s; depois de uma frase curta, nunca menos de ${DELAY_MIN_GAP_MS / 1000} s.`}
             value={dp.keepAliveAfterMs}
             min={DELAY_PHRASE_MS_RANGE.min}
             max={DELAY_PHRASE_MS_RANGE.max}
@@ -113,7 +115,7 @@ export function DelayPhrasesSettings({
           />
           <NumberRow
             label="Desculpa após"
-            help="Espera desde o fim da sua fala acima da qual a resposta ganha uma desculpa antes."
+            help={`Espera desde o fim da sua fala acima da qual a resposta ganha uma desculpa antes — padrão ${DEFAULT_DELAY_PHRASES.apologyAfterMs / 1000} s (só para demoras longas de verdade).`}
             value={dp.apologyAfterMs}
             min={DELAY_PHRASE_MS_RANGE.min}
             max={DELAY_PHRASE_MS_RANGE.max}

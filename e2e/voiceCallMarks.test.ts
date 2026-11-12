@@ -166,7 +166,7 @@ test('marcador de fim: texto, custo resumido (≈ com a estimativa da voz) e det
   assert.match(lines['Transcrição (whisper)'], /9 requests · 14 s · \$0,0011/)
   assert.match(lines['Voz (flash)'], /118 caracteres · ≈ \$0,01 \(preço de lista\)/)
   assert.match(lines['Modelo (respostas)'], /3 · \$0,0057/)
-  assert.equal(lines['Interjeições e preâmbulos'], 'grátis (clipes pré-gerados)')
+  assert.equal(lines['Preâmbulos'], 'grátis (clipes pré-gerados)')
   // local/GPU = grátis; ElevenLabs direta = caracteres (créditos); sem custo informado
   const local = endMark({
     endedBy: 'error',

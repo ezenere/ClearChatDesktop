@@ -1,52 +1,31 @@
 // Métricas simples da chamada de voz a partir da timeline (funções puras, sem DOM — SPEC →
-// "Modo sombra e timeline"); alimentam o painel do dock (`VoiceCallDock`). A timeline junta os
-// eventos do main (`voice:call:timeline`) e do sensor (renderer) — ver `VoiceCallTimelineEvent`.
+// "Timeline e log de diagnóstico"); alimentam o painel do dock (`VoiceCallPanel`). A timeline junta
+// os eventos do main (`voice:call:timeline`) e do sensor (renderer) — ver `VoiceCallTimelineEvent`.
 import type { VoiceCallTimelineEvent } from './ipc'
-
-/** Latência decisão→início do áudio (ms) em percentis; null quando não há pares. */
-export interface DecisionLatency {
-  p50: number
-  p95: number
-}
 
 export interface VoiceCallMetrics {
   /** Duração da chamada coberta pela timeline (ms). */
   elapsedMs: number
-  /** Decisões de interjeição (todas: tocadas, sombra e descartadas). */
-  decisions: number
-  /** Decisões que tocaram de fato. */
-  played: number
-  /** Interjeições por minuto da chamada (decisões/elapsed; 0 sem tempo). */
-  interjectionsPerMin: number
-  /** Latência decisão→início do áudio da utterance decidida (p50/p95). */
-  decisionToAudioMs: DecisionLatency | null
+  /** Preâmbulos que tocaram de fato (`decision` FILLER com `played`). */
+  fillerPlayed: number
+  /** Frases de demora que tocaram ("manter viva" e desculpa). */
+  delayPlayed: { keepAlive: number; apology: number }
   /**
-   * Por que NÃO tocou (motivo → vezes), separado em interjeições (inclui as observações que a
-   * política recusou — `class: 'NONE'`), preâmbulos e frases de demora (`KEEPALIVE`/`APOLOGY`) —
-   * o painel "Atos de fala curta" explica.
+   * Por que NÃO tocou (motivo → vezes), separado em preâmbulos e frases de demora
+   * (`KEEPALIVE`/`APOLOGY`) — o painel "Atos de fala curta" explica.
    */
   skipped: {
-    interjection: Record<string, number>
     filler: Record<string, number>
     delay: Record<string, number>
   }
-  /** Frases de demora que tocaram ("manter viva" e desculpa). */
-  delayPlayed: { keepAlive: number; apology: number }
 }
 
-/** Classes das frases de demora sintetizadas ao vivo (fora das métricas de interjeição). */
+/** Classes das frases de demora sintetizadas ao vivo. */
 export const DELAY_PHRASE_CLASSES: readonly string[] = ['KEEPALIVE', 'APOLOGY']
 
-/** Percentil por ordem (p em [0,1]; lista não vazia e já ordenada). */
-function percentile(sorted: number[], p: number): number {
-  const idx = Math.min(sorted.length - 1, Math.max(0, Math.ceil(p * sorted.length) - 1))
-  return sorted[idx]
-}
-
 /**
- * Métricas da chamada atual: interjeições/min (decisões de interjeição, sem fillers) e p50/p95 da
- * latência decisão→áudio (pareia cada `decision` com o `clip-start` da MESMA utterance `id`).
- * `now` (ms) fecha o tempo da chamada; padrão: o ts do último evento.
+ * Métricas da chamada atual: preâmbulos e frases de demora tocados e os motivos dos que não
+ * tocaram. `now` (ms) fecha o tempo da chamada; padrão: o ts do último evento.
  */
 export function computeVoiceCallMetrics(
   events: readonly VoiceCallTimelineEvent[],
@@ -55,48 +34,23 @@ export function computeVoiceCallMetrics(
   const list = [...events].sort((a, b) => a.ts - b.ts)
   const first = list[0]?.ts ?? 0
   const last = now ?? list[list.length - 1]?.ts ?? first
-  const elapsedMs = Math.max(0, last - first)
-  const isDelay = (e: VoiceCallTimelineEvent): boolean =>
-    DELAY_PHRASE_CLASSES.includes(e.class ?? '')
-  const decisions = list.filter(
-    (e) => e.kind === 'decision' && e.class !== 'FILLER' && e.class !== 'NONE' && !isDelay(e)
-  )
-  const skipped: VoiceCallMetrics['skipped'] = { interjection: {}, filler: {}, delay: {} }
+  const skipped: VoiceCallMetrics['skipped'] = { filler: {}, delay: {} }
   const delayPlayed = { keepAlive: 0, apology: 0 }
+  let fillerPlayed = 0
   for (const e of list) {
-    if (e.kind === 'decision' && e.played && isDelay(e)) {
-      if (e.class === 'KEEPALIVE') delayPlayed.keepAlive++
+    if (e.kind !== 'decision') continue
+    const isFiller = e.class === 'FILLER'
+    const isDelay = DELAY_PHRASE_CLASSES.includes(e.class ?? '')
+    if (!isFiller && !isDelay) continue
+    if (e.played) {
+      if (isFiller) fillerPlayed++
+      else if (e.class === 'KEEPALIVE') delayPlayed.keepAlive++
       else delayPlayed.apology++
+      continue
     }
-    if (e.kind !== 'decision' || e.played) continue
-    const bucket =
-      e.class === 'FILLER' ? skipped.filler : isDelay(e) ? skipped.delay : skipped.interjection
+    const bucket = isFiller ? skipped.filler : skipped.delay
     const reason = e.reason || '?'
     bucket[reason] = (bucket[reason] ?? 0) + 1
   }
-  const played = decisions.filter((e) => e.played)
-  const minutes = elapsedMs / 60_000
-  // pares decisão → início do áudio (mesma utterance; o primeiro início vence)
-  const starts = new Map<string, number>()
-  for (const e of list) {
-    if (e.kind === 'clip-start' && e.id && !starts.has(e.id)) starts.set(e.id, e.ts)
-  }
-  const latencies: number[] = []
-  for (const d of decisions) {
-    if (!d.id || !d.played) continue
-    const start = starts.get(d.id)
-    if (start != null && start >= d.ts) latencies.push(start - d.ts)
-  }
-  latencies.sort((a, b) => a - b)
-  return {
-    elapsedMs,
-    decisions: decisions.length,
-    played: played.length,
-    interjectionsPerMin: minutes > 0 ? Math.round((decisions.length / minutes) * 10) / 10 : 0,
-    decisionToAudioMs: latencies.length
-      ? { p50: percentile(latencies, 0.5), p95: percentile(latencies, 0.95) }
-      : null,
-    skipped,
-    delayPlayed
-  }
+  return { elapsedMs: Math.max(0, last - first), fillerPlayed, delayPlayed, skipped }
 }

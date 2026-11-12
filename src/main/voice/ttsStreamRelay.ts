@@ -71,7 +71,7 @@ export class TtsStreamRelay {
   async synth(
     signal: AbortSignal,
     start: (signal: AbortSignal) => Promise<TtsStreamResult>
-  ): Promise<{ audio: Uint8Array; mime: string }> {
+  ): Promise<{ audio: Uint8Array; mime: string; unitStartsMs?: () => number[] | null }> {
     const ctl = new AbortController()
     const linked = AbortSignal.any([signal, ctl.signal])
     const r = await start(linked)
@@ -99,7 +99,11 @@ export class TtsStreamRelay {
         // toca pelo MESMO player Web Audio das outras frases (emendada sem buraco na anterior; um
         // WAV ia para o <audio>, que não encadeia)
         this.#deps.onFirstAudio?.(Date.now() - r.t0, false)
-        return { audio: concatBytes(head), mime: `audio/pcm;rate=${r.sampleRate}` }
+        return {
+          audio: concatBytes(head),
+          mime: `audio/pcm;rate=${r.sampleRate}`,
+          ...(r.unitStartsMs ? { unitStartsMs: r.unitStartsMs } : {})
+        }
       }
       head.push(n.value)
       size += n.value.length
@@ -123,7 +127,11 @@ export class TtsStreamRelay {
     this.#live.add(entry)
     linked.addEventListener('abort', () => this.#drop(entry), { once: true })
     void this.#pump(entry)
-    return { audio, mime: `audio/pcm;rate=${r.sampleRate}` }
+    return {
+      audio,
+      mime: `audio/pcm;rate=${r.sampleRate}`,
+      ...(r.unitStartsMs ? { unitStartsMs: r.unitStartsMs } : {})
+    }
   }
 
   /** `emitUtterance` da chamada: começo de stream → evento `streaming` + despejo dos pedaços. */

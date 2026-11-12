@@ -1,96 +1,34 @@
-// Painel da chamada de voz (dock — SPEC → "Chamada de voz → Modo sombra e timeline"): toggles
-// rápidos de interjeições/sombra/fillers refletindo e gravando o `ChatConfig.voice` do chat da
-// chamada (★ = segue o padrão global — escolher a opção ★ remove o override, como em
-// `ChatApprovalSection`), indicador de modo sombra + contagem, métricas (interjeições/min e
-// p50/p95 da latência decisão→áudio) e a timeline da chamada atual (sem visualização pós-chamada
-// na v1 — a última chamada fica no log de avaliação `voice-eval/*.jsonl`).
-import { Star } from 'lucide-react'
+// Painel da chamada de voz (dock — SPEC → "Chamada de voz → Timeline e log de diagnóstico"): toggle
+// rápido dos preâmbulos (fillers) refletindo e gravando o `ChatConfig.voice` do chat da chamada
+// (★ = segue o padrão global — escolher a opção ★ remove o override, como em
+// `ChatApprovalSection`), contagens (preâmbulos e frases de demora tocados, por que não tocaram),
+// o modelo da chamada e a timeline da chamada atual (sem visualização pós-chamada na v1 — as
+// decisões de preâmbulo ficam no log de diagnóstico `voice-eval/*.jsonl`).
 import { useMemo } from 'react'
 import type { VoiceCallTimelineEvent } from '@shared/ipc'
 import { computeVoiceCallMetrics } from '@shared/voiceTimeline'
-import { cn } from '../../lib/format'
 import { useStore } from '../../store'
 import { useVoiceCallConfig } from '../../lib/voice/useVoiceCallConfig'
+import { InheritChoice } from '../ui/InheritChoice'
 import { VoiceCallModelEditor } from './VoiceCallModelEditor'
-
-/** Linha Ligado/Desligado com ★ no padrão global (escolher a opção ★ = segue o global). */
-function InheritToggle({
-  label,
-  value,
-  globalValue,
-  testId,
-  onChange
-}: {
-  label: string
-  value: boolean
-  globalValue: boolean
-  testId: string
-  onChange: (v: boolean) => void
-}): React.JSX.Element {
-  return (
-    <div
-      role="radiogroup"
-      aria-label={label}
-      data-testid={testId}
-      data-inherit={value === globalValue ? 'true' : undefined}
-      className="flex rounded-lg border border-border bg-bg/60 p-0.5"
-    >
-      {[true, false].map((v) => {
-        const selected = value === v
-        const star = globalValue === v
-        return (
-          <button
-            key={String(v)}
-            type="button"
-            role="radio"
-            aria-checked={selected}
-            data-value={v ? 'on' : 'off'}
-            data-global={star || undefined}
-            title={star ? '★ Padrão global (escolher remove o override do chat)' : undefined}
-            onClick={() => onChange(v)}
-            className={cn(
-              'flex min-w-0 flex-1 items-center justify-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] transition-colors',
-              selected ? 'bg-active text-fg shadow-sm' : 'text-subtle hover:text-fg'
-            )}
-          >
-            {v ? 'Ligado' : 'Desligado'}
-            {star && <Star aria-hidden className="size-2.5 shrink-0 fill-current opacity-70" />}
-          </button>
-        )
-      })}
-    </div>
-  )
-}
 
 /** Motivo de um ato de fala curta NÃO tocado → texto do painel (a "leitura de depuração"). */
 const SKIP_LABELS: Record<string, string> = {
+  // preâmbulos
   disabled: 'desligado',
-  stale: 'observação velha (chegou tarde)',
   'short-speech': 'fala curta demais',
-  'below-min-speech': 'menos voz que a "Fala mínima"',
-  'short-pause': 'pausa curta demais',
-  cooldown: 'intervalo mínimo entre interjeições',
-  'turn-end': 'fim de turno provável (pergunta/comando)',
-  'tail-skip': 'cauda de negação/incerteza',
-  'class-filtered': 'tipo não permitido',
-  probability: 'sorteio (probabilidade)',
+  'below-min-speech': 'fala com pouca voz',
   'no-clip': 'clipe ausente — gere os clipes',
-  blocked: 'assistente falando',
-  shadow: 'modo sombra (decidiu, não tocou)',
   stopped: 'chamada encerrada',
   spoken: 'a resposta chegou antes',
   'fast-answer': 'a resposta ficou pronta antes da espera',
-  'no-verdict':
-    'sem veredito a tempo (STT pela API é lento; um motor local de transcrição resolve)',
-  'late-verdict': 'o veredito chegou tarde (pausa já longa)',
   'assistant-audio': 'áudio do assistente tocando',
-  'answer-speaking': 'a resposta está sendo falada',
   // frases de demora ("manter viva"/desculpa)
   'answer-first': 'a resposta chegou antes',
   'answer-coming': 'a resposta já está sintetizando',
   'not-ready': 'não ficou pronta antes da resposta',
   'keepalive-playing': '"manter viva" tocando',
-  'keepalive-recent': '"manter viva" acabou de sair',
+  'too-soon': 'outra frase curta tocou há menos de 10 s',
   'clip-playing': 'outro clipe tocando',
   'user-speaking': 'você falando',
   'barge-in': 'barge-in',
@@ -102,11 +40,17 @@ const SKIP_LABELS: Record<string, string> = {
   cancelled: 'resposta cancelada'
 }
 
-/** Motivo (com prefixo `delay/`/`tools/` dos preâmbulos ou `phase-…`) → texto. */
+/** Por que a fala por cima virou barge-in → texto. */
+const BARGE_IN_LABELS: Record<string, string> = {
+  voiced: 'você continuou falando',
+  words: 'palavras na transcrição',
+  'stop-word': 'pediu para parar'
+}
+
+/** Motivo (com prefixo `delay/`/`tools/` dos preâmbulos) → texto. */
 function skipLabel(reason: string): string {
   if (reason.startsWith('tts-error')) return `falha na síntese${reason.slice(9)}`
   const r = reason.includes('/') ? reason.slice(reason.lastIndexOf('/') + 1) : reason
-  if (r.startsWith('phase-')) return `fase ${r.slice(6)}`
   return SKIP_LABELS[r] ?? r
 }
 
@@ -114,13 +58,7 @@ function skipLabel(reason: string): string {
 function describeTimelineEvent(e: VoiceCallTimelineEvent): string {
   switch (e.kind) {
     case 'decision': {
-      if (e.class === 'NONE')
-        return `interjeição não — ${skipLabel(e.reason ?? '?')}${e.text ? ` · "…${e.text.slice(-24)}"` : ''}`
-      const state = e.played
-        ? 'tocou'
-        : e.reason === 'shadow' || (e.reason ?? '').includes('shadow')
-          ? 'sombra'
-          : `não tocou — ${skipLabel(e.reason ?? '?')}`
+      const state = e.played ? 'tocou' : `não tocou — ${skipLabel(e.reason ?? '?')}`
       return `decisão ${e.class ?? '?'}${e.variant ? ` v${e.variant}` : ''} — ${state}${
         e.text ? ` · "…${e.text.slice(-24)}"` : ''
       }`
@@ -139,8 +77,6 @@ function describeTimelineEvent(e: VoiceCallTimelineEvent): string {
       return 'fala detectada'
     case 'speech-end':
       return 'fim da fala'
-    case 'pause':
-      return `pausa de ${e.pauseMs ?? 0} ms`
     case 'clip-start':
       return 'clipe começou a tocar'
     case 'clip-end':
@@ -149,10 +85,20 @@ function describeTimelineEvent(e: VoiceCallTimelineEvent): string {
       return 'sentença começou a tocar'
     case 'sentence-end':
       return 'sentença terminou'
+    case 'heard':
+      return `ouvido até: "…${(e.text ?? '').slice(-28)}" (${e.latencyMs ?? 0} ms · ${
+        e.reason === 'heard-exact' ? 'exato' : 'estimado'
+      })`
+    case 'duck':
+      return 'fala por cima — volume do assistente abaixou'
+    case 'duck-restore':
+      return `volume de volta (fala curta descartada · ${e.speechMs ?? 0} ms de voz)`
     case 'barge-in':
-      return 'barge-in (fala do assistente cancelada)'
+      return `barge-in (fala do assistente cancelada${
+        e.reason ? ` — ${BARGE_IN_LABELS[e.reason] ?? e.reason}` : ''
+      })`
     case 'backchannel':
-      return `backchannel (${e.speechMs ?? 0} ms — não cancelou)`
+      return `fala curta por cima (${e.speechMs ?? 0} ms — não cancelou)`
     case 'playback-error':
       return `falha ao tocar ${e.class ?? ''}: ${e.reason ?? '?'}`
     case 'tts-latency':
@@ -165,16 +111,14 @@ function describeTimelineEvent(e: VoiceCallTimelineEvent): string {
 /** Painel recolhível acima do dock (no mesmo fluxo da coluna do composer; só com a chamada ativa). */
 export function VoiceCallPanel({ open }: { open: boolean }): React.JSX.Element | null {
   const timeline = useStore((s) => s.voiceCallTimeline)
-  const { defaults, resolved, voice, persona, setInterjections, setFillers, setVoice } =
-    useVoiceCallConfig()
+  const { defaults, resolved, voice, persona, setFillers, setVoice } = useVoiceCallConfig()
   const chatModel = useStore(
     (s) => s.chats.find((c) => c.id === s.voiceCall.chatId)?.config.model ?? ''
   )
   const playbackErrors = timeline.filter((e) => e.kind === 'playback-error').length
   const metrics = useMemo(() => computeVoiceCallMetrics(timeline), [timeline])
-  const shadowCount = timeline.filter(
-    (e) => e.kind === 'decision' && !e.played && (e.reason ?? '').includes('shadow')
-  ).length
+  // o que o ★ herda no chat da chamada: a persona de origem, senão o padrão global
+  const inheritedFillers = persona?.fillers?.enabled ?? defaults.fillers.enabled
   if (!open) return null
   const t0 = timeline[0]?.ts ?? 0
   return (
@@ -184,49 +128,19 @@ export function VoiceCallPanel({ open }: { open: boolean }): React.JSX.Element |
     >
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
         <span className="text-[11.5px] font-medium text-fg/90">Atos de fala curta</span>
-        {resolved.interjections.shadow && (
-          <span
-            data-testid="voice-call-shadow"
-            className="rounded-full border border-warning/40 bg-warning/10 px-1.5 py-px text-[10px] text-warning"
-            title="Modo sombra: o motor decide mas não toca (decisões no log de avaliação)"
-          >
-            modo sombra · {shadowCount}
-          </span>
-        )}
         <div className="flex items-center gap-1.5">
-          <span className="text-[10.5px] text-subtle">Interjeições</span>
-          <InheritToggle
-            label="Interjeições"
-            value={resolved.interjections.enabled}
-            globalValue={defaults.interjections.enabled}
-            testId="voice-call-toggle-interjections"
-            onChange={(v) =>
-              setInterjections(v === defaults.interjections.enabled ? 'inherit' : { enabled: v })
-            }
-          />
-        </div>
-        <div className="flex items-center gap-1.5">
-          <span className="text-[10.5px] text-subtle">Sombra</span>
-          <InheritToggle
-            label="Modo sombra"
-            value={resolved.interjections.shadow}
-            globalValue={defaults.interjections.shadow}
-            testId="voice-call-toggle-shadow"
-            onChange={(v) =>
-              setInterjections(v === defaults.interjections.shadow ? 'inherit' : { shadow: v })
-            }
-          />
-        </div>
-        <div className="flex items-center gap-1.5">
-          <span className="text-[10.5px] text-subtle">Fillers</span>
-          <InheritToggle
-            label="Fillers"
-            value={resolved.fillers.enabled}
-            globalValue={defaults.fillers.enabled}
+          <span className="text-[10.5px] text-subtle">Preâmbulos</span>
+          <InheritChoice
+            label="Preâmbulos"
             testId="voice-call-toggle-fillers"
-            onChange={(v) =>
-              setFillers(v === defaults.fillers.enabled ? 'inherit' : { enabled: v })
-            }
+            options={[
+              { value: true, label: 'Ligado' },
+              { value: false, label: 'Desligado' }
+            ]}
+            value={voice.fillers ? voice.fillers.enabled : null}
+            inherited={inheritedFillers}
+            inheritedFrom={persona?.fillers ? 'Padrão da persona' : 'Padrão global'}
+            onChange={(v) => setFillers(v === null ? 'inherit' : { enabled: v })}
           />
         </div>
         <span className="ml-auto text-[10.5px] text-subtle">★ = padrão global</span>
@@ -235,16 +149,7 @@ export function VoiceCallPanel({ open }: { open: boolean }): React.JSX.Element |
         data-testid="voice-call-metrics"
         className="flex flex-wrap items-center gap-x-3 gap-y-0.5 border-t border-border/60 pt-1.5 text-[10.5px] text-subtle"
       >
-        <span>interjeições/min: {metrics.interjectionsPerMin}</span>
-        <span>
-          decisão→áudio:{' '}
-          {metrics.decisionToAudioMs
-            ? `p50 ${metrics.decisionToAudioMs.p50} ms · p95 ${metrics.decisionToAudioMs.p95} ms`
-            : '—'}
-        </span>
-        <span>
-          decisões: {metrics.decisions} ({metrics.played} tocadas)
-        </span>
+        <span data-testid="voice-call-filler-played">preâmbulos: {metrics.fillerPlayed}</span>
         {metrics.delayPlayed.keepAlive + metrics.delayPlayed.apology > 0 && (
           <span data-testid="voice-call-delay-played">
             frases de demora: {metrics.delayPlayed.keepAlive} manter viva ·{' '}
@@ -299,12 +204,11 @@ export function VoiceCallPanel({ open }: { open: boolean }): React.JSX.Element |
   )
 }
 
-/** Por que os atos de fala curta não tocaram (motivo × vezes) — interjeições, preâmbulos e frases de demora. */
+/** Por que os atos de fala curta não tocaram (motivo × vezes) — preâmbulos e frases de demora. */
 function SkipReadout({
   skipped
 }: {
   skipped: {
-    interjection: Record<string, number>
     filler: Record<string, number>
     delay: Record<string, number>
   }
@@ -327,15 +231,13 @@ function SkipReadout({
       </div>
     )
   }
-  const a = row('Interjeição', skipped.interjection, 'voice-call-skips-interjection')
-  const b = row('Preâmbulo', skipped.filler, 'voice-call-skips-filler')
-  const c = row('Frase de demora', skipped.delay, 'voice-call-skips-delay')
-  if (!a && !b && !c) return null
+  const a = row('Preâmbulo', skipped.filler, 'voice-call-skips-filler')
+  const b = row('Frase de demora', skipped.delay, 'voice-call-skips-delay')
+  if (!a && !b) return null
   return (
     <div data-testid="voice-call-skips" className="space-y-0.5 text-[10.5px] text-subtle">
       {a}
       {b}
-      {c}
     </div>
   )
 }

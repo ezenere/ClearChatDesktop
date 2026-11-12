@@ -31,6 +31,7 @@ import type {
 } from '@shared/ipc'
 import {
   DEFAULT_AUDIO_INPUT,
+  DEFAULT_FILLER_POOL,
   DEFAULT_STT_SETTINGS,
   DEFAULT_TTS_SETTINGS,
   DEFAULT_VOICE_CALL_DEFAULTS,
@@ -2878,16 +2879,15 @@ export function createMockApi(scenario: string): ClearApi {
                   clips: []
                 }
                 const view = clips
-                const classes = ['ACK', 'AGREEMENT', 'ENCOURAGEMENT', 'THINKING', 'FILLER']
-                const total = classes.length * 3
+                // só os preâmbulos (o pool padrão): um clipe `FILLER_<n>` por frase
+                const total = DEFAULT_FILLER_POOL.length
                 let done = 0
-                for (const cls of classes) {
-                  for (let n = 1; n <= 3; n++) {
-                    await delay(undefined, 60)
-                    view.clips.push({ id: `${cls}_${n}`, class: cls, n, text: `frase ${cls} ${n}` })
-                    done++
-                    voiceTtsClipListeners.forEach((l) => l({ id: `${cls}_${n}`, done, total }))
-                  }
+                for (const [i, phrase] of DEFAULT_FILLER_POOL.entries()) {
+                  const n = i + 1
+                  await delay(undefined, 60)
+                  view.clips.push({ id: `FILLER_${n}`, class: 'FILLER', n, text: phrase.text })
+                  done++
+                  voiceTtsClipListeners.forEach((l) => l({ id: `FILLER_${n}`, done, total }))
                 }
                 return view
               },
@@ -3105,9 +3105,6 @@ export function createMockApi(scenario: string): ClearApi {
               clearTimers()
               return setState({ phase: 'listening' })
             },
-            interjectionObserved: async () => {
-              // mock sem interjeições: a observação é aceita e ignorada
-            },
             backchannel: async () => {
               // mock sem backchannel: só aceita o registro
             },
@@ -3161,7 +3158,7 @@ export function createMockApi(scenario: string): ClearApi {
       return () => voiceCallUtteranceListeners.delete(cb)
     },
     onVoiceCallUtteranceCancel: (cb: (e: VoiceCallUtteranceCancelEvent) => void) => {
-      // mock sem fillers/interjeições: o cancelamento nunca dispara, mas o canal existe
+      // mock sem preâmbulos: o cancelamento nunca dispara, mas o canal existe
       void cb
       return () => void 0
     },

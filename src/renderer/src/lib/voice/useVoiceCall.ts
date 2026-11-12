@@ -8,12 +8,13 @@
 //
 // Os eventos de fronteira vão ao main pelos canais `voice:call:*` (o main é o dono do turno e do
 // envio): `speech-begin`/`speech-end` → `turn(text)` com a transcrição final. Fala do usuário
-// enquanto uma FRASE da resposta toca: curta (≤ `BACKCHANNEL_MAX_MS`) = backchannel (só registra);
-// longa = barge-in (cancela a fala com fade e manda as frases ouvidas — o main trunca o histórico).
-// Fala com só clipes tocando (preâmbulo/interjeição) ou nada ouvido ainda: os clipes saem na hora
-// (fade curto, sem sobrepor o usuário) e o main decide o turno continuado. Pausas na fala viram
-// observações de interjeição DEPOIS do veredito (`interjectionObserved` com `end` — pergunta/
-// comando nunca ganham backchannel).
+// enquanto uma FRASE da resposta toca: com histerese (`PlaybackDuck`) — o áudio do assistente
+// ABAIXA (ducking) e continua; quem insiste (voz/palavras/"para") vira barge-in (cancela a fala com
+// fade e manda as frases ouvidas — o main trunca o histórico); o que para antes (tosse, "uhum")
+// devolve o volume e é descartado.
+// Fala com só clipes tocando (preâmbulo/frase de demora) ou nada ouvido ainda: os clipes saem na
+// hora (fade curto, sem sobrepor o usuário) e o main decide o turno continuado. Meia-duplex: nada
+// do assistente toca durante a fala do usuário.
 // Fase "Preparando a GPU…" (`voiceCall.preparing`, fala/transcrição na GPU local): a captura só
 // começa quando o main avisa que o servidor subiu e aqueceu.
 // Mudo = captura pausada (microfone liberado). Build de dev com `VITE_CLEAR_MOCK=1`: sem captura
@@ -25,28 +26,18 @@
 // dock some junto, o motivo vai para um toast (visível em qualquer tela).
 import { useCallback, useEffect, useRef } from 'react'
 import type { VoiceCallTimelineEvent } from '@shared/ipc'
-import {
-  DEFAULT_INTERJECTION_POLICY,
-  DEFAULT_TURN_TIMING,
-  resolveVoiceCallConfig,
-  type TurnTiming,
-  type InterjectionPolicy
-} from '@shared/voice'
-import {
-  INTERJECTION_MAX_AGE_MS,
-  INTERJECTION_TAIL_CHARS,
-  InterjectionWatcher,
-  PlaybackHold,
-  VoicedSpan
-} from '@shared/voicePolicy'
+import { DEFAULT_BARGE_IN, DEFAULT_TURN_TIMING, type TurnTiming } from '@shared/voice'
+import { DUCK_FADE_MS, PlaybackDuck, VoicedSpan, type BargeInReason } from '@shared/voicePolicy'
 import { AdaptiveTurnGate, classifyUtteranceEnd, type UtteranceEnd } from '@shared/voiceTurn'
-import { DEFAULT_SILENCE_THRESHOLD } from '../audio/silence'
+import { LevelGate } from '@shared/speechGate'
 import { AudioCapture } from '../audio/capture'
 import { api, errorMessage } from '../api'
 import { useStore } from '../../store'
 import { captureErrorText, MIC_FALLBACK_NOTICE } from './dictation'
 import { UtteranceQueue } from './utteranceQueue'
 import { useVoiceCallRuntime, type VoiceCallRuntime } from './voiceCallRuntime'
+import { resetVoiceFollow, useVoiceFollow } from './voiceFollow'
+import { heardChars } from '@shared/heardText'
 import { loadVoiceSettings } from './voiceSettings'
 
 const MOCK = import.meta.env.VITE_CLEAR_MOCK === '1'
@@ -54,39 +45,20 @@ const MOCK = import.meta.env.VITE_CLEAR_MOCK === '1'
 const FRAME_MS = 33
 /** Pre-roll da fala (chunks PCM mantidos antes do início) — não corta o onset (~300 ms). */
 const PREROLL_MAX = 3
-/** Fade (ms) do preâmbulo/frase cortados pelo usuário e da interjeição (mais curto — sem sobrepor). */
+/** Fade (ms) do preâmbulo/frase cortados pelo usuário. */
 const FADE_MS = 80
-const INTERJECTION_FADE_MS = 40
 
 const setLevel = (level: number): void => useVoiceCallRuntime.setState({ level })
 const setError = (error: string | null): void => useVoiceCallRuntime.setState({ error })
 const setLive = (text: string, state: VoiceCallRuntime['live']['state']): void =>
   useVoiceCallRuntime.setState({ live: { text: text.trim(), state: text.trim() ? state : null } })
-/** PCM16 mono 16 kHz: bytes → ms de áudio. */
-const BYTES_PER_MS = 32
-/** Parcial "em dia": cobre a fala até (quase) o começo da pausa — a cauda serve de veredito. */
-const FRESH_PARTIAL_SLACK_MS = 250
-
-/** Motivo de um ato de fala curta não tocado, decidido no renderer (vai à timeline do painel). */
-function pushSkip(reason: string, speechMs: number, pauseMs: number, text: string): void {
-  useStore.getState().pushVoiceCallTimeline({
-    ts: Date.now(),
-    kind: 'decision',
-    class: 'NONE',
-    played: false,
-    speechMs,
-    pauseMs,
-    text: text.slice(-80),
-    reason
-  })
-}
 
 /** Mock de UI: falha simulada do microfone (`window.__clearMockMic`, definido pelo cenário). */
 function mockMicMode(): string {
   return (window as unknown as { __clearMockMic?: string }).__clearMockMic ?? 'ok'
 }
 
-/** Recarrega o estado dos clipes de interjeição/filler da voz atual. */
+/** Recarrega o estado dos clipes dos preâmbulos da voz atual. */
 async function refreshClips(): Promise<void> {
   const v = api.voice
   if (!v) return
@@ -122,27 +94,17 @@ export function useVoiceCall(): void {
   /** Fala em curso (utterance aberto): chunks vão para a sessão; senão ficam no pre-roll. */
   const speakingRef = useRef(false)
   const prerollRef = useRef<Uint8Array[]>([])
-  /** Política de interjeições resolvida (persona→chat→global) do chat da chamada. */
-  const policyRef = useRef<InterjectionPolicy>(DEFAULT_INTERJECTION_POLICY)
-  /** Detector de pausas na fala do usuário (observações → política de interjeições no main). */
-  const watcherRef = useRef<InterjectionWatcher | null>(null)
   /**
    * Tempo com VOZ da fala atual (1º → último quadro acima do limiar): vai com o turno e é o que o
-   * preâmbulo compara com a "Fala mínima" — o silêncio que fecha o turno e a espera não contam.
+   * preâmbulo compara com a fala mínima — o silêncio que fecha o turno e a espera não contam.
    */
   const voicedRef = useRef(new VoicedSpan())
-  /** Fala do usuário durante a reprodução: backchannel (curta) × barge-in (longa). */
-  const holdRef = useRef<PlaybackHold | null>(null)
-  /** Cauda da transcrição parcial ao vivo DA FALA ATUAL (escolhe a classe da interjeição). */
-  const partialRef = useRef('')
-  /** Áudio coberto pela última parcial da fala atual (ms desde o início da sessão; null = nenhuma). */
-  const partialCoveredRef = useRef<number | null>(null)
-  /** Áudio já enviado à sessão da fala atual (ms) — compara com a cobertura da parcial. */
-  const pushedMsRef = useRef(0)
-  /** Especulação da pausa atual (geração do gate + texto + veredito; null = nenhuma válida). */
-  const specRef = useRef<{ seq: number; text: string; end: UtteranceEnd } | null>(null)
+  /** Fala do usuário durante a reprodução: ducking → descartada (curta) × barge-in (insistiu). */
+  const holdRef = useRef<PlaybackDuck | null>(null)
   /** Frases da resposta atual que começaram a tocar (barge-in: o histórico fica só com elas). */
   const startedRef = useRef<Set<string>>(new Set())
+  /** Texto da fala atual chegando durante o ducking (parcial ao vivo) — o efeito da captura assina. */
+  const onDuckTextRef = useRef<((text: string) => void) | null>(null)
 
   const voice = api.voice
 
@@ -165,7 +127,6 @@ export function useVoiceCall(): void {
 
   const pushChunk = useCallback(
     (bytes: Uint8Array): void => {
-      pushedMsRef.current += bytes.length / BYTES_PER_MS
       chainRef.current = chainRef.current
         .then(async () => {
           const v = api.voice
@@ -245,16 +206,16 @@ export function useVoiceCall(): void {
   useEffect(() => {
     volumeRef.current = volume
   }, [volume])
-  // parciais ao vivo: a cauda do texto escolhe a classe da interjeição (SPEC → "Interjeições")
+  // parciais ao vivo: a barra mostra o que o usuário está dizendo
   useEffect(() => {
     const off = api.onVoicePartial?.((e) => {
       // só a sessão da fala ATUAL (o ditado e falas anteriores têm outras sessões)
       if (!e.sessionId || e.sessionId !== sessionRef.current) return
       if (e.error && !e.text) return
-      partialRef.current = typeof e.text === 'string' ? e.text : ''
-      partialCoveredRef.current = typeof e.coveredMs === 'number' ? e.coveredMs : null
-      if (useStore.getState().voiceCall.active && speakingRef.current)
-        setLive(partialRef.current, 'partial')
+      const text = typeof e.text === 'string' ? e.text : ''
+      if (useStore.getState().voiceCall.active && speakingRef.current) setLive(text, 'partial')
+      // fala por cima da resposta (ducking): palavras reais ou "para" confirmam o barge-in já
+      onDuckTextRef.current?.(text)
     })
     return () => off?.()
   }, [])
@@ -268,6 +229,16 @@ export function useVoiceCall(): void {
       onItem: ({ item, phase }) => {
         if (phase === 'start' && (item.kind ?? 'sentence') === 'sentence')
           startedRef.current.add(item.id)
+        // leitura ao vivo: a frase tocando (o chat esmaece o que ainda não foi ouvido)
+        if ((item.kind ?? 'sentence') === 'sentence' && item.text) {
+          if (phase === 'start')
+            useVoiceFollow.setState({ current: { id: item.id, text: item.text, chars: 0 } })
+          else
+            useVoiceFollow.setState((s) => ({
+              heard: [...s.heard, item.text!],
+              current: s.current?.id === item.id ? null : s.current
+            }))
+        }
         const kind: VoiceCallTimelineEvent['kind'] =
           item.kind === 'sentence'
             ? phase === 'start'
@@ -290,14 +261,12 @@ export function useVoiceCall(): void {
         const what =
           item.kind === 'filler'
             ? 'o preâmbulo'
-            : item.kind === 'interjection'
-              ? 'a interjeição'
-              : item.kind === 'delay'
-                ? 'a frase de demora'
-                : 'uma frase da resposta'
-        // clipe (preâmbulo/interjeição/frase de demora) não é essencial: pula com o registro no
-        // painel; frase da resposta que não toca encerra a chamada (nunca uma resposta muda)
-        if (item.kind === 'filler' || item.kind === 'interjection' || item.kind === 'delay') {
+            : item.kind === 'delay'
+              ? 'a frase de demora'
+              : 'uma frase da resposta'
+        // clipe (preâmbulo/frase de demora) não é essencial: pula com o registro no painel; frase
+        // da resposta que não toca encerra a chamada (nunca uma resposta muda)
+        if (item.kind === 'filler' || item.kind === 'delay') {
           setError(`Não foi possível tocar ${what}: ${reason}`)
           return
         }
@@ -319,8 +288,19 @@ export function useVoiceCall(): void {
       const ph = st.voiceCall.phase
       if (ph === lastPhase) return
       lastPhase = ph
-      if (ph === 'thinking' || ph === 'transcribing') startedRef.current = new Set()
+      if (ph === 'thinking' || ph === 'transcribing') {
+        startedRef.current = new Set()
+        resetVoiceFollow()
+      }
     })
+    // leitura ao vivo: quanto da frase atual já tocou (palavra por palavra, ~10×/s)
+    const follow = setInterval(() => {
+      const cur = useVoiceFollow.getState().current
+      const pos = queue.currentPosition()
+      if (!cur || !pos || pos.id !== cur.id) return
+      const { chars } = heardChars(cur.text, pos.playedMs, { durationMs: pos.durationMs })
+      if (chars !== cur.chars) useVoiceFollow.setState({ current: { ...cur, chars } })
+    }, 100)
     // TTS em streaming (PCM progressivo): os pedaços seguintes de cada sentença
     const offChunk = api.onVoiceCallUtteranceChunk?.((e) => queue.pushChunk(e))
     return () => {
@@ -328,6 +308,8 @@ export function useVoiceCall(): void {
       offCancel?.()
       offPhase()
       offChunk?.()
+      clearInterval(follow)
+      resetVoiceFollow()
       queue.cancel()
       queueRef.current = null
     }
@@ -344,101 +326,87 @@ export function useVoiceCall(): void {
         return DEFAULT_TURN_TIMING
       }
     })()
-    const gate = new AdaptiveTurnGate(timing, DEFAULT_SILENCE_THRESHOLD)
+    // fala detectada pela MESMA regra do portão do STT (`LevelGate`: nível de ativação do
+    // microfone + piso de ruído adaptativo): os quadros viram 1 (fala) / 0 (não) antes do gate de
+    // turno, do tempo com voz e do ducking — ruído de sala abaixo da ativação nunca abaixa a resposta
+    // nem abre um turno. O nível chega com as settings (antes de a captura abrir).
+    let level = new LevelGate()
+    const VOICED = 1
+    const SPEECH = 0.5
+    const gate = new AdaptiveTurnGate(timing, SPEECH)
     gateRef.current = gate
-    specRef.current = null
 
-    // atos de fala curta: pausas viram observações de interjeição; fala durante a reprodução é
-    // backchannel (curta) ou barge-in (longa) — `InterjectionWatcher`/`PlaybackHold` puros
-    const watcher = new InterjectionWatcher(DEFAULT_INTERJECTION_POLICY.minPauseMs)
-    const hold = new PlaybackHold()
-    watcherRef.current = watcher
+    // fala do usuário durante a reprodução: ducking com histerese (`PlaybackDuck` puro) — os
+    // limiares vêm de `voiceCallDefaults.turn` (resolvidos no início da chamada)
+    const hold = new PlaybackDuck(timing.bargeIn ?? DEFAULT_BARGE_IN)
     holdRef.current = hold
-    // política resolvida do chat da chamada (persona→chat→global) — habilita e define minPauseMs
     let disposed = false
-    void loadVoiceSettings()
-      .then((all) => {
-        if (disposed) return
-        const st = useStore.getState()
-        const chat = st.chats.find((c) => c.id === st.voiceCall.chatId)
-        const presetId = chat?.config.presetId
-        const persona = presetId
-          ? (st.presets.find((p) => p.id === presetId)?.config.voice ?? null)
-          : null
-        const resolved = resolveVoiceCallConfig(
-          chat?.config.voice ?? null,
-          all.voiceCallDefaults,
-          persona
-        )
-        policyRef.current = resolved.interjections
-        watcherRef.current = new InterjectionWatcher(resolved.interjections.minPauseMs)
-      })
-      .catch(() => void 0)
+    const timeline = (e: Omit<VoiceCallTimelineEvent, 'ts'>): void =>
+      useStore.getState().pushVoiceCallTimeline({ ts: Date.now(), ...e })
+
+    /** Barge-in confirmado: para a fala do assistente; a fala do usuário segue como turno. */
+    const commitBargeIn = (reason: BargeInReason): void => {
+      // barge-in real: cancela a fala do assistente com fade; o main para o turno e deixa no
+      // histórico só as frases que começaram a tocar
+      const q = queueRef.current
+      // ANTES de cancelar: quanto da frase atual tocou (o histórico fica só com as palavras ouvidas)
+      const current = q?.currentPosition() ?? null
+      q?.cancel(FADE_MS)
+      q?.setDuck(1) // o que vier depois (o próximo turno) toca no volume normal
+      useVoiceFollow.setState({ current: null }) // o resto não ouvido vai para o marcador
+      const playedIds = [...startedRef.current]
+      void api.voice?.call
+        .bargeIn({
+          playedIds,
+          reason,
+          speechMs: Math.round(hold.voicedMs),
+          ...(current ? { current } : {})
+        })
+        .catch(() => {})
+      // daqui em diante é uma fala normal do usuário: fim de turno adaptativo (especulação) volta a
+      // valer (antes a fala inteira seguia "retida" — silêncio fixo até o fim dela)
+      hold.reset()
+    }
+
+    /**
+     * O usuário parou antes de confirmar (tosse, "uhum", ruído): o volume volta e o som curto é
+     * descartado (nenhum turno; só o registro na timeline).
+     */
+    const restoreDuck = (): void => {
+      const ms = Math.round(hold.voicedMs)
+      hold.reset()
+      queueRef.current?.setDuck(1, DUCK_FADE_MS)
+      speakingRef.current = false
+      prerollRef.current = []
+      gate.reset()
+      dropSession()
+      voicedRef.current.reset()
+      setLive('', null)
+      timeline({ kind: 'duck-restore', speechMs: ms })
+      void api.voice?.call.backchannel({ ms }).catch(() => {})
+    }
+    onDuckTextRef.current = (text: string): void => {
+      if (disposed || !hold.open) return
+      const ev = hold.transcript(text)
+      if (ev === 'barge-in') commitBargeIn(hold.reason ?? 'words')
+    }
 
     /** Geração da especulação pedida na pausa atual (-1 = nenhuma válida — a fala voltou). */
     let askedSeq = -1
-    /** Observação de pausa esperando o veredito da especulação (backchannel só depois dele). */
-    let pendingObs: { speechMs: number } | null = null
 
-    /**
-     * Veredito pela parcial ao vivo, só quando ela está EM DIA com a fala (cobre até ~o começo da
-     * pausa) — sem request; null = a parcial está atrasada (não dá para saber se a fala acabou).
-     */
-    const freshPartialEnd = (): UtteranceEnd | null => {
-      const covered = partialCoveredRef.current
-      const pauseStart = pushedMsRef.current - gate.pauseMs
-      const fresh =
-        !!partialRef.current.trim() &&
-        covered != null &&
-        covered >= pauseStart - FRESH_PARTIAL_SLACK_MS
-      return fresh ? classifyUtteranceEnd(partialRef.current) : null
-    }
-
-    /** Manda a observação de interjeição ao main (com o veredito, quando há). */
-    const sendObservation = (speechMs: number, end: UtteranceEnd | null): void => {
-      if (!policyRef.current.enabled) return
-      const spec = specRef.current?.text
-      const tail = (spec || partialRef.current).slice(-INTERJECTION_TAIL_CHARS)
-      if (!end && !spec) {
-        // sem veredito (especulação pela API ainda não voltou) e sem parcial em dia: não há como
-        // saber se a fala acabou — um "Aham." aqui sairia no fim da pergunta, antes da resposta
-        end = freshPartialEnd()
-        if (!end) {
-          pushSkip('no-verdict', speechMs, gate.pauseMs, tail)
-          return
-        }
-      }
-      void api.voice?.call
-        .interjectionObserved({
-          speechMs,
-          pauseMs: gate.pauseMs,
-          tail,
-          observedAt: Date.now(),
-          end
-        })
-        .catch(() => {})
-    }
-
-    /** Fecha a fala (silêncio cumprido): backchannel retido, ou transcrição final → turno. */
+    /** Fecha a fala (silêncio cumprido): fala por cima descartada, ou transcrição final → turno. */
     const closeUtterance = (): void => {
+      if (hold.open) {
+        // a fala por cima acabou sem confirmar o barge-in: volume de volta, som descartado
+        restoreDuck()
+        return
+      }
       speakingRef.current = false
       prerollRef.current = []
-      pendingObs = null
-      const holdMs = hold.speechMs
-      const kind = hold.end()
-      specRef.current = null
-      if (kind === 'backchannel') {
-        // backchannel do usuário ("uhum", "sim"): NÃO cancela a resposta nem vira turno
-        dropSession()
-        void api.voice?.call.backchannel({ ms: holdMs }).catch(() => {})
-      } else {
-        // a especulação da pausa que fechou o turno cobre toda a fala: vira a final
-        // a especulação pedida nesta pausa cobre toda a fala (o usuário não voltou a falar): ela
-        // vira a final — MESMO ainda em voo (especulação pela API é lenta: o turno fecha no
-        // silêncio fixo e a final espera a especulação em vez de subir o áudio de novo)
-        endUtterance(askedSeq === gate.specSeq && askedSeq > 0, voicedRef.current.spanMs)
-      }
-      watcherRef.current?.reset()
+      // a especulação pedida nesta pausa cobre toda a fala (o usuário não voltou a falar): ela vira
+      // a final — MESMO ainda em voo (especulação pela API é lenta: o turno fecha no silêncio fixo
+      // e a final espera a especulação em vez de subir o áudio de novo)
+      endUtterance(askedSeq === gate.specSeq && askedSeq > 0, voicedRef.current.spanMs)
       voicedRef.current.reset()
     }
 
@@ -466,10 +434,7 @@ export function useVoiceCall(): void {
     const onVerdict = (seq: number, text: string | null): void => {
       if (disposed || gateRef.current !== gate || seq !== gate.specSeq || !gate.speaking) return
       const end: UtteranceEnd = text == null ? 'unknown' : classifyUtteranceEnd(text)
-      if (text != null) {
-        specRef.current = { seq, text, end }
-        setLive(text, 'speculative')
-      }
+      if (text != null) setLive(text, 'speculative')
       useStore.getState().pushVoiceCallTimeline({
         ts: Date.now(),
         kind: 'turn-verdict',
@@ -477,40 +442,18 @@ export function useVoiceCall(): void {
         text: (text ?? '').slice(-80),
         reason: end
       })
-      // observação de pausa que esperava o veredito: pergunta/comando não ganham backchannel; o
-      // veredito que chega tarde demais (pausa já longa — API lenta) não vira "Aham." atrasado
-      if (pendingObs && !hold.open) {
-        const o = pendingObs
-        pendingObs = null
-        if (gate.pauseMs > policyRef.current.minPauseMs + INTERJECTION_MAX_AGE_MS)
-          pushSkip('late-verdict', o.speechMs, gate.pauseMs, text ?? '')
-        else sendObservation(o.speechMs, text == null ? null : end)
-      }
       if (gate.setVerdict(seq, end) === 'end') closeUtterance()
     }
 
-    const onLevel = (rms: number): void => {
-      setLevel(rms)
+    const onLevel = (raw: number): void => {
+      setLevel(raw)
+      const rms = level.pushRms(raw, FRAME_MS) ? VOICED : 0
       const ev = gate.push(rms, FRAME_MS)
       // tempo com voz da fala: zera no início dela e mede só enquanto ela está aberta (o silêncio
       // do fim fica de fora — o span termina no último quadro com voz)
       if (ev === 'start') voicedRef.current.reset()
-      if (ev === 'start' || speakingRef.current)
-        voicedRef.current.push(rms, FRAME_MS, DEFAULT_SILENCE_THRESHOLD)
-      if (rms >= DEFAULT_SILENCE_THRESHOLD) {
-        // o usuário (voltou a) falar: interjeição tocando sai na hora (sem sobrepor a fala dele)
-        const queue = queueRef.current
-        const cur = queue?.current ?? null
-        if (cur?.kind === 'interjection') queue?.drop(cur.id, INTERJECTION_FADE_MS)
-      }
-      if (ev === 'resume') {
-        specRef.current = null // a especulação ficou velha (a fala continuou)
-        askedSeq = -1
-        // a observação da pausa esperava um veredito que não chegou a tempo: registra o motivo
-        if (pendingObs && policyRef.current.enabled)
-          pushSkip('no-verdict', pendingObs.speechMs, 0, partialRef.current)
-        pendingObs = null
-      }
+      if (ev === 'start' || speakingRef.current) voicedRef.current.push(rms, FRAME_MS, SPEECH)
+      if (ev === 'resume') askedSeq = -1 // a especulação ficou velha (a fala continuou)
       if (ev === 'start') {
         const queue = queueRef.current
         const cur = queue?.current ?? null
@@ -518,28 +461,23 @@ export function useVoiceCall(): void {
         const mainSpeaking = useStore.getState().voiceCall.phase === 'speaking'
         const heard = startedRef.current.size > 0
         if (queue && (sentencePlaying || (heard && mainSpeaking))) {
-          // fala do usuário durante a resposta já ouvida: backchannel (curta) × barge-in (longa) —
-          // nada é cancelado até a fala detectada passar de `BACKCHANNEL_MAX_MS`
-          hold.start(rms, FRAME_MS, DEFAULT_SILENCE_THRESHOLD)
+          // fala do usuário durante a resposta já ouvida: o áudio do assistente ABAIXA e continua
+          // (nada é cancelado até o usuário insistir — voz/palavras/"para")
+          hold.start(rms, FRAME_MS, SPEECH)
+          queue.setDuck(hold.cfg.duckGain, DUCK_FADE_MS)
+          timeline({ kind: 'duck', speechMs: Math.round(hold.voicedMs) })
         } else {
-          // nada da resposta foi ouvido (só preâmbulo/interjeição, ou frases ainda na fila): tudo
-          // sai com fade e o main decide o turno continuado
+          // nada da resposta foi ouvido (só preâmbulo/frase de demora, ou frases ainda na fila):
+          // tudo sai com fade e o main decide o turno continuado
           const dropped = queue ? [...(cur ? [cur.id] : []), ...queue.queuedIds] : []
           if (dropped.length) queue?.cancel(FADE_MS)
           void api.voice?.call.speechBegin({ dropped }).catch(() => {})
         }
-        // fala nova: a parcial/cobertura da fala anterior não vale mais (cauda velha escolhia a
-        // classe errada ou barrava o backchannel como "pergunta")
-        partialRef.current = ''
-        partialCoveredRef.current = null
-        pushedMsRef.current = 0
+        // fala nova: a parcial/especulação da fala anterior não vale mais
         askedSeq = -1
         setLive('', null)
         speakingRef.current = true
-        specRef.current = null
-        pendingObs = null
         for (const bytes of prerollRef.current.splice(0)) pushChunk(bytes)
-        watcherRef.current?.reset()
         return
       }
       if (ev === 'speculate') {
@@ -554,36 +492,9 @@ export function useVoiceCall(): void {
         return
       }
       if (hold.open) {
-        if (hold.frame(rms, FRAME_MS, DEFAULT_SILENCE_THRESHOLD) === 'barge-in') {
-          // barge-in real (fala longa): cancela a fala do assistente com fade; o main para o turno
-          // e deixa no histórico só as frases que começaram a tocar
-          queueRef.current?.cancel(FADE_MS)
-          const playedIds = [...startedRef.current]
-          void api.voice?.call.bargeIn({ playedIds }).catch(() => {})
-          // daqui em diante é uma fala normal do usuário: fim de turno adaptativo (especulação) e
-          // observações de pausa voltam a valer (antes a fala inteira seguia "retida" — silêncio
-          // fixo e nenhuma interjeição até o fim dela)
-          hold.reset()
-        }
-        return
-      }
-      if (!speakingRef.current) return
-      const obs = watcherRef.current?.push(rms, FRAME_MS, DEFAULT_SILENCE_THRESHOLD, Date.now())
-      if (obs) {
-        // pausa na fala do usuário virou observação → a política decide (main) e a timeline registra
-        useStore.getState().pushVoiceCallTimeline({
-          ts: Date.now(),
-          kind: 'pause',
-          pauseMs: obs.pauseMs,
-          speechMs: obs.speechMs
-        })
-        // backchannel só depois do veredito da pausa (pergunta/comando não ganham "Aham.")
-        const verdict = gate.verdict
-        const partialEnd = verdict && verdict !== 'unknown' ? null : freshPartialEnd()
-        if (verdict && verdict !== 'unknown') sendObservation(obs.speechMs, verdict)
-        else if (partialEnd) sendObservation(obs.speechMs, partialEnd)
-        else if (verdict === 'unknown' || !timing.adaptive) sendObservation(obs.speechMs, null)
-        else pendingObs = { speechMs: obs.speechMs }
+        const ev = hold.frame(rms, FRAME_MS, SPEECH)
+        if (ev === 'barge-in') commitBargeIn(hold.reason ?? 'voiced')
+        else if (ev === 'restore') restoreDuck()
       }
     }
     const onPcm = (chunk: Int16Array): void => {
@@ -626,6 +537,7 @@ export function useVoiceCall(): void {
       // settings frescas (microfone) ANTES de abrir — a limpeza do efeito pode chegar no meio
       const all = await loadVoiceSettings()
       if (disposed) return
+      level = new LevelGate({ activationDb: all.audioInput.activationDb })
       const capture = new AudioCapture({ silence: false })
       captureRef.current = capture
       capture.on('level', onLevel)
@@ -660,8 +572,9 @@ export function useVoiceCall(): void {
       prerollRef.current = []
       gate.reset()
       hold.reset()
-      watcherRef.current = null
+      queueRef.current?.setDuck(1)
       holdRef.current = null
+      onDuckTextRef.current = null
       dropSession()
       const capture = captureRef.current
       captureRef.current = null
