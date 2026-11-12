@@ -1,20 +1,25 @@
-// Clipes dos preâmbulos (`src/main/voice/clips.ts`): nomes de arquivo pela whitelist de classes
-// (só `FILLER`), manifest por voz (id da voz, engine, modelo, hash da definição), cache reutilizado
-// quando a definição não muda, regeneração quando a voz muda (diretório novo), cache de versões
-// antigas (com outras classes de clipe) regerado sem erro e limpo, `resolveClip` para a Feature B
-// e defesa contra ids de voz/nomes inseguros. A síntese usa um motor local FAKE (nada
+// Clipes dos preâmbulos e das frases de ferramenta (`src/main/voice/clips.ts`): nomes de arquivo
+// pela whitelist de classes (`FILLER`, `TOOL`), manifest por voz (id da voz, engine, modelo, hash da
+// definição + hash por classe), cache reutilizado quando a definição não muda (por classe: só a
+// classe que mudou é sintetizada), cache só de preâmbulos (de antes das frases de ferramenta)
+// continuando a tocar, regeneração quando a voz muda (diretório novo), cache de versões antigas
+// (com outras classes de clipe) regerado sem erro e limpo, `resolveClip` para a Feature B e defesa
+// contra ids de voz/nomes inseguros. A síntese usa um motor local FAKE (nada
 // de ONNX nem rede — o pipeline real está reportado na SPEC).
 // Rodar: npm run test:unit
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   CLIP_CLASSES,
   CLIP_MAX_VARIANTS,
+  clipClassHash,
   clipFileName,
   clipPhraseSet,
+  clipStaleClasses,
   loadCurrentClipAudio,
   loadCurrentClips,
   trimWavSilence,
@@ -27,7 +32,12 @@ import {
   resolveClip
 } from '../src/main/voice/clips.ts'
 import type { TtsLocalBackend, TtsLocalInput, TtsLocalResult } from '../src/main/voice/tts.ts'
-import { DEFAULT_FILLER_POOL, normalizeTtsSettings, type TtsSettings } from '../src/shared/voice.ts'
+import {
+  DEFAULT_FILLER_POOL,
+  DEFAULT_TOOL_PHRASE_POOL,
+  normalizeTtsSettings,
+  type TtsSettings
+} from '../src/shared/voice.ts'
 import { encodeWav } from '../src/main/voice/session.ts'
 
 // ---------------- helpers ----------------
@@ -79,7 +89,8 @@ const totalClips = CLIP_CLASSES.reduce((a, c) => a + PHRASES[c].length, 0)
 
 // ---------------- nomes e ids (whitelist/segurança) ----------------
 
-test('clipFileName: whitelist de classes e variantes 1..16; fora disso → erro legível', () => {
+test('clipFileName: whitelist de classes e variantes 1..CLIP_MAX_VARIANTS (40); fora disso → erro legível', () => {
+  assert.equal(CLIP_MAX_VARIANTS, 40, 'o maior pool (frases de ferramenta, até 40)')
   for (const cls of CLIP_CLASSES) {
     for (let n = 1; n <= CLIP_MAX_VARIANTS; n++) {
       assert.equal(clipFileName(cls, n), `${cls}_${n}.wav`)
@@ -148,10 +159,15 @@ test('generateClips: pool de preâmbulos na whitelist, manifest com voz/engine/h
   )
   assert.ok(progress.every((p) => p.total === totalClips))
   assert.equal(progress[0].id, 'FILLER_1')
-  assert.ok(
-    manifest.clips.every((c) => c.class === 'FILLER'),
-    'só preâmbulos'
+  // TOOL = o pool padrão das frases de ferramenta, na ordem (depois dos preâmbulos)
+  assert.deepEqual(
+    manifest.clips.filter((c) => c.class === 'TOOL').map((c) => c.text),
+    DEFAULT_TOOL_PHRASE_POOL.map((f) => f.text)
   )
+  assert.ok(manifest.clips.every((c) => c.class === 'FILLER' || c.class === 'TOOL'))
+  // hash por classe no manifest
+  assert.equal(manifest.classHashes.FILLER, await clipClassHash(localSettings('pf_dora'), 'FILLER'))
+  assert.equal(manifest.classHashes.TOOL, await clipClassHash(localSettings('pf_dora'), 'TOOL'))
   // arquivos em <base>/voice-clips/<voiceId>/<CLASSE>_<n>.wav + manifest.json (sem .part sobrando)
   const dir = clipsDir(base, manifest.voiceId)!
   const files = readdirSync(dir).sort()
@@ -320,9 +336,9 @@ test('clipsHash: estável para a mesma definição e sensível a frases/voz/mode
 })
 
 // catálogo de frases: o pool de preâmbulos, não vazio (o manifest depende disso)
-test('clipPhraseSet: só FILLER (o pool de preâmbulos), frases por extenso que os dois motores pronunciam', () => {
-  assert.deepEqual(CLIP_CLASSES, ['FILLER'])
-  assert.deepEqual(Object.keys(PHRASES), ['FILLER'])
+test('clipPhraseSet: FILLER (preâmbulos) e TOOL (frases de ferramenta), frases por extenso que os dois motores pronunciam', () => {
+  assert.deepEqual(CLIP_CLASSES, ['FILLER', 'TOOL'])
+  assert.deepEqual(Object.keys(PHRASES), ['FILLER', 'TOOL'])
   for (const cls of CLIP_CLASSES) {
     const phrases = PHRASES[cls]
     assert.ok(phrases.length >= 2 && phrases.length <= CLIP_MAX_VARIANTS, cls)
@@ -335,6 +351,10 @@ test('clipPhraseSet: só FILLER (o pool de preâmbulos), frases por extenso que 
   assert.deepEqual(
     PHRASES.FILLER,
     DEFAULT_FILLER_POOL.map((f) => f.text)
+  )
+  assert.deepEqual(
+    PHRASES.TOOL,
+    DEFAULT_TOOL_PHRASE_POOL.map((f) => f.text)
   )
   // o longo "Só um minutinho que eu tô vendo isso." saiu
   assert.ok(!PHRASES.FILLER.some((p) => p.includes('tô vendo isso')))
@@ -358,7 +378,8 @@ test('clipsHash: o pool de preâmbulos entra no hash (mudou → cache velho → 
   assert.equal(await loadCurrentClipAudio(base, settings, pool, 'FILLER', 1), null)
   const before = calls.length
   const m = await generateClips({ baseDir: base, settings, local: backend, fillerPool: pool })
-  assert.equal(calls.length - before, totalClips - DEFAULT_FILLER_POOL.length + pool.length)
+  // só a classe que mudou é sintetizada: os TOOL continuam em dia e são reaproveitados
+  assert.equal(calls.length - before, pool.length)
   assert.deepEqual(
     m.clips.filter((c) => c.class === 'FILLER').map((c) => c.text),
     pool.map((p) => p.text)
@@ -405,11 +426,79 @@ test('cache de versão antiga (com clipes de interjeição): lido como ausente, 
   // gerar de novo: só os preâmbulos; os arquivos das classes que saíram são apagados
   const m = await generateClips({ baseDir: base, settings, local: backend })
   assert.equal(calls.length, totalClips)
-  assert.ok(m.clips.every((c) => c.class === 'FILLER'))
+  assert.ok(m.clips.every((c) => c.class === 'FILLER' || c.class === 'TOOL'))
   const files = readdirSync(dir)
   assert.ok(!files.includes('ACK_1.wav') && !files.includes('THINKING_3.wav'), files.join(','))
   assert.ok(files.includes('FILLER_1.wav'))
   assert.ok(await loadCurrentClipAudio(base, settings, null, 'FILLER', 1))
+  rmSync(base, { recursive: true, force: true })
+})
+
+test('cache só de preâmbulos (de antes das frases de ferramenta): os FILLER seguem tocando; gerar sintetiza só os TOOL', async () => {
+  const base = newBase()
+  const { backend, calls } = fakeEngine()
+  const settings = localSettings()
+  // o hash antigo (payload `{ phrases: { FILLER } }`) é exatamente o hash da classe FILLER
+  const legacy = createHash('sha256')
+    .update(
+      JSON.stringify({
+        phrases: { FILLER: DEFAULT_FILLER_POOL.map((f) => f.text) },
+        post: 'trim-v1',
+        backend: 'local',
+        engine: 'kokoro',
+        voice: 'pf_dora',
+        model: null
+      })
+    )
+    .digest('hex')
+  assert.equal(await clipClassHash(settings, 'FILLER'), legacy)
+  // como a versão anterior deixava o cache: só FILLER, sem `classHashes`
+  const full = await generateClips({ baseDir: base, settings, local: backend })
+  const dir = clipsDir(base, full.voiceId)!
+  const fillers = full.clips.filter((c) => c.class === 'FILLER')
+  for (const c of full.clips.filter((x) => x.class === 'TOOL')) rmSync(join(dir, c.file))
+  const { classHashes: _drop, ...rest } = full
+  void _drop
+  writeFileSync(
+    join(dir, 'manifest.json'),
+    JSON.stringify({ ...rest, hash: legacy, clips: fillers })
+  )
+  const old = await loadClips(base, full.voiceId)
+  assert.ok(old, 'manifest antigo continua válido')
+  assert.deepEqual(old!.classHashes, { FILLER: legacy })
+  assert.deepEqual(await clipStaleClasses(old, settings), ['TOOL'])
+  assert.equal(
+    await loadCurrentClips(base, settings),
+    null,
+    'conjunto completo: velho (a UI avisa)'
+  )
+  assert.ok(await loadCurrentClipAudio(base, settings, null, 'FILLER', 1), 'preâmbulo ainda toca')
+  assert.equal(
+    await loadCurrentClipAudio(base, settings, null, 'TOOL', 1),
+    null,
+    'sem clipe TOOL → síntese ao vivo'
+  )
+  // "Gerar clipes": só as frases de ferramenta são sintetizadas
+  const before = calls.length
+  const m = await generateClips({ baseDir: base, settings, local: backend })
+  assert.equal(calls.length - before, DEFAULT_TOOL_PHRASE_POOL.length)
+  assert.deepEqual(await clipStaleClasses(m, settings), [])
+  assert.ok(await loadCurrentClipAudio(base, settings, null, 'TOOL', 1))
+  assert.ok(await loadCurrentClips(base, settings))
+  // pool de frases de ferramenta mudou: só os TOOL ficam velhos (e só eles são refeitos)
+  const toolPool = [{ text: 'Vou pesquisar agora.', categories: ['web' as const] }]
+  assert.deepEqual(await clipStaleClasses(m, settings, null, toolPool), ['TOOL'])
+  assert.ok(await loadCurrentClipAudio(base, settings, null, 'FILLER', 2, toolPool))
+  assert.equal(await loadCurrentClipAudio(base, settings, null, 'TOOL', 1, toolPool), null)
+  const b2 = calls.length
+  const m2 = await generateClips({ baseDir: base, settings, local: backend, toolPool })
+  assert.equal(calls.length - b2, 1)
+  assert.deepEqual(
+    m2.clips.filter((c) => c.class === 'TOOL').map((c) => c.text),
+    ['Vou pesquisar agora.']
+  )
+  assert.ok(!existsSync(join(dir, 'TOOL_2.wav')), 'variantes que saíram são apagadas')
+  assert.ok(await loadCurrentClipAudio(base, settings, null, 'TOOL', 1, toolPool))
   rmSync(base, { recursive: true, force: true })
 })
 

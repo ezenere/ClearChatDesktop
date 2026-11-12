@@ -1,7 +1,8 @@
 // Painel da chamada de voz (dock — SPEC → "Chamada de voz → Timeline e log de diagnóstico"): toggle
 // rápido dos preâmbulos (fillers) refletindo e gravando o `ChatConfig.voice` do chat da chamada
 // (★ = segue o padrão global — escolher a opção ★ remove o override, como em
-// `ChatApprovalSection`), contagens (preâmbulos e frases de demora tocados, por que não tocaram),
+// `ChatApprovalSection`), contagens (preâmbulos, frases de demora e de ferramenta tocados, por que
+// não tocaram),
 // o modelo da chamada e a timeline da chamada atual (sem visualização pós-chamada na v1 — as
 // decisões de preâmbulo ficam no log de diagnóstico `voice-eval/*.jsonl`).
 import { useMemo } from 'react'
@@ -10,6 +11,7 @@ import { computeVoiceCallMetrics } from '@shared/voiceTimeline'
 import { useStore } from '../../store'
 import { useVoiceCallConfig } from '../../lib/voice/useVoiceCallConfig'
 import { InheritChoice } from '../ui/InheritChoice'
+import { toolPhraseCategoryShort } from '../../lib/voice/toolPhrases'
 import { VoiceCallModelEditor } from './VoiceCallModelEditor'
 
 /** Motivo de um ato de fala curta NÃO tocado → texto do painel (a "leitura de depuração"). */
@@ -37,7 +39,13 @@ const SKIP_LABELS: Record<string, string> = {
   'send-failed': 'o envio falhou',
   'no-response': 'sem resposta em voo',
   hangup: 'o agente encerrou a chamada',
-  cancelled: 'resposta cancelada'
+  cancelled: 'resposta cancelada',
+  // frases de ferramenta (motivo `<categoria>/<motivo>`; `live/` = síntese ao vivo)
+  'tool-phrase': 'a frase de ferramenta tocou no lugar',
+  'no-phrase': 'sem frase para essa tool',
+  announced: 'o assistente já falou antes da tool',
+  'after-preamble': 'preâmbulo terminou há menos de 3 s',
+  'tool-done': 'a tool terminou antes'
 }
 
 /** Por que a fala por cima virou barge-in → texto. */
@@ -58,17 +66,30 @@ function skipLabel(reason: string): string {
 function describeTimelineEvent(e: VoiceCallTimelineEvent): string {
   switch (e.kind) {
     case 'decision': {
+      if (e.class === 'TOOL') {
+        // `<categoria>` | `<categoria>/live` (tocou) · `<categoria>[/live]/<motivo>` (pulada)
+        const [cat = '?', ...rest] = (e.reason ?? '?').split('/')
+        const live = rest[0] === 'live'
+        const why = rest.filter((r) => r !== 'live').join('/')
+        const state = e.played ? 'tocou' : `não tocou — ${skipLabel(why || '?')}`
+        return `frase de ferramenta (${toolPhraseCategoryShort(cat)}${live ? ' · ao vivo' : ''})${
+          e.variant ? ` v${e.variant}` : ''
+        } — ${state}${e.text ? ` · "${e.text.slice(0, 40)}"` : ''}`
+      }
       const state = e.played ? 'tocou' : `não tocou — ${skipLabel(e.reason ?? '?')}`
       return `decisão ${e.class ?? '?'}${e.variant ? ` v${e.variant}` : ''} — ${state}${
         e.text ? ` · "…${e.text.slice(-24)}"` : ''
       }`
     }
     case 'clip-emitted':
+      if (e.class === 'TOOL') return 'frase de ferramenta emitida'
       return e.text
         ? `frase ${e.class ?? '?'} emitida: "${e.text.slice(0, 40)}"`
         : `clipe ${e.class ?? '?'} emitido`
     case 'clip-cancelled':
-      return `clipe ${e.class ?? '?'} cancelado`
+      return e.class === 'TOOL'
+        ? 'frase de ferramenta cancelada'
+        : `clipe ${e.class ?? '?'} cancelado`
     case 'sentence-emitted':
       return `sentença: "…${(e.text ?? '').slice(-24)}"`
     case 'turn-sent':
@@ -156,6 +177,11 @@ export function VoiceCallPanel({ open }: { open: boolean }): React.JSX.Element |
             {metrics.delayPlayed.apology} desculpa
           </span>
         )}
+        {metrics.toolPlayed > 0 && (
+          <span data-testid="voice-call-tool-played">
+            frases de ferramenta: {metrics.toolPlayed}
+          </span>
+        )}
         {playbackErrors > 0 && (
           <span data-testid="voice-call-playback-errors" className="text-danger">
             falhas ao tocar: {playbackErrors}
@@ -204,19 +230,24 @@ export function VoiceCallPanel({ open }: { open: boolean }): React.JSX.Element |
   )
 }
 
-/** Por que os atos de fala curta não tocaram (motivo × vezes) — preâmbulos e frases de demora. */
+/**
+ * Por que os atos de fala curta não tocaram (motivo × vezes) — preâmbulos, frases de demora e de
+ * ferramenta (estas com a categoria: "web: o assistente já falou antes da tool ×1").
+ */
 function SkipReadout({
   skipped
 }: {
   skipped: {
     filler: Record<string, number>
     delay: Record<string, number>
+    tool: Record<string, number>
   }
 }): React.JSX.Element | null {
   const row = (
     label: string,
     counts: Record<string, number>,
-    testId: string
+    testId: string,
+    describe: (reason: string) => string = skipLabel
   ): React.JSX.Element | null => {
     const entries = Object.entries(counts).sort((a, b) => b[1] - a[1])
     if (!entries.length) return null
@@ -225,7 +256,7 @@ function SkipReadout({
         <span className="text-fg/80">{label} não tocou:</span>
         {entries.map(([reason, n]) => (
           <span key={reason} data-reason={reason} title={reason}>
-            {skipLabel(reason)} ×{n}
+            {describe(reason)} ×{n}
           </span>
         ))}
       </div>
@@ -233,11 +264,17 @@ function SkipReadout({
   }
   const a = row('Preâmbulo', skipped.filler, 'voice-call-skips-filler')
   const b = row('Frase de demora', skipped.delay, 'voice-call-skips-delay')
-  if (!a && !b) return null
+  const c = row('Frase de ferramenta', skipped.tool, 'voice-call-skips-tool', (reason) => {
+    const [cat = '?', ...rest] = reason.split('/')
+    const why = rest.filter((r) => r !== 'live').join('/')
+    return `${toolPhraseCategoryShort(cat)}: ${skipLabel(why || '?')}`
+  })
+  if (!a && !b && !c) return null
   return (
     <div data-testid="voice-call-skips" className="space-y-0.5 text-[10.5px] text-subtle">
       {a}
       {b}
+      {c}
     </div>
   )
 }

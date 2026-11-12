@@ -58,14 +58,19 @@ function mockMicMode(): string {
   return (window as unknown as { __clearMockMic?: string }).__clearMockMic ?? 'ok'
 }
 
-/** Recarrega o estado dos clipes dos preâmbulos da voz atual. */
+/** Recarrega o estado dos clipes (preâmbulos e frases de ferramenta) da voz atual. */
 async function refreshClips(): Promise<void> {
   const v = api.voice
   if (!v) return
   try {
     const m = await v.tts.clips.list()
-    // cache de definição antiga (frases/pool mudaram) conta como ausente: "Gerar clipes" de novo
-    useVoiceCallRuntime.setState({ clips: m && m.clips.length > 0 && !m.stale ? 'ok' : 'missing' })
+    // cache de definição antiga (frases/pool mudaram) conta como ausente: "Gerar clipes" de novo —
+    // `clipsStale` diz quais classes (as outras continuam tocando)
+    const ok = !!m && m.clips.length > 0 && !m.stale
+    useVoiceCallRuntime.setState({
+      clips: ok ? 'ok' : 'missing',
+      clipsStale: ok ? [] : (m?.staleClasses ?? ['FILLER', 'TOOL'])
+    })
   } catch {
     useVoiceCallRuntime.setState({ clips: 'unknown' })
   }
@@ -263,10 +268,12 @@ export function useVoiceCall(): void {
             ? 'o preâmbulo'
             : item.kind === 'delay'
               ? 'a frase de demora'
-              : 'uma frase da resposta'
-        // clipe (preâmbulo/frase de demora) não é essencial: pula com o registro no painel; frase
-        // da resposta que não toca encerra a chamada (nunca uma resposta muda)
-        if (item.kind === 'filler' || item.kind === 'delay') {
+              : item.kind === 'tool'
+                ? 'a frase de ferramenta'
+                : 'uma frase da resposta'
+        // clipe (preâmbulo/frase de demora/de ferramenta) não é essencial: pula com o registro no
+        // painel; frase da resposta que não toca encerra a chamada (nunca uma resposta muda)
+        if (item.kind === 'filler' || item.kind === 'delay' || item.kind === 'tool') {
           setError(`Não foi possível tocar ${what}: ${reason}`)
           return
         }
@@ -618,7 +625,11 @@ export function useVoiceCall(): void {
     )
     try {
       const m = await v.tts.clips.generate()
-      useVoiceCallRuntime.setState({ clips: m.clips.length > 0 ? 'ok' : 'missing' })
+      const ok = m.clips.length > 0
+      useVoiceCallRuntime.setState({
+        clips: ok ? 'ok' : 'missing',
+        clipsStale: ok ? [] : ['FILLER', 'TOOL']
+      })
     } catch (err) {
       useVoiceCallRuntime.setState({ clips: 'missing' })
       setError(`Não foi possível gerar os clipes de voz: ${errorMessage(err)}`)

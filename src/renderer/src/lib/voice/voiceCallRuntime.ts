@@ -5,7 +5,11 @@
 import { create } from 'zustand'
 import type { GpuCallPlan } from './gpu/gpuUi'
 
-/** Clipes dos preâmbulos da voz atual (sem eles os preâmbulos não tocam). */
+/**
+ * Clipes da voz atual (preâmbulos e frases de ferramenta): sem eles os preâmbulos não tocam e as
+ * frases de ferramenta são sintetizadas na hora. 'missing' = alguma classe velha/ausente
+ * (`clipsStale` diz quais).
+ */
 export type VoiceClipsState = 'unknown' | 'missing' | 'ok' | 'generating'
 
 export interface VoiceCallRuntime {
@@ -16,6 +20,8 @@ export interface VoiceCallRuntime {
   /** Volume da reprodução (0..1). */
   volume: number
   clips: VoiceClipsState
+  /** Classes de clipe velhas/ausentes na voz atual (`'FILLER'`, `'TOOL'`) — [] com tudo em dia. */
+  clipsStale: string[]
   /** Progresso da geração de clipes ("Gerar clipes" no dock). */
   clipsProgress: { done: number; total: number } | null
   /**
@@ -43,6 +49,7 @@ export const useVoiceCallRuntime = create<VoiceCallRuntime>(() => ({
   error: null,
   volume: 1,
   clips: 'unknown',
+  clipsStale: [],
   clipsProgress: null,
   live: { text: '', state: null },
   gpuCall: null,

@@ -12,7 +12,9 @@ import {
   DEFAULT_FILLER_DELAY_MS,
   type BargeInConfig,
   type FillerContext,
-  type FillerPhrase
+  type FillerPhrase,
+  type ToolPhrase,
+  type ToolPhraseCategory
 } from './voice'
 import { isBackchannelText, isCommandLike, isQuestionLike } from './voiceTurn'
 
@@ -223,6 +225,127 @@ export class VoicedSpan {
     this.#lastEnd = 0
     this.#voiced = 0
   }
+}
+
+// ---------------- frases de ferramenta (SPEC → "Frases de ferramenta") ----------------
+
+/**
+ * Preâmbulo que já tocou: a frase de ferramenta só sai se ele terminou há pelo menos isto (ms) —
+ * senão as duas emendariam ("Hum, deixa eu ver." + "Vou pesquisar isso.").
+ */
+export const TOOL_PHRASE_AFTER_PREAMBLE_MS = 3000
+/** A frase de ferramenta não repete nenhuma das últimas N usadas. */
+export const TOOL_PHRASE_RECENT_WINDOW = 3
+
+/** Tools sem frase (a própria tool já é a fala/interação: despedida, pergunta na tela). */
+const TOOLS_WITHOUT_PHRASE = new Set(['end_call', 'ask_user'])
+
+/**
+ * Categoria da frase de uma tool (null = tool sem frase — `end_call`, `ask_user`). Tools do celular
+ * (`get_location`, `nearby_places`) caem em `location`; desconhecidas, em `generic`.
+ */
+export function toolPhraseCategory(toolName: string): ToolPhraseCategory | null {
+  const n = String(toolName ?? '').trim()
+  if (TOOLS_WITHOUT_PHRASE.has(n)) return null
+  if (n === 'web_search' || n === 'browse_url') return 'web'
+  if (
+    /^(list_dir|read_file|search_files|find_files|present_file|write_file|edit_file)$/.test(n) ||
+    /^fs_/.test(n)
+  )
+    return 'files'
+  if (n === 'shell' || /^process_/.test(n)) return 'shell'
+  if (/^memory_/.test(n)) return 'memory'
+  if (
+    /^(delegate_task|send_to_chat|check_subagents|wait_subagents|cancel_subagent|message_subagent)$/.test(
+      n
+    )
+  )
+    return 'agents'
+  if (
+    /^(list_models|get_chat_info|list_chats|read_history|list_skills|skill_load|skill_read)$/.test(
+      n
+    )
+  )
+    return 'info'
+  if (n === 'get_location' || n === 'nearby_places') return 'location'
+  return 'generic'
+}
+
+/**
+ * Escolhe a frase (índice no pool) para a categoria: as da categoria fora das últimas
+ * `TOOL_PHRASE_RECENT_WINDOW`; sem candidata → as genéricas fora das recentes → qualquer da
+ * categoria (a usada há mais tempo) → qualquer genérica. Sorteio via `rng` (1 chamada). null = nada.
+ */
+export function pickToolPhrase(
+  pool: readonly ToolPhrase[],
+  category: ToolPhraseCategory,
+  recent: readonly number[],
+  rng: () => number = Math.random
+): number | null {
+  if (!pool.length) return null
+  const window = recent.slice(-TOOL_PHRASE_RECENT_WINDOW)
+  const of = (c: ToolPhraseCategory): number[] =>
+    pool
+      .map((_, i) => i)
+      .filter((i) => (pool[i].categories.length ? pool[i].categories : ['generic']).includes(c))
+  const fresh = (xs: number[]): number[] => xs.filter((i) => !window.includes(i))
+  let cands = fresh(of(category))
+  if (!cands.length && category !== 'generic') cands = fresh(of('generic'))
+  if (!cands.length) {
+    const fallback = of(category).length ? of(category) : of('generic')
+    if (!fallback.length) return null
+    return fallback.reduce((best, i) => (window.indexOf(i) < window.indexOf(best) ? i : best))
+  }
+  let r = typeof rng === 'function' ? Number(rng()) : NaN
+  if (!Number.isFinite(r)) r = Math.random()
+  const k = Math.min(
+    cands.length - 1,
+    Math.floor(Math.min(Math.max(r, 0), 0.999999999) * cands.length)
+  )
+  return cands[k]
+}
+
+/** Por que a frase de ferramenta NÃO sai (null = sai). */
+export type ToolPhraseSkip =
+  | 'disabled'
+  | 'no-phrase'
+  | 'announced'
+  | 'hangup'
+  | 'user-speaking'
+  | 'clip-playing'
+  | 'after-preamble'
+  | 'assistant-audio'
+
+/**
+ * Regras da frase da 1ª tool do turno (a função é pura; quem chama garante "só a 1ª"): desligada;
+ * tool sem frase; o assistente já falou/cortou uma frase da resposta neste turno (ele mesmo anunciou
+ * a tool); desligamento armado; o usuário falando; uma frase curta tocando agora; o preâmbulo
+ * terminou há menos de `TOOL_PHRASE_AFTER_PREAMBLE_MS`; outro áudio do assistente tocando.
+ */
+export function toolPhraseSkipReason(input: {
+  enabled: boolean
+  category: ToolPhraseCategory | null
+  answerStarted: boolean
+  hangup: boolean
+  userSpeaking: boolean
+  shortPlaying: boolean
+  preambleEndedAt: number | null
+  playbackActive: boolean
+  now: number
+}): ToolPhraseSkip | null {
+  if (!input.enabled) return 'disabled'
+  if (!input.category) return 'no-phrase'
+  if (input.answerStarted) return 'announced'
+  if (input.hangup) return 'hangup'
+  if (input.userSpeaking) return 'user-speaking'
+  if (input.shortPlaying) return 'clip-playing'
+  if (
+    input.preambleEndedAt != null &&
+    input.now - input.preambleEndedAt < TOOL_PHRASE_AFTER_PREAMBLE_MS
+  )
+    return 'after-preamble'
+  if (input.playbackActive) return 'assistant-audio'
+  return null
 }
 
 // ---------------- frases de demora (sintetizadas ao vivo — SPEC → "Frases de demora") ----------------

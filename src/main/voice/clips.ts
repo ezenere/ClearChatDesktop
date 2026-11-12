@@ -1,9 +1,11 @@
-// Clipes dos preâmbulos (fillers) da chamada de voz (SPEC → "Áudio → Serviço de TTS (clipes)"):
-// falas curtas pré-geradas pela voz configurada e cacheadas em
-// `<userData>/voice-clips/<voiceId>/FILLER_<n>.wav` (silêncio das pontas aparado), com manifest
-// por voz (id, engine, modelo, hash da definição — o pool de preâmbulos). A Feature B consome via
-// `loadCurrentClipAudio` (latência zero depois de gerados; cache velho = nada toca) e a
-// regeneração acontece quando a voz muda (voiceId próprio por voz) ou o hash muda. Caches de
+// Clipes dos preâmbulos (fillers) e das frases de ferramenta da chamada de voz (SPEC → "Áudio →
+// Serviço de TTS (clipes)"): falas curtas pré-geradas pela voz configurada e cacheadas em
+// `<userData>/voice-clips/<voiceId>/<FILLER|TOOL>_<n>.wav` (silêncio das pontas aparado), com
+// manifest por voz (id, engine, modelo, hash da definição + um hash POR CLASSE). A Feature B consome
+// via `loadCurrentClipAudio` (latência zero depois de gerados; classe velha = aquele clipe não toca)
+// e a regeneração acontece quando a voz muda (voiceId próprio por voz) ou o hash muda — só as
+// classes que mudaram são sintetizadas de novo (cache só de preâmbulos, de antes das frases de
+// ferramenta: os `FILLER` continuam valendo e o "Gerar clipes" só gera os `TOOL`). Caches de
 // versões antigas (com classes de clipe que saíram — `ACK`, `THINKING`…) contam como velhos: gerar
 // de novo apaga os arquivos que não pertencem mais ao conjunto.
 // Sem Electron/UI/IPC; síntese via `synthesize` de `tts.ts` (motor local injetado ou API).
@@ -14,44 +16,51 @@ import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promise
 import { join } from 'node:path'
 import {
   FILLER_POOL_MAX,
+  TOOL_PHRASE_POOL_MAX,
   resolveFillerPool,
+  resolveToolPhrasePool,
   type FillerPhrase,
+  type ToolPhrase,
   type TtsSettings
 } from '@shared/voice'
 import { resolveGpuParams } from '@shared/gpuVoice'
 import { synthesize, type TtsLocalBackend } from './tts'
 
 /**
- * Classes de clipes (whitelist de nomes de arquivo — nada fora daqui vira arquivo): só o `FILLER`
- * (preâmbulo pós-turno).
+ * Classes de clipes (whitelist de nomes de arquivo — nada fora daqui vira arquivo): `FILLER`
+ * (preâmbulo pós-turno) e `TOOL` (frase da 1ª tool do turno — "Vou pesquisar isso.").
  */
-export type ClipClass = 'FILLER'
-export const CLIP_CLASSES: readonly ClipClass[] = ['FILLER']
+export type ClipClass = 'FILLER' | 'TOOL'
+export const CLIP_CLASSES: readonly ClipClass[] = ['FILLER', 'TOOL']
 
 /**
- * Teto do `<n>` (whitelist dos nomes de arquivo): uma variante por frase do pool de preâmbulos (até
- * `FILLER_POOL_MAX`).
+ * Teto do `<n>` (whitelist dos nomes de arquivo): uma variante por frase do pool (até
+ * `FILLER_POOL_MAX` preâmbulos / `TOOL_PHRASE_POOL_MAX` frases de ferramenta).
  */
-export const CLIP_MAX_VARIANTS = FILLER_POOL_MAX
+export const CLIP_MAX_VARIANTS = Math.max(FILLER_POOL_MAX, TOOL_PHRASE_POOL_MAX)
 
 /**
- * Conjunto completo de frases por classe: o `FILLER` = o pool de preâmbulos
- * (`voiceCallDefaults.fillers.pool`; null = `DEFAULT_FILLER_POOL`), na ordem do pool.
+ * Conjunto completo de frases por classe, na ordem dos pools: `FILLER` = os preâmbulos
+ * (`voiceCallDefaults.fillers.pool`; null = `DEFAULT_FILLER_POOL`) e `TOOL` = as frases de
+ * ferramenta (`voiceCallDefaults.toolPhrases.pool`; null = `DEFAULT_TOOL_PHRASE_POOL`).
  */
 export function clipPhraseSet(
-  fillerPool?: readonly FillerPhrase[] | null
+  fillerPool?: readonly FillerPhrase[] | null,
+  toolPool?: readonly ToolPhrase[] | null
 ): Record<ClipClass, readonly string[]> {
   return {
-    FILLER: resolveFillerPool(fillerPool ? [...fillerPool] : null).map((f) => f.text)
+    FILLER: resolveFillerPool(fillerPool ? [...fillerPool] : null).map((f) => f.text),
+    TOOL: resolveToolPhrasePool(toolPool ? [...toolPool] : null).map((f) => f.text)
   }
 }
 
 /** Quantas variantes a classe tem no conjunto atual. */
 export function clipVariantCount(
   cls: ClipClass,
-  fillerPool?: readonly FillerPhrase[] | null
+  fillerPool?: readonly FillerPhrase[] | null,
+  toolPool?: readonly ToolPhrase[] | null
 ): number {
-  return clipPhraseSet(fillerPool)[cls].length
+  return clipPhraseSet(fillerPool, toolPool)[cls].length
 }
 
 /** Versão do pós-processamento dos clipes (entra no hash: mudou → regenera). */
@@ -80,6 +89,12 @@ export interface ClipsManifest {
   model: string
   /** sha256 da definição (frases + voz + modelo) — mudou → os clipes são regerados. */
   hash: string
+  /**
+   * sha256 por classe (as frases DELA + voz + modelo): a classe em dia continua tocando e é
+   * reaproveitada na regeneração. Manifest antigo (sem o campo, só preâmbulos): `{ FILLER: hash }`
+   * — o hash antigo era exatamente o da classe FILLER.
+   */
+  classHashes: Partial<Record<ClipClass, string>>
   generatedAt: string
   clips: VoiceClip[]
 }
@@ -93,6 +108,8 @@ export interface GenerateClipsOptions {
   local?: TtsLocalBackend
   /** Pool de preâmbulos (`voiceCallDefaults.fillers.pool`); null/ausente = o padrão. */
   fillerPool?: readonly FillerPhrase[] | null
+  /** Pool de frases de ferramenta (`voiceCallDefaults.toolPhrases.pool`); null/ausente = o padrão. */
+  toolPool?: readonly ToolPhrase[] | null
   /** Progresso a cada clipe gerado. */
   onProgress?: (e: { done: number; total: number; id: string }) => void
   signal?: AbortSignal
@@ -144,15 +161,47 @@ export function clipsDir(baseDir: string, voiceId: string): string | null {
 // ---------------- manifest/hash ----------------
 
 /**
- * Hash da definição dos clipes (o pool de preâmbulos + voz + modelo + pós-processamento): mudou →
- * o cache é velho e os clipes são regerados.
+ * Hash da definição dos clipes (os pools de preâmbulos e de frases de ferramenta + voz + modelo +
+ * pós-processamento): mudou → o cache é velho e os clipes são regerados.
  */
 export async function clipsHash(
   settings: TtsSettings,
-  fillerPool?: readonly FillerPhrase[] | null
+  fillerPool?: readonly FillerPhrase[] | null,
+  toolPool?: readonly ToolPhrase[] | null
+): Promise<string> {
+  return phrasesHash(settings, clipPhraseSet(fillerPool, toolPool))
+}
+
+/**
+ * Hash de UMA classe (as frases dela + voz + modelo + pós-processamento). O de `FILLER` é idêntico
+ * ao hash dos caches de antes das frases de ferramenta (o payload era `{ phrases: { FILLER } }`).
+ */
+export async function clipClassHash(
+  settings: TtsSettings,
+  cls: ClipClass,
+  fillerPool?: readonly FillerPhrase[] | null,
+  toolPool?: readonly ToolPhrase[] | null
+): Promise<string> {
+  return phrasesHash(settings, { [cls]: clipPhraseSet(fillerPool, toolPool)[cls] })
+}
+
+/** Hash de todas as classes (classe → hash) do conjunto atual. */
+export async function clipClassHashes(
+  settings: TtsSettings,
+  fillerPool?: readonly FillerPhrase[] | null,
+  toolPool?: readonly ToolPhrase[] | null
+): Promise<Record<ClipClass, string>> {
+  const out = {} as Record<ClipClass, string>
+  for (const c of CLIP_CLASSES) out[c] = await clipClassHash(settings, c, fillerPool, toolPool)
+  return out
+}
+
+async function phrasesHash(
+  settings: TtsSettings,
+  phrases: Partial<Record<ClipClass, readonly string[]>>
 ): Promise<string> {
   const payload = JSON.stringify({
-    phrases: clipPhraseSet(fillerPool),
+    phrases,
     post: CLIP_POSTPROCESS,
     backend: settings.backend,
     engine:
@@ -242,6 +291,18 @@ export async function loadClips(baseDir: string, voiceId: string): Promise<Clips
   if (m.engine !== null && typeof m.engine !== 'string') return null
   const clips = Array.isArray(m.clips) ? m.clips.map(normalizeClip) : []
   if (!clips.length || clips.some((c) => !c)) return null
+  // hash por classe; manifest de antes das frases de ferramenta (só preâmbulos) → o hash dele era o
+  // da classe FILLER
+  const classHashes: Partial<Record<ClipClass, string>> = {}
+  const rawClass = m.classHashes && typeof m.classHashes === 'object' ? m.classHashes : null
+  if (rawClass) {
+    for (const c of CLIP_CLASSES) {
+      const h = (rawClass as Record<string, unknown>)[c]
+      if (typeof h === 'string' && /^[0-9a-f]{64}$/.test(h)) classHashes[c] = h
+    }
+  } else if ((clips as VoiceClip[]).every((c) => c.class === 'FILLER')) {
+    classHashes.FILLER = m.hash
+  }
   // todos os arquivos do manifest precisam existir (senão o cache está incompleto → regerar)
   for (const c of clips as VoiceClip[]) {
     if (!existsSync(join(dir, c.file))) return null
@@ -252,6 +313,7 @@ export async function loadClips(baseDir: string, voiceId: string): Promise<Clips
     engine: (m.engine as string | null) ?? null,
     model: m.model,
     hash: m.hash,
+    classHashes,
     generatedAt: m.generatedAt,
     clips: clips as VoiceClip[]
   }
@@ -305,7 +367,8 @@ export async function loadClipAudio(
  * voz atual (`synthesize` — motor local ou API) e gravada em
  * `<baseDir>/voice-clips/<voiceId>/<CLASSE>_<n>.wav`, com manifest (voz, engine, modelo, hash).
  * Cache: se o manifest da voz tem o mesmo hash e todos os arquivos existem, devolve sem sintetizar
- * (o "Gerar clipes" da UI é idempotente); voz nova = diretório novo = regeneração natural.
+ * (o "Gerar clipes" da UI é idempotente); a classe com o mesmo hash por classe é reaproveitada (só
+ * as classes que mudaram são sintetizadas); voz nova = diretório novo = regeneração natural.
  */
 export async function generateClips(opts: GenerateClipsOptions): Promise<ClipsManifest> {
   const voiceId = clipVoiceId(opts.settings)
@@ -330,11 +393,16 @@ async function generateClipsLocked(
   voiceId: string,
   dir: string
 ): Promise<ClipsManifest> {
-  const hash = await clipsHash(opts.settings, opts.fillerPool)
+  const hash = await clipsHash(opts.settings, opts.fillerPool, opts.toolPool)
+  const classHashes = await clipClassHashes(opts.settings, opts.fillerPool, opts.toolPool)
   const existing = await loadClips(opts.baseDir, voiceId)
   if (existing && existing.hash === hash) return existing
+  // classes ainda em dia no cache: os clipes delas ficam (nada é sintetizado de novo)
+  const reuse = new Set(
+    CLIP_CLASSES.filter((c) => !!existing && existing.classHashes[c] === classHashes[c])
+  )
 
-  const phrases = clipPhraseSet(opts.fillerPool)
+  const phrases = clipPhraseSet(opts.fillerPool, opts.toolPool)
   const entries: VoiceClip[] = []
   const total = CLIP_CLASSES.reduce((a, c) => a + phrases[c].length, 0)
   let done = 0
@@ -349,6 +417,14 @@ async function generateClipsLocked(
       await rm(join(dir, name), { force: true })
   }
   for (const cls of CLIP_CLASSES) {
+    if (reuse.has(cls) && existing) {
+      for (const c of existing.clips.filter((x) => x.class === cls)) {
+        entries.push(c)
+        done++
+        opts.onProgress?.({ done, total, id: c.id })
+      }
+      continue
+    }
     for (let n = 1; n <= phrases[cls].length; n++) {
       if (opts.signal?.aborted) throw new Error('geração de clipes cancelada')
       const text = phrases[cls][n - 1]
@@ -384,6 +460,7 @@ async function generateClipsLocked(
           ? (opts.settings.gpu?.engine ?? '')
           : opts.settings.api.model,
     hash,
+    classHashes,
     generatedAt: new Date().toISOString(),
     clips: entries
   }
@@ -400,23 +477,46 @@ async function generateClipsLocked(
 export async function loadCurrentClips(
   baseDir: string,
   settings: TtsSettings,
-  fillerPool?: readonly FillerPhrase[] | null
+  fillerPool?: readonly FillerPhrase[] | null,
+  toolPool?: readonly ToolPhrase[] | null
 ): Promise<ClipsManifest | null> {
   const m = await loadClips(baseDir, clipVoiceId(settings))
   if (!m) return null
-  return m.hash === (await clipsHash(settings, fillerPool)) ? m : null
+  return m.hash === (await clipsHash(settings, fillerPool, toolPool)) ? m : null
 }
 
-/** Bytes de um clipe só quando o cache da voz atual está em dia (senão null — nunca toca clipe velho). */
+/**
+ * Classes do conjunto atual cujos clipes estão velhos ou ausentes no cache da voz (`[]` = tudo em
+ * dia; sem cache = todas). A UI pede "Gerar clipes" — as outras classes continuam tocando.
+ */
+export async function clipStaleClasses(
+  m: ClipsManifest | null,
+  settings: TtsSettings,
+  fillerPool?: readonly FillerPhrase[] | null,
+  toolPool?: readonly ToolPhrase[] | null
+): Promise<ClipClass[]> {
+  if (!m) return [...CLIP_CLASSES]
+  const hashes = await clipClassHashes(settings, fillerPool, toolPool)
+  return CLIP_CLASSES.filter((c) => m.classHashes[c] !== hashes[c])
+}
+
+/**
+ * Bytes de um clipe só quando a CLASSE dele está em dia no cache da voz atual (senão null — nunca
+ * toca clipe velho; a frase de ferramenta cai na síntese ao vivo).
+ */
 export async function loadCurrentClipAudio(
   baseDir: string,
   settings: TtsSettings,
   fillerPool: readonly FillerPhrase[] | null | undefined,
   cls: string,
-  n: number
+  n: number,
+  toolPool?: readonly ToolPhrase[] | null
 ): Promise<{ audio: Uint8Array; mime: string } | null> {
-  const m = await loadCurrentClips(baseDir, settings, fillerPool)
+  if (!(CLIP_CLASSES as readonly string[]).includes(cls)) return null
+  const m = await loadClips(baseDir, clipVoiceId(settings))
   if (!m || !m.clips.some((c) => c.class === cls && c.n === n)) return null
+  const current = await clipClassHash(settings, cls as ClipClass, fillerPool, toolPool)
+  if (m.classHashes[cls as ClipClass] !== current) return null
   return loadClipAudio(baseDir, m.voiceId, cls, n)
 }
 

@@ -131,6 +131,8 @@ test('computeVoiceCallMetrics: preâmbulos e frases de demora tocados; motivos p
     ev(3_200, 'decision', { class: 'KEEPALIVE', played: true, id: 'u5' }),
     ev(3_300, 'decision', { class: 'APOLOGY', played: false, reason: 'not-ready' }),
     ev(3_400, 'decision', { class: 'APOLOGY', played: true, id: 'u6' }),
+    ev(3_450, 'decision', { class: 'TOOL', played: true, variant: 1, reason: 'web', id: 'u7' }),
+    ev(3_460, 'decision', { class: 'TOOL', played: false, reason: 'files/announced' }),
     // decisões de classes desconhecidas não entram em balde nenhum
     ev(3_500, 'decision', { class: 'ACK', played: false, reason: 'cooldown' }),
     ev(4_000, 'speech-end')
@@ -139,16 +141,19 @@ test('computeVoiceCallMetrics: preâmbulos e frases de demora tocados; motivos p
   assert.equal(m.elapsedMs, 3_000, '1000 → 4000')
   assert.equal(m.fillerPlayed, 1)
   assert.deepEqual(m.delayPlayed, { keepAlive: 1, apology: 1 })
+  assert.equal(m.toolPlayed, 1)
   assert.deepEqual(m.skipped, {
     filler: { 'short-speech': 1, 'delay/no-clip': 1 },
-    delay: { 'not-ready': 1 }
+    delay: { 'not-ready': 1 },
+    tool: { 'files/announced': 1 }
   })
 
   // sem eventos: zeros
   const empty = computeVoiceCallMetrics([])
   assert.equal(empty.elapsedMs, 0)
   assert.equal(empty.fillerPlayed, 0)
-  assert.deepEqual(empty.skipped, { filler: {}, delay: {} })
+  assert.deepEqual(empty.skipped, { filler: {}, delay: {}, tool: {} })
+  assert.equal(empty.toolPlayed, 0)
 
   // `now` fecha o tempo da chamada
   const short = computeVoiceCallMetrics(

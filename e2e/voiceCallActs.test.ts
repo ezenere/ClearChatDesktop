@@ -68,6 +68,8 @@ interface HarnessOpts {
   gateClips?: boolean
   /** Clip dep devolve null (clipes não gerados). */
   noClips?: boolean
+  /** Frases de ferramenta (`toolPhrases.enabled`; padrão true — a 1ª tool toca a dela no lugar do preâmbulo). */
+  toolPhrases?: boolean
 }
 
 interface Harness {
@@ -101,7 +103,8 @@ function harness(opts: HarnessOpts = {}): Harness {
   let clipGate: { open: () => void } | null = null
   const defaults = {
     ...DEFAULT_VOICE_CALL_DEFAULTS,
-    fillers: { ...DEFAULT_VOICE_CALL_DEFAULTS.fillers, enabled: opts.fillers !== false }
+    fillers: { ...DEFAULT_VOICE_CALL_DEFAULTS.fillers, enabled: opts.fillers !== false },
+    toolPhrases: { ...DEFAULT_VOICE_CALL_DEFAULTS.toolPhrases, enabled: opts.toolPhrases !== false }
   }
   const m = new VoiceCallManager({
     sendTurn: (_sid, text) => sent.push(text),
@@ -281,8 +284,8 @@ test('filler: fala curta ("valeu") não ganha preâmbulo; delay 0 sai já', asyn
   h.m.stop()
 })
 
-test('filler: tools em execução disparam o filler já (sem esperar o limiar)', async () => {
-  const h = harness({ fillerDelayMs: 5000 })
+test('filler: tools em execução disparam o filler já (sem esperar o limiar) — com as frases de ferramenta desligadas', async () => {
+  const h = harness({ fillerDelayMs: 5000, toolPhrases: false })
   speakTurn(h, LONG)
   h.emit(toolRunning(true))
   await waitFor(() => h.emitted.length > 0, 2000, 'filler emitido no tool-running')
@@ -290,6 +293,15 @@ test('filler: tools em execução disparam o filler já (sem esperar o limiar)',
   await sleep(60)
   assert.equal(h.emitted.filter((u) => u.kind === 'filler').length, 1, 'máx. 1 por turno')
   h.m.stop()
+  // ligadas (padrão): a frase de ferramenta toca NO LUGAR do preâmbulo
+  const t = harness({ fillerDelayMs: 5000 })
+  speakTurn(t, LONG)
+  t.emit(toolRunning(true))
+  await waitFor(() => t.emitted.length > 0, 2000, 'frase de ferramenta no tool-running')
+  assert.equal(t.emitted[0].kind, 'tool')
+  await sleep(60)
+  assert.equal(t.emitted.filter((u) => u.kind === 'filler').length, 0, 'sem preâmbulo')
+  t.m.stop()
 })
 
 test('filler: desligado não toca; ligado toca e a decisão vai para o log de diagnóstico', async () => {

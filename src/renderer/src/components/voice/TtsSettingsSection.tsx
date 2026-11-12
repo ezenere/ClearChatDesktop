@@ -62,6 +62,8 @@ type Clips = {
   error: string | null
   count: number | null
   stale: boolean
+  /** Só a classe `TOOL` está velha/ausente (os preâmbulos estão em dia). */
+  staleToolOnly: boolean
 }
 
 export function TtsSettingsSection({
@@ -106,7 +108,8 @@ export function TtsSettingsSection({
     total: 0,
     error: null,
     count: null,
-    stale: false
+    stale: false,
+    staleToolOnly: false
   })
   /** `<audio>` em reprodução (teste ou prévia) — um por vez; fechar o modal interrompe. */
   const playing = useRef<{ el: HTMLAudioElement; url: string } | null>(null)
@@ -118,7 +121,9 @@ export function TtsSettingsSection({
         setClips((c) => ({
           ...c,
           count: m && !m.stale ? m.clips.length : 0,
-          stale: !!m?.stale
+          stale: !!m?.stale,
+          // só as frases de ferramenta faltam (cache de antes delas): os preâmbulos seguem tocando
+          staleToolOnly: !!m?.stale && m.staleClasses?.length === 1 && m.staleClasses[0] === 'TOOL'
         }))
       )
       .catch(() => void 0)
@@ -317,7 +322,7 @@ export function TtsSettingsSection({
       })
   }
 
-  /** "Gerar clipes de voz": pré-gera os preâmbulos da chamada com a voz atual. */
+  /** "Gerar clipes de voz": pré-gera os preâmbulos e as frases de ferramenta com a voz atual. */
   const runClips = (): void => {
     setClips((c) => ({ ...c, busy: true, done: 0, total: 0, error: null }))
     void voiceApi.tts.clips
@@ -329,7 +334,8 @@ export function TtsSettingsSection({
           total: m.clips.length,
           error: null,
           count: m.clips.length,
-          stale: false
+          stale: false,
+          staleToolOnly: false
         })
       )
       .catch((e) => setClips((c) => ({ ...c, busy: false, error: ipcError(e) })))
@@ -570,10 +576,11 @@ export function TtsSettingsSection({
           {clips.stale || clips.count ? 'Gerar clipes de novo' : 'Gerar clipes de voz'}
         </Button>
         <HelpTip label="Clipes de voz">
-          Os clipes (os preâmbulos da chamada de voz — &quot;Hum, deixa eu ver aqui.&quot;) são
-          gerados com a voz e o provedor atuais (provedor de API, Kokoro ou o motor da GPU) e ficam
-          em cache em <C>userData/voice-clips</C>, um cache por voz. Ao trocar a voz ou as frases,
-          gere de novo — sem clipes, os preâmbulos não tocam.
+          Os clipes (os preâmbulos da chamada de voz — &quot;Hum, deixa eu ver aqui.&quot; — e as
+          frases de ferramenta — &quot;Vou pesquisar isso.&quot;) são gerados com a voz e o provedor
+          atuais (provedor de API, Kokoro ou o motor da GPU) e ficam em cache em{' '}
+          <C>userData/voice-clips</C>, um cache por voz. Ao trocar a voz ou as frases, gere de novo
+          — sem clipes, os preâmbulos não tocam e as frases de ferramenta são sintetizadas na hora.
         </HelpTip>
         {clips.busy && (
           <span className="text-[11.5px] text-subtle tabular-nums" data-testid="tts-clips-progress">
@@ -587,9 +594,11 @@ export function TtsSettingsSection({
         )}
         {!clips.busy && clips.count === 0 && (
           <span className="text-[11.5px] text-warning" data-testid="tts-clips-missing">
-            {clips.stale
-              ? `clipes de “${currentVoiceLabel}” desatualizados (frases ou modelo mudaram) — gere de novo`
-              : `sem clipes para “${currentVoiceLabel}”`}
+            {clips.staleToolOnly
+              ? `faltam os clipes das frases de ferramenta de “${currentVoiceLabel}” (os preâmbulos estão em dia) — gere de novo`
+              : clips.stale
+                ? `clipes de “${currentVoiceLabel}” desatualizados (frases ou modelo mudaram) — gere de novo`
+                : `sem clipes para “${currentVoiceLabel}”`}
           </span>
         )}
       </div>

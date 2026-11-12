@@ -393,6 +393,84 @@ export interface VoiceFillerDefaults extends VoiceFillers {
 export const DEFAULT_FILLER_DELAY_MS = 250
 
 /**
+ * Categoria da ferramenta para a frase falada quando o assistente usa uma tool na chamada
+ * (`toolPhraseCategory` em `@shared/voicePolicy`): pesquisa na web, arquivos, terminal/processos,
+ * memória, subagentes/outros chats, informações (modelos/chats/histórico/skills), localização (tools
+ * do celular — `get_location`/`nearby_places`) e genérica.
+ */
+export type ToolPhraseCategory =
+  'web' | 'files' | 'shell' | 'memory' | 'agents' | 'info' | 'location' | 'generic'
+export const TOOL_PHRASE_CATEGORIES: readonly ToolPhraseCategory[] = [
+  'web',
+  'files',
+  'shell',
+  'memory',
+  'agents',
+  'info',
+  'location',
+  'generic'
+]
+
+/** Uma frase de ferramenta do pool (vira o clipe `TOOL_<n>` — n = posição 1-based no pool). */
+export interface ToolPhrase {
+  /** Texto falado (pt-BR por extenso). */
+  text: string
+  /** Categorias em que a frase cabe (lista vazia = `generic`). */
+  categories: ToolPhraseCategory[]
+}
+
+/** Máximo de frases no pool de frases de ferramenta (= máximo de clipes `TOOL_<n>`). */
+export const TOOL_PHRASE_POOL_MAX = 40
+
+/**
+ * Pool padrão das frases de ferramenta (curtas, ~1 s; 3–4 por categoria). A chamada fala UMA por
+ * turno, na 1ª tool que começa — sem repetir as últimas usadas.
+ */
+export const DEFAULT_TOOL_PHRASE_POOL: readonly ToolPhrase[] = [
+  { text: 'Vou pesquisar isso.', categories: ['web'] },
+  { text: 'Deixa eu procurar na internet.', categories: ['web'] },
+  { text: 'Vou dar uma olhada na web.', categories: ['web'] },
+  { text: 'Um instante, vou pesquisar.', categories: ['web'] },
+  { text: 'Deixa eu dar uma olhada nos arquivos.', categories: ['files'] },
+  { text: 'Vou olhar os arquivos.', categories: ['files'] },
+  { text: 'Deixa eu conferir no projeto.', categories: ['files'] },
+  { text: 'Vou abrir isso aqui.', categories: ['files'] },
+  { text: 'Vou rodar isso aqui.', categories: ['shell'] },
+  { text: 'Deixa eu executar isso.', categories: ['shell'] },
+  { text: 'Vou rodar um comando.', categories: ['shell'] },
+  { text: 'Deixa eu ver o que eu tenho anotado.', categories: ['memory'] },
+  { text: 'Vou consultar a memória.', categories: ['memory'] },
+  { text: 'Um instante, vou checar minhas notas.', categories: ['memory'] },
+  { text: 'Vou pedir ajuda para um assistente.', categories: ['agents'] },
+  { text: 'Deixa eu passar isso adiante.', categories: ['agents'] },
+  { text: 'Vou delegar essa parte.', categories: ['agents'] },
+  { text: 'Deixa eu conferir isso.', categories: ['info'] },
+  { text: 'Vou checar rapidinho.', categories: ['info'] },
+  { text: 'Deixa eu ver as informações.', categories: ['info'] },
+  { text: 'Deixa eu ver onde você está.', categories: ['location'] },
+  { text: 'Vou procurar lugares por perto.', categories: ['location'] },
+  { text: 'Vou checar a localização.', categories: ['location'] },
+  { text: 'Deixa eu ver isso.', categories: ['generic'] },
+  { text: 'Um instante, vou cuidar disso.', categories: ['generic'] },
+  { text: 'Vou fazer isso agora.', categories: ['generic'] }
+]
+
+/**
+ * Frases de ferramenta da chamada (`voiceCallDefaults.toolPhrases`, global; aditivo): quando o
+ * assistente começa a 1ª tool do turno, a chamada fala uma frase curta da categoria dela ("Vou
+ * pesquisar isso.") — clipe pré-gerado `TOOL_<n>` (síntese ao vivo se o clipe não está pronto). Por
+ * persona/chat só o liga/desliga (`VoiceCallConfig.toolPhrases`, ★ herda).
+ */
+export interface VoiceToolPhrases {
+  /** Liga as frases de ferramenta (padrão true). */
+  enabled: boolean
+  /** Pool; null = `DEFAULT_TOOL_PHRASE_POOL` (mudou → os clipes são regerados). */
+  pool: ToolPhrase[] | null
+}
+
+export const DEFAULT_TOOL_PHRASES: VoiceToolPhrases = { enabled: true, pool: null }
+
+/**
  * Frases de demora da chamada (`voiceCallDefaults.delayPhrases`, global): sintetizadas AO VIVO pela
  * mesma voz da chamada (sem clipes pré-gerados) quando a resposta demora. Duas situações:
  * - **manter viva** (`keepAlivePool`): depois do preâmbulo, sem áudio da resposta por
@@ -511,6 +589,11 @@ export interface VoiceCallConfig {
    * (persona → global `voiceCallDefaults.audioTags`, desligado). Opt-in explícito; aditivo.
    */
   audioTags?: boolean | null
+  /**
+   * Frases de ferramenta ("Vou pesquisar isso." na 1ª tool do turno); null/ausente = herda
+   * (persona → global `voiceCallDefaults.toolPhrases.enabled`, ligado). Aditivo.
+   */
+  toolPhrases?: boolean | null
   /** Texto da instrução das tags; null/ausente = herda (persona → global → `DEFAULT_AUDIO_TAGS_PROMPT`). */
   audioTagsPrompt?: string | null
 }
@@ -556,6 +639,8 @@ export interface VoiceCallDefaults {
    * lá.") — ver `VoiceDelayPhrases`. Aditivo (ausente no registro = os padrões).
    */
   delayPhrases: VoiceDelayPhrases
+  /** Frases de ferramenta (1 por turno, na 1ª tool) — ver `VoiceToolPhrases`. Aditivo (ausente = padrões). */
+  toolPhrases: VoiceToolPhrases
   /** Tags de voz na chamada (padrão false — opt-in). Aditivo (ausente = false). */
   audioTags: boolean
   /** Instrução das tags; null = `DEFAULT_AUDIO_TAGS_PROMPT`. Aditivo. */
@@ -674,6 +759,7 @@ export const DEFAULT_VOICE_CALL_DEFAULTS: VoiceCallDefaults = {
   basePrompt: null,
   endCall: true,
   delayPhrases: { ...DEFAULT_DELAY_PHRASES },
+  toolPhrases: { ...DEFAULT_TOOL_PHRASES },
   audioTags: false,
   audioTagsPrompt: null
 }
@@ -884,6 +970,42 @@ export function resolveFillerPool(pool: FillerPhrase[] | null | undefined): Fill
   return p ?? DEFAULT_FILLER_POOL.map((f) => ({ text: f.text, contexts: [...f.contexts] }))
 }
 
+/**
+ * Pool de frases de ferramenta: textos aparados (≤ 80 chars, sem duplicatas), categorias conhecidas
+ * (vazia = `generic`), no máximo `TOOL_PHRASE_POOL_MAX`; vazio/lixo → null.
+ */
+export function normalizeToolPhrasePool(v: unknown): ToolPhrase[] | null {
+  if (!Array.isArray(v)) return null
+  const out: ToolPhrase[] = []
+  for (const item of v) {
+    const o = asObject(item)
+    const text = typeof o?.text === 'string' ? o.text.replace(/\s+/g, ' ').trim().slice(0, 80) : ''
+    if (!text || out.some((p) => p.text === text)) continue
+    const categories = Array.isArray(o?.categories)
+      ? TOOL_PHRASE_CATEGORIES.filter((c) => (o!.categories as unknown[]).includes(c))
+      : []
+    if (!categories.length) continue // sem categoria conhecida: nunca seria escolhida
+    out.push({ text, categories })
+    if (out.length >= TOOL_PHRASE_POOL_MAX) break
+  }
+  return out.length ? out : null
+}
+
+/** Pool efetivo de frases de ferramenta (null → `DEFAULT_TOOL_PHRASE_POOL`). */
+export function resolveToolPhrasePool(pool: ToolPhrase[] | null | undefined): ToolPhrase[] {
+  const p = normalizeToolPhrasePool(pool ?? null)
+  return p ?? DEFAULT_TOOL_PHRASE_POOL.map((f) => ({ text: f.text, categories: [...f.categories] }))
+}
+
+/** Frases de ferramenta completas (ausente/lixo → `DEFAULT_TOOL_PHRASES`). */
+export function normalizeToolPhrases(v: unknown): VoiceToolPhrases {
+  const src = asObject(v)
+  return {
+    enabled: boolOr(src?.enabled, DEFAULT_TOOL_PHRASES.enabled),
+    pool: normalizeToolPhrasePool(src?.pool)
+  }
+}
+
 /** Turnos completos (ausente/lixo → `DEFAULT_VOICE_CALL_TURN`); 0 em `silenceStopMs` vira null. */
 export function normalizeVoiceCallTurn(v: unknown): VoiceCallTurnConfig {
   const t = asObject(v)
@@ -989,6 +1111,7 @@ export function normalizeVoiceCallConfig(v: unknown): VoiceCallConfig {
     ...(typeof src.endCall === 'boolean' ? { endCall: src.endCall } : {}),
     // tags de voz (aditivo; opt-in): só gravados quando escolhidos — lixo some
     ...(typeof src.audioTags === 'boolean' ? { audioTags: src.audioTags } : {}),
+    ...(typeof src.toolPhrases === 'boolean' ? { toolPhrases: src.toolPhrases } : {}),
     ...(() => {
       const p = normalizeAudioTagsPrompt(src.audioTagsPrompt)
       return p ? { audioTagsPrompt: p } : {}
@@ -1019,6 +1142,7 @@ export function normalizeVoiceCallDefaults(v: unknown): VoiceCallDefaults {
     basePrompt: promptOrNull(src?.basePrompt),
     endCall: boolOr(src?.endCall, d.endCall),
     delayPhrases: normalizeDelayPhrases(src?.delayPhrases),
+    toolPhrases: normalizeToolPhrases(src?.toolPhrases),
     audioTags: boolOr(src?.audioTags, d.audioTags),
     audioTagsPrompt: normalizeAudioTagsPrompt(src?.audioTagsPrompt)
   }
@@ -1150,6 +1274,7 @@ export function layerVoiceCallConfig(
   const mode = c.promptMode ?? p.promptMode ?? null
   const endCall = c.endCall ?? p.endCall ?? null
   const audioTags = c.audioTags ?? p.audioTags ?? null
+  const toolPhrases = c.toolPhrases ?? p.toolPhrases ?? null
   const audioTagsPrompt = c.audioTagsPrompt ?? p.audioTagsPrompt ?? null
   return {
     enabled: c.enabled ?? p.enabled,
@@ -1160,6 +1285,7 @@ export function layerVoiceCallConfig(
     fillers: c.fillers ?? p.fillers,
     ...(endCall !== null ? { endCall } : {}),
     ...(audioTags !== null ? { audioTags } : {}),
+    ...(toolPhrases !== null ? { toolPhrases } : {}),
     ...(audioTagsPrompt !== null ? { audioTagsPrompt } : {})
   }
 }
@@ -1205,6 +1331,8 @@ export interface ResolvedVoiceCall {
   basePrompt: string | null
   /** O agente pode encerrar a chamada (tool `end_call`) — chat > persona > global (padrão true). */
   endCall: boolean
+  /** Frases de ferramenta (chat > persona > global `toolPhrases.enabled`; padrão true). */
+  toolPhrases: boolean
   /** Tags de voz pedidas (chat > persona > global; padrão false) — ver `audioTagsActive`. */
   audioTags: boolean
   /** Instrução efetiva das tags (chat > persona > global > `DEFAULT_AUDIO_TAGS_PROMPT`). */
@@ -1244,6 +1372,7 @@ export function resolveVoiceCallConfig(
     basePrompt: d.basePromptEnabled ? (d.basePrompt ?? DEFAULT_VOICE_BASE_PROMPT) : null,
     endCall: c.endCall ?? d.endCall,
     audioTags: c.audioTags ?? d.audioTags,
+    toolPhrases: c.toolPhrases ?? d.toolPhrases.enabled,
     audioTagsPrompt: c.audioTagsPrompt ?? d.audioTagsPrompt ?? DEFAULT_AUDIO_TAGS_PROMPT
   }
 }

@@ -47,6 +47,7 @@ import { SttSettingsSection } from './SttSettingsSection'
 import { TtsSettingsSection } from './TtsSettingsSection'
 import { VoiceCallModelEditor } from './VoiceCallModelEditor'
 import { DelayPhrasesSettings } from './DelayPhrasesSettings'
+import { ToolPhrasesSettings } from './ToolPhrasesSettings'
 import { LocalModelsScreen } from './LocalModelsScreen'
 import { MicActivationLevel } from './MicActivationLevel'
 import { AudioTagsField } from './AudioTagsField'
@@ -719,6 +720,10 @@ export function AudioSettings(): React.JSX.Element | null {
         <DelayPhrasesSettings
           value={callDefaults.delayPhrases}
           onChange={(delayPhrases) => saveCallDefaults({ delayPhrases })}
+        />
+        <ToolPhrasesSettings
+          value={callDefaults.toolPhrases}
+          onChange={(toolPhrases) => saveCallDefaults({ toolPhrases })}
         />
       </AudioSection>
 

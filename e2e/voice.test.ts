@@ -291,7 +291,9 @@ test('voiceCallDefaults: parcial completa com os padrões; nested normalizado', 
     },
     // tags de voz (aditivo; opt-in): desligadas, instrução padrão do app
     audioTags: false,
-    audioTagsPrompt: null
+    audioTagsPrompt: null,
+    // frases de ferramenta (aditivo): ligadas, pool padrão
+    toolPhrases: { enabled: true, pool: null }
   })
   assert.deepEqual(normalizeVoiceCallDefaults({ fillers: null }), DEFAULT_VOICE_CALL_DEFAULTS)
   // "O agente pode encerrar a chamada": false explícito vale; lixo → padrão (ligado)

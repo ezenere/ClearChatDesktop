@@ -31,7 +31,6 @@ import type {
 } from '@shared/ipc'
 import {
   DEFAULT_AUDIO_INPUT,
-  DEFAULT_FILLER_POOL,
   DEFAULT_STT_SETTINGS,
   DEFAULT_TTS_SETTINGS,
   DEFAULT_VOICE_CALL_DEFAULTS,
@@ -40,6 +39,8 @@ import {
   normalizeSttSettings,
   normalizeTtsSettings,
   normalizeVoiceCallDefaults,
+  resolveFillerPool,
+  resolveToolPhrasePool,
   resolveTurnSilenceMs,
   type SttLocalEngine,
   type SttSettings,
@@ -2879,16 +2880,21 @@ export function createMockApi(scenario: string): ClearApi {
                   clips: []
                 }
                 const view = clips
-                // só os preâmbulos (o pool padrão): um clipe `FILLER_<n>` por frase
-                const total = DEFAULT_FILLER_POOL.length
+                // os preâmbulos e as frases de ferramenta (pools configurados): `FILLER_<n>`/`TOOL_<n>`
+                const sets = [
+                  ['FILLER', resolveFillerPool(voiceCallDefaults.fillers.pool)],
+                  ['TOOL', resolveToolPhrasePool(voiceCallDefaults.toolPhrases.pool)]
+                ] as const
+                const total = sets.reduce((a, [, pool]) => a + pool.length, 0)
                 let done = 0
-                for (const [i, phrase] of DEFAULT_FILLER_POOL.entries()) {
-                  const n = i + 1
-                  await delay(undefined, 60)
-                  view.clips.push({ id: `FILLER_${n}`, class: 'FILLER', n, text: phrase.text })
-                  done++
-                  voiceTtsClipListeners.forEach((l) => l({ id: `FILLER_${n}`, done, total }))
-                }
+                for (const [cls, pool] of sets)
+                  for (const [i, phrase] of pool.entries()) {
+                    const n = i + 1
+                    await delay(undefined, 60)
+                    view.clips.push({ id: `${cls}_${n}`, class: cls, n, text: phrase.text })
+                    done++
+                    voiceTtsClipListeners.forEach((l) => l({ id: `${cls}_${n}`, done, total }))
+                  }
                 return view
               },
               list: async () => clips

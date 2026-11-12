@@ -129,8 +129,8 @@ import {
   clipVoiceId,
   generateClips,
   loadClips,
+  clipStaleClasses,
   loadCurrentClipAudio,
-  loadCurrentClips,
   type ClipsManifest
 } from './voice/clips'
 import { createEvalLogger } from './voice/evalLog'
@@ -564,7 +564,8 @@ export function registerIpc(): void {
         getVoiceSettings().tts,
         getVoiceSettings().voiceCallDefaults.fillers.pool,
         cls,
-        n
+        n,
+        getVoiceSettings().voiceCallDefaults.toolPhrases.pool
       ),
     // turno continuado/barge-in: para o turno e deixa no histórico só o que foi falado
     amendTurn: async (sessionId, amend) => {
@@ -1350,6 +1351,7 @@ export function registerIpc(): void {
         baseDir: app.getPath('userData'),
         settings: getVoiceSettings().tts,
         fillerPool: getVoiceSettings().voiceCallDefaults.fillers.pool,
+        toolPool: getVoiceSettings().voiceCallDefaults.toolPhrases.pool,
         local: ttsLocalEngine(),
         onProgress: (e) => sendToWindows(VOICE_TTS_CLIPS_PROGRESS_CHANNEL, e)
       })
@@ -1359,13 +1361,19 @@ export function registerIpc(): void {
       const v = getVoiceSettings()
       const m = await loadClips(app.getPath('userData'), clipVoiceId(v.tts))
       if (!m) return null
-      // cache de uma definição antiga (frases/pool mudaram): "stale" → a UI pede para regerar
-      const current = await loadCurrentClips(
-        app.getPath('userData'),
+      // cache de uma definição antiga (frases/pool mudaram): "stale" → a UI pede para regerar; as
+      // classes velhas vão em `staleClasses` (as outras continuam tocando — ex.: cache só de
+      // preâmbulos, de antes das frases de ferramenta)
+      const staleClasses = await clipStaleClasses(
+        m,
         v.tts,
-        v.voiceCallDefaults.fillers.pool
+        v.voiceCallDefaults.fillers.pool,
+        v.voiceCallDefaults.toolPhrases.pool
       )
-      return { ...toClipsView(m), ...(current ? {} : { stale: true }) }
+      return {
+        ...toClipsView(m),
+        ...(staleClasses.length ? { stale: true, staleClasses } : {})
+      }
     },
     [IPC.voice.ttsVoices]: async (): Promise<TtsVoicesView> => {
       const v = getVoiceSettings().tts

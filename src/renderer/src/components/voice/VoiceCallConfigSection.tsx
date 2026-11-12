@@ -68,7 +68,8 @@ export function VoiceCallConfigSection({
     !!voice.promptMode ||
     voice.endCall != null ||
     voice.audioTags != null ||
-    !!voice.audioTagsPrompt
+    !!voice.audioTagsPrompt ||
+    voice.toolPhrases != null
   const summary = !enabled
     ? source === 'persona' && scope === 'chat'
       ? 'desligada pela persona'
@@ -186,6 +187,20 @@ export function VoiceCallConfigSection({
               }
               onChange={(endCall) => set({ endCall })}
             />
+            <ToolPhrasesField
+              value={voice.toolPhrases ?? null}
+              inherited={
+                scope === 'chat' && personaVoice?.toolPhrases != null
+                  ? personaVoice.toolPhrases
+                  : defaults.toolPhrases.enabled
+              }
+              inheritedFrom={
+                scope === 'chat' && personaVoice?.toolPhrases != null
+                  ? 'Padrão da persona'
+                  : 'Padrão global'
+              }
+              onChange={(toolPhrases) => set({ toolPhrases })}
+            />
             <VoicePromptModeField
               value={voice.promptMode ?? null}
               inherited={
@@ -270,6 +285,50 @@ function EndCallField({
         options={[
           { value: true, label: 'Sim' },
           { value: false, label: 'Não' }
+        ]}
+        value={value}
+        inherited={inherited}
+        inheritedFrom={inheritedFrom}
+        onChange={onChange}
+      />
+    </div>
+  )
+}
+
+/**
+ * "Frases de ferramenta" (1ª tool do turno fala "Vou pesquisar isso." — SPEC → "Frases de
+ * ferramenta"): Ligadas / Desligadas com ★ no valor herdado; as frases em si são globais.
+ */
+function ToolPhrasesField({
+  value,
+  inherited,
+  inheritedFrom,
+  onChange
+}: {
+  value: boolean | null
+  inherited: boolean
+  inheritedFrom: string
+  onChange: (v: boolean | null) => void
+}): React.JSX.Element {
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <span className="flex items-center gap-1 text-[13px] text-fg/90">
+        Frases de ferramenta
+        <ApiInfo title="Frase curta na 1ª tool do turno">
+          <p>
+            Quando o agente usa uma ferramenta na chamada, fala uma frase curta sobre ela (&quot;Vou
+            pesquisar isso.&quot;, &quot;Vou rodar isso aqui.&quot;) — no máximo uma por turno, e
+            nunca se ele já falou algo antes da tool. As frases ficam em Configurações → Áudio →
+            Chamada de voz.
+          </p>
+        </ApiInfo>
+      </span>
+      <InheritChoice
+        label="Frases de ferramenta"
+        testId="voice-call-tool-phrases-toggle"
+        options={[
+          { value: true, label: 'Ligadas' },
+          { value: false, label: 'Desligadas' }
         ]}
         value={value}
         inherited={inherited}

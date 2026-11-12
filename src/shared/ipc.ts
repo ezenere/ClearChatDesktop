@@ -865,6 +865,11 @@ export interface TtsClipsView {
   clips: TtsClipInfo[]
   /** Cache de uma definição antiga (frases/pool de preâmbulos mudaram) — precisa regerar. */
   stale?: boolean
+  /**
+   * Com `stale`: as classes velhas/ausentes (`'FILLER'` preâmbulos, `'TOOL'` frases de ferramenta)
+   * — as outras continuam tocando. Ausente com `stale` = todas.
+   */
+  staleClasses?: string[]
 }
 
 /** Uma utterance falada da chamada de voz (canal `voice:call:utterance`) — bytes completos por sentença. */
@@ -879,9 +884,10 @@ export interface VoiceCallUtteranceEvent {
    * Origem do áudio (timeline/UI; ausente = 'sentence'): sentença da resposta, preâmbulo pós-turno
    * (clipe `resolveClip` — SPEC → "Chamada de voz") ou frase de demora sintetizada ao vivo ("Só
    * mais um instante…", "Desculpe a demora…" — tratada como clipe: pulada se não tocar, descartada
-   * quando o usuário fala, nunca no histórico).
+   * quando o usuário fala, nunca no histórico) ou frase de ferramenta da 1ª tool do turno ("Vou
+   * pesquisar isso." — clipe `TOOL_<n>` ou síntese ao vivo, mesmas regras de clipe).
    */
-  kind?: 'sentence' | 'filler' | 'delay'
+  kind?: 'sentence' | 'filler' | 'delay' | 'tool'
   /** Sentença da resposta: o texto dela (a leitura ao vivo do chat esmaece o que ainda não tocou). */
   text?: string
   /**

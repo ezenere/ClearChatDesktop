@@ -541,7 +541,7 @@ app.on('window-all-closed', () => app.quit())
     await page.getByTestId('tts-clips-generate').click()
     await page.getByTestId('tts-clips-count').waitFor({ timeout: 6000 })
     const t = await page.getByTestId('tts-clips-count').innerText()
-    assert.match(t, /12 clipes gerados para “minha-voz-clonada”/)
+    assert.match(t, /38 clipes gerados para “minha-voz-clonada”/) // 12 preâmbulos + 26 frases de ferramenta
     return t
   })
 

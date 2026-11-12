@@ -1184,6 +1184,75 @@ app.on('window-all-closed', () => app.quit())
   )
 
   await step(
+    'Frases de ferramenta: Configurações (liga/desliga + frases por categoria + Restaurar padrão) e ★ no chat',
+    async () => {
+      await open('chat', 'Ideias de nomes para o app')
+      await openAudioSettings()
+      const box = page.getByTestId('voice-call-tool-phrases')
+      await box.scrollIntoViewIfNeeded()
+      const sw = box.getByRole('switch', { name: 'Frases de ferramenta' })
+      assert.equal(await sw.getAttribute('aria-checked'), 'true', 'ligadas por padrão')
+      const pools = box.getByTestId('voice-call-tool-phrases-pools')
+      assert.equal(await pools.evaluate((d) => (d as HTMLDetailsElement).open), false, 'recolhido')
+      await pools.locator('summary').click()
+      const web = box.getByTestId('voice-call-tool-phrases-web')
+      assert.match(await web.inputValue(), /Vou pesquisar isso\./)
+      assert.match(
+        await box.getByTestId('voice-call-tool-phrases-files').inputValue(),
+        /Deixa eu dar uma olhada nos arquivos\./
+      )
+      assert.match(
+        await box.getByTestId('voice-call-tool-phrases-shell').inputValue(),
+        /Vou rodar isso aqui\./
+      )
+      await web.fill('Já vou procurar.\nUm segundo, pesquisando.')
+      await box.getByTestId('voice-call-tool-phrases-files').click() // blur salva
+      await box.getByTestId('voice-call-tool-phrases-reset').waitFor()
+      assert.equal(await web.inputValue(), 'Já vou procurar.\nUm segundo, pesquisando.')
+      await box.screenshot({ path: join(SHOTS, 'audio-tool-phrases.png') })
+      await box.getByTestId('voice-call-tool-phrases-reset').click()
+      await page.waitForFunction(
+        () =>
+          (
+            document.querySelector(
+              '[data-testid=voice-call-tool-phrases-web]'
+            ) as HTMLTextAreaElement | null
+          )?.value.includes('Vou pesquisar isso.'),
+        undefined,
+        { timeout: 3000 }
+      )
+      assert.equal(await box.getByTestId('voice-call-tool-phrases-reset').count(), 0, 'padrão')
+      await sw.click()
+      assert.equal(await sw.getAttribute('aria-checked'), 'false')
+      assert.equal(await pools.count(), 0, 'frases somem com a opção desligada')
+      await page.keyboard.press('Escape')
+      await dialog().waitFor({ state: 'detached' })
+      // chat: ★ = o padrão global (agora desligado); escolher "Ligadas" sobrescreve só no chat
+      await panel(true)
+      await page.getByTestId('right-panel').getByRole('tab', { name: 'Voz' }).click()
+      const g = page.getByTestId('right-panel').getByTestId('voice-call-tool-phrases-toggle')
+      await g.waitFor()
+      assert.equal(await g.getAttribute('data-effective'), 'off', 'herda o global desligado')
+      assert.equal(await g.getAttribute('data-inherit'), 'true')
+      await g.locator('[data-value=on]').click()
+      assert.equal(await g.getAttribute('data-effective'), 'on')
+      await g.locator('[data-star]').click()
+      assert.equal(await g.getAttribute('data-inherit'), 'true', 'override removido')
+      await panel(false)
+      // religa o padrão global (cenários seguintes)
+      await openAudioSettings()
+      const sw2 = page
+        .getByTestId('voice-call-tool-phrases')
+        .getByRole('switch', { name: 'Frases de ferramenta' })
+      await sw2.scrollIntoViewIfNeeded()
+      await sw2.click()
+      assert.equal(await sw2.getAttribute('aria-checked'), 'true')
+      await page.keyboard.press('Escape')
+      await dialog().waitFor({ state: 'detached' })
+    }
+  )
+
+  await step(
     'Áudio: "Modelos locais" (sub-tela) e o atalho "Configurações → Áudio…" do microfone voltam à página principal; Kokoro salvo sem pesos aponta Modelos locais',
     async () => {
       await open('chat', 'Ideias de nomes para o app')

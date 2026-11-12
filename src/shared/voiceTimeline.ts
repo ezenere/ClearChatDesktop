@@ -10,13 +10,17 @@ export interface VoiceCallMetrics {
   fillerPlayed: number
   /** Frases de demora que tocaram ("manter viva" e desculpa). */
   delayPlayed: { keepAlive: number; apology: number }
+  /** Frases de ferramenta que tocaram (`decision` TOOL com `played` — no máx. 1 por turno). */
+  toolPlayed: number
   /**
-   * Por que NÃO tocou (motivo → vezes), separado em preâmbulos e frases de demora
-   * (`KEEPALIVE`/`APOLOGY`) — o painel "Atos de fala curta" explica.
+   * Por que NÃO tocou (motivo → vezes), separado em preâmbulos, frases de demora
+   * (`KEEPALIVE`/`APOLOGY`) e frases de ferramenta (`TOOL`, motivo `<categoria>/<motivo>`) — o
+   * painel "Atos de fala curta" explica.
    */
   skipped: {
     filler: Record<string, number>
     delay: Record<string, number>
+    tool: Record<string, number>
   }
 }
 
@@ -24,7 +28,7 @@ export interface VoiceCallMetrics {
 export const DELAY_PHRASE_CLASSES: readonly string[] = ['KEEPALIVE', 'APOLOGY']
 
 /**
- * Métricas da chamada atual: preâmbulos e frases de demora tocados e os motivos dos que não
+ * Métricas da chamada atual: preâmbulos, frases de demora e de ferramenta tocados e os motivos dos que não
  * tocaram. `now` (ms) fecha o tempo da chamada; padrão: o ts do último evento.
  */
 export function computeVoiceCallMetrics(
@@ -34,23 +38,32 @@ export function computeVoiceCallMetrics(
   const list = [...events].sort((a, b) => a.ts - b.ts)
   const first = list[0]?.ts ?? 0
   const last = now ?? list[list.length - 1]?.ts ?? first
-  const skipped: VoiceCallMetrics['skipped'] = { filler: {}, delay: {} }
+  const skipped: VoiceCallMetrics['skipped'] = { filler: {}, delay: {}, tool: {} }
   const delayPlayed = { keepAlive: 0, apology: 0 }
   let fillerPlayed = 0
+  let toolPlayed = 0
   for (const e of list) {
     if (e.kind !== 'decision') continue
     const isFiller = e.class === 'FILLER'
+    const isTool = e.class === 'TOOL'
     const isDelay = DELAY_PHRASE_CLASSES.includes(e.class ?? '')
-    if (!isFiller && !isDelay) continue
+    if (!isFiller && !isDelay && !isTool) continue
     if (e.played) {
       if (isFiller) fillerPlayed++
+      else if (isTool) toolPlayed++
       else if (e.class === 'KEEPALIVE') delayPlayed.keepAlive++
       else delayPlayed.apology++
       continue
     }
-    const bucket = isFiller ? skipped.filler : skipped.delay
+    const bucket = isFiller ? skipped.filler : isTool ? skipped.tool : skipped.delay
     const reason = e.reason || '?'
     bucket[reason] = (bucket[reason] ?? 0) + 1
   }
-  return { elapsedMs: Math.max(0, last - first), fillerPlayed, delayPlayed, skipped }
+  return {
+    elapsedMs: Math.max(0, last - first),
+    fillerPlayed,
+    delayPlayed,
+    toolPlayed,
+    skipped
+  }
 }

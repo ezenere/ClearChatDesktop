@@ -29,7 +29,7 @@ import {
   Volume2,
   X
 } from 'lucide-react'
-import { DEFAULT_FILLER_POOL, type VoiceCallPhase } from '@shared/voice'
+import { DEFAULT_FILLER_POOL, DEFAULT_TOOL_PHRASE_POOL, type VoiceCallPhase } from '@shared/voice'
 import { api } from '../../lib/api'
 import { cn } from '../../lib/format'
 import { useStore } from '../../store'
@@ -301,14 +301,23 @@ function DockWaveform({ muted }: { muted: boolean }): React.JSX.Element {
 
 /**
  * Preâmbulos ligados mas sem clipes gerados para a voz atual: nada tocaria em silêncio — o dock
- * avisa e oferece gerar os clipes ali mesmo.
+ * avisa e oferece gerar os clipes ali mesmo. Só as frases de ferramenta ligadas: elas caem na
+ * síntese ao vivo (mais lenta) — o aviso também aparece.
  */
 function ClipsHint(): React.JSX.Element | null {
   const clips = useVoiceCallRuntime((s) => s.clips)
+  const stale = useVoiceCallRuntime((s) => s.clipsStale)
   const progress = useVoiceCallRuntime((s) => s.clipsProgress)
   const generate = useVoiceCallRuntime((s) => s.generateClips)
   const { resolved } = useVoiceCallConfig()
-  if (!resolved.fillers.enabled || (clips !== 'missing' && clips !== 'generating')) return null
+  // preâmbulos sem clipe = mudos; frases de ferramenta sem clipe = síntese ao vivo (mais lenta)
+  const all = !stale.length // 'missing' sem detalhe = todas as classes
+  const fillerMissing = resolved.fillers.enabled && (all || stale.includes('FILLER'))
+  const toolMissing = resolved.toolPhrases && (all || stale.includes('TOOL'))
+  if (!resolved.fillers.enabled && !resolved.toolPhrases) return null
+  if (clips !== 'generating' && (clips !== 'missing' || (!fillerMissing && !toolMissing)))
+    return null
+  const total = DEFAULT_FILLER_POOL.length + DEFAULT_TOOL_PHRASE_POOL.length
   return (
     <div
       data-testid="voice-call-clips-hint"
@@ -317,8 +326,10 @@ function ClipsHint(): React.JSX.Element | null {
       <Sparkles className="size-3.5 shrink-0" />
       <span className="min-w-0 flex-1">
         {clips === 'generating'
-          ? `Gerando clipes de voz… ${progress?.done ?? 0}/${progress?.total || DEFAULT_FILLER_POOL.length}`
-          : 'Os preâmbulos estão ligados, mas ainda não há clipes para a voz atual — nada vai tocar até gerar.'}
+          ? `Gerando clipes de voz… ${progress?.done ?? 0}/${progress?.total || total}`
+          : fillerMissing
+            ? 'Os preâmbulos estão ligados, mas ainda não há clipes para a voz atual — nada vai tocar até gerar.'
+            : 'Ainda não há clipes para a voz atual — as frases de ferramenta vão ser sintetizadas na hora (mais lentas) até gerar.'}
       </span>
       {clips === 'missing' && (
         <button
