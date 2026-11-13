@@ -323,7 +323,7 @@ async function main(): Promise<void> {
     await page.keyboard.press('4') // Outro
     await page.getByTestId('ask-other-text').fill('notificações push')
     await shot('questionario-passo-2')
-    await page.getByRole('button', { name: 'Voltar' }).click()
+    await page.getByRole('button', { name: 'Voltar', exact: true }).click()
     await form().getByText('Qual banco de dados?').waitFor()
     await page.getByTestId('ask-next').click()
     await page.getByTestId('ask-submit').click()

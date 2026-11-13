@@ -390,9 +390,16 @@ async function main(): Promise<void> {
       await api('agent.send', chat.mainSessionId, 'use skills para ler o PDF')
       await waitIdle(chat.id, chat.mainSessionId)
       const first = hits[n0]
+      // tools compactadas (padrão, 1.11.0): as de skills vão compactas + a search_tool no fim, e o
+      // roteiro list_skills → skill_load → skill_read roda com elas
       assert(
-        JSON.stringify(toolNames(first)) === JSON.stringify(['read_file', 'shell', ...SKILL_TOOLS]),
+        JSON.stringify(toolNames(first)) ===
+          JSON.stringify(['read_file', 'shell', ...SKILL_TOOLS, 'search_tool']),
         `tools: ${toolNames(first)}`
+      )
+      assert(
+        JSON.stringify(first.tools[2].function.parameters) === '{"type":"object","properties":{}}',
+        'list_skills compacta'
       )
       const sys = textOf(first.messages[0].content)
       assert(
@@ -436,7 +443,7 @@ async function main(): Promise<void> {
     await api('agent.send', chat.mainSessionId, 'olá')
     await waitIdle(chat.id, chat.mainSessionId)
     const b = hits[n0]
-    assert(JSON.stringify(toolNames(b)) === '["read_file"]', `tools: ${toolNames(b)}`)
+    assert(JSON.stringify(toolNames(b)) === '["read_file","search_tool"]', `tools: ${toolNames(b)}`)
     assert(!textOf(b.messages[0]?.content).includes('list_skills'), 'sem prompt de apoio')
     // lâmpada só com skills ligadas
     await openChatUi('Sem skills')

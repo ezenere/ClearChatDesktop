@@ -1277,7 +1277,11 @@ async function main(): Promise<void> {
   })
 
   await test('list_models filtra modelos do provedor (query + tools_only)', async () => {
-    const { chat, sid: sl } = await newChat({ enabledTools: ['list_models', 'delegate_task'] })
+    // definições completas: o teste confere os argumentos/definição de list_models (1.11.0)
+    const { chat, sid: sl } = await newChat({
+      enabledTools: ['list_models', 'delegate_task'],
+      toolsCompact: false
+    })
     await api(
       'agent.send',
       sl,
@@ -2153,7 +2157,7 @@ async function main(): Promise<void> {
       headers: {}
     })
     try {
-      const { chat, sid } = await newChat({ enabledTools: ['delegate_task'] })
+      const { chat, sid } = await newChat({ enabledTools: ['delegate_task'], toolsCompact: false })
       // com 2+ provedores a definição enviada tem `provider` com enum dos nomes
       const def = (await api('agent.previewRequest', sid)).body.tools.find(
         (x: any) => x.function.name === 'delegate_task'
