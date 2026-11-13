@@ -624,7 +624,7 @@ ChatConfig.overrides?: { [unidade: string]: true }   // unidades próprias do ch
   apagado → o par padrão, como hoje), `systemPrompt` = `defaultSystemPrompt` (`null` → o texto padrão do
   app), `params.*`/`approvalModes.*` = ausente (o padrão do provedor/o global), `enabledTools.*` = as
   tools padrão do app, `cacheEnabled` = segue o provedor **efetivo do chat** (OpenRouter/Anthropic
-  ligam), o resto = o padrão do app. Ou seja, a cadeia é **Novos chats → persona → chat**: mudar um
+  ligam; provedor efetivo inexistente neste dispositivo → o valor efetivo da persona), o resto = o padrão do app. Ou seja, a cadeia é **Novos chats → persona → chat**: mudar um
   padrão de "Novos chats" muda as personas que não definem aquele campo e os chats delas que não o
   sobrescrevem (a UI DEVERIA avisar isso na tela de "Novos chats").
 - **Config efetiva do chat** (a que o host usa para rodar e todos usam para exibir; tudo que o protocolo
@@ -643,7 +643,12 @@ ChatConfig.overrides?: { [unidade: string]: true }   // unidades próprias do ch
 - **Criar um chat** (≥ 1.10.0) com persona: `presetId` = a persona; `overrides` = as unidades que o
   usuário mudou no formulário do Novo chat em relação ao valor efetivo da persona (`{}` se nenhuma);
   `config` completa. Sem persona: sem `presetId` (e `overrides` ausente ou vazio) — valores próprios.
-- **Editar um campo no chat** → a(s) unidade(s) entram em `overrides` com o valor novo. **Voltar a herdar**
+  `presetId` de uma persona que ainda não existe neste dispositivo: `overrides` ausente (o chat é
+  migrado quando a persona chegar).
+- **Editar um campo no chat** → a(s) unidade(s) entram em `overrides` com o valor novo. Unidade
+  **tocada** por uma edição: numa chave simples, enviá-la (mesmo com o valor igual); nas chaves
+  compartilhadas (`params`, `approvalModes`, `enabledTools`), só as subunidades cujo valor muda (as UIs
+  mandam o objeto `params` inteiro). **Voltar a herdar**
   → a unidade sai de `overrides` e a cópia recebe o valor efetivo atual da persona.
 - **Trocar a persona do chat** → `presetId` novo, `overrides` mantido (as unidades próprias continuam
   próprias), as herdadas passam a seguir a persona nova (cópia atualizada); na `voice`, os campos `null`
@@ -660,7 +665,8 @@ ChatConfig.overrides?: { [unidade: string]: true }   // unidades próprias do ch
 - **Migração de chats antigos** (com `presetId` e **sem** `overrides` — gravados por apps < 1.10.0 ou
   antes da migração): uma vez por chat, **depois de um pull completo** (para persona e padrões estarem
   atualizados), um cliente ≥ 1.10.0 DEVE gravar `overrides` = as unidades cujo valor no chat **difere**
-  (JSON) do valor efetivo da persona — as iguais passam a herdar — e, na `voice`, pôr `null` nos campos
+  (JSON canônico — chaves ordenadas; `memory`/`skills` normalizadas, ausente = o padrão; `enabledTools.<t>`
+  comparada como booleano) do valor efetivo da persona — as iguais passam a herdar — e, na `voice`, pôr `null` nos campos
   iguais ao campo **não nulo** correspondente da `voice` da persona (os padrões de voz do dispositivo são
   locais e não entram na comparação). O resultado é determinístico (depende só do que sincroniza): dois
   dispositivos que migram juntos gravam o mesmo. Até migrar, o chat vale como cópia (valores próprios).
@@ -669,9 +675,11 @@ ChatConfig.overrides?: { [unidade: string]: true }   // unidades próprias do ch
 - **Conflito:** `overrides` é mesclado **por unidade** (subchave) no merge por chave da `config`
   (§7.5): dois dispositivos que sobrescrevem campos diferentes ao mesmo tempo não perdem nenhuma marca.
   Ao reaplicar campos sujos num `rev_mismatch`, o cliente NÃO DEVE reaplicar o valor de uma unidade que
-  ele tem como herdada se no servidor ela está em `overrides` (a cópia informativa não sobrescreve um
-  valor próprio). As chaves compartilhadas por várias unidades (`params`, `approvalModes`,
-  `enabledTools`) continuam LWW pela chave inteira, como antes.
+  ele tem como herdada **e cuja marca não mudou localmente**, se no servidor ela está em `overrides` (a
+  cópia informativa não sobrescreve um valor próprio; um "voltar a herdar" local tira a marca e vence
+  normalmente). As chaves compartilhadas por várias unidades (`params`, `approvalModes`,
+  `enabledTools`) continuam LWW pela chave inteira, como antes, exceto as subunidades protegidas por
+  essa regra, que ficam com o valor do servidor.
 - **Apps < 1.10.0** leem a `config` como cópia (os valores herdados da última atualização da cópia) e
   preservam `overrides` como chave desconhecida ao regravar. Uma edição feita num app < 1.10.0 num campo
   que o chat herda não vale nos apps ≥ 1.10.0 (o campo continua herdando; a migração não roda de novo
@@ -2932,8 +2940,10 @@ esquecer as mais antigas (e responder `reset`).
   do `chat` e um anúncio novo (desde 1.10.0, herança da persona, §4.3.6: um patch **sem** `overrides` é
   uma edição — cada unidade tocada pelas chaves enviadas vira própria; um patch **com** `overrides` (o
   mapa completo novo) vale como enviado — é assim que o remoto "volta a herdar", mandando só o mapa sem a
-  unidade; o host recalcula a cópia das unidades herdadas; `presetId: null` = escolher nenhuma persona =
-  congelar) → `{ sv: 1, status: 'accepted' }`, ou `rejected` com `error` em texto. Nos
+  unidade; o host recalcula a cópia das unidades herdadas; uma unidade que o mapa novo acrescenta sem o
+  valor no patch fica com o valor efetivo atual como próprio; `presetId: null` = escolher nenhuma persona
+  = congelar; `presetId: <id>` = trocar de persona, mantendo `overrides` — um chat ainda não migrado é
+  migrado antes contra a persona atual) → `{ sv: 1, status: 'accepted' }`, ou `rejected` com `error` em texto. Nos
   chats online, renomear/editar continua sendo o registro `chat` (§4.3.6) — o servidor recusa
   `chat.update` sem vínculo ao vivo.
 - **Entre chats** (§8.6): um agente noutro dispositivo PODE mandar `send` com `meta` a um chat ao vivo
