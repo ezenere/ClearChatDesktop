@@ -1,10 +1,24 @@
 // Conteúdo dos ícones (i): o que exatamente vai para a API e como. Fonte única para toda a UI.
 import { useEffect, useState } from 'react'
 import { currentToolDefinition } from '@shared/tools'
+import {
+  COMPACT_TOOLS_HELP,
+  COMPACT_TOOLS_PROMPT,
+  SEARCH_TOOL_DEFINITION,
+  sendsCompact,
+  sentToolDefinition
+} from '@shared/compactTools'
 import { COMPACTION_NOTE, compactionMessageText } from '@shared/defaults'
 import { LIMITS } from '@shared/limits'
 import { audioFormat, contentText, formatSize, messageAttachments } from '@shared/attachments'
-import type { ApiMessage, AttachmentMeta, ChatParams, StoredMessage, ToolName } from '@shared/types'
+import type {
+  ApiMessage,
+  AttachmentMeta,
+  ChatConfig,
+  ChatParams,
+  StoredMessage,
+  ToolName
+} from '@shared/types'
 import { api } from '../lib/api'
 import { ATTACHMENT_LIMITS } from '@shared/limits'
 import type { EffortSpec } from '@shared/modelParams'
@@ -40,7 +54,8 @@ export function SystemPromptInfo({
       <p>
         Ordem do conteúdo: este texto → <C>\n\n</C> + bloco <C>{'<environment>'}</C> (se ativo) →{' '}
         <C>\n\n</C> + índice e instruções da memória (se ativa; só na principal) → <C>\n\n</C> +
-        prompt de apoio das skills (se ligado) → <C>\n\n</C> + texto das tools (se ativo). Com token
+        prompt de apoio das skills (se ligado) → <C>\n\n</C> + texto das tools (se ativo) →{' '}
+        <C>\n\n</C> + prompt fixo das tools compactadas (só se alguma tool vai compacta). Com token
         caching, o conteúdo vai como{' '}
         <C>{'[{ type: "text", text, cache_control: { type: "ephemeral" } }]'}</C>. Se tudo ficar
         vazio, nenhuma mensagem system é enviada.
@@ -138,20 +153,42 @@ export function ExtraBodyInfo(): React.JSX.Element {
   )
 }
 
+/** Config que decide a compactação de uma tool (o chat/persona; voz: a do chat). */
+type CompactCfg = Pick<ChatConfig, 'toolsCompact' | 'toolsFull'>
+
 export function ToolDefInfo({
   name,
-  nativeTools
+  nativeTools,
+  cfg
 }: {
   name: ToolName
   nativeTools: boolean
+  /** Compactação (1.11.0): a definição mostrada é a que vai — compacta ou completa. */
+  cfg?: CompactCfg
 }): React.JSX.Element {
+  const compact = sendsCompact(name, cfg)
   return (
     <ApiInfo
       title={<span className="font-mono text-[12px]">{name}</span>}
-      code={JSON.stringify(currentToolDefinition(name), null, 2)}
-      codeLabel="Definição exata (um item do array tools):"
+      code={JSON.stringify(sentToolDefinition(currentToolDefinition(name), cfg), null, 2)}
+      codeLabel={
+        compact
+          ? 'Definição exata, compacta (um item do array tools):'
+          : 'Definição exata (um item do array tools):'
+      }
       side="left"
     >
+      {compact ? (
+        <p data-testid="tool-def-mode" data-mode="compact">
+          <b className="text-fg">Vai compacta</b>: só o nome e a descrição curta, com os parâmetros
+          vazios. A definição completa volta ao modelo pela <C>search_tool</C> (e no erro, se ele a
+          chamar com argumentos inválidos). Marque &quot;completa&quot; para mandá-la inteira.
+        </p>
+      ) : (
+        <p data-testid="tool-def-mode" data-mode="full" className="sr-only">
+          Vai completa.
+        </p>
+      )}
       <p>
         {nativeTools ? (
           <>
@@ -182,6 +219,36 @@ export function NativeToolsInfo(): React.JSX.Element {
         os resultados voltam como mensagens <C>{'role: "user"'}</C> com{' '}
         <C>{'<tool_result name="…">…</tool_result>'}</C>.
       </p>
+    </ApiInfo>
+  )
+}
+
+/**
+ * `<>` de "Enviar tools compactadas" (1.11.0): o que a compactação faz, o prompt fixo e a definição
+ * da `search_tool`, exatamente como vão (textos do app, não editáveis).
+ */
+export function CompactToolsInfo(): React.JSX.Element {
+  return (
+    <ApiInfo
+      title="Tools compactadas"
+      code={JSON.stringify(SEARCH_TOOL_DEFINITION, null, 2)}
+      codeLabel="search_tool — último item do array tools (sempre completa):"
+      side="left"
+    >
+      <p>{COMPACT_TOOLS_HELP}</p>
+      <p>
+        Cada tool que não está marcada &quot;completa&quot; vai só com o nome e a descrição curta do
+        app, com parâmetros vazios. Havendo pelo menos uma compacta, vão também a <C>search_tool</C>{' '}
+        (abaixo) e este prompt fixo, no fim do system prompt (precedido de <C>\n\n</C>); sem nenhuma
+        compacta, nenhum dos dois. Vale para memória, skills, subagentes e a chamada de voz (menos{' '}
+        <C>end_call</C>, sempre completa).
+      </p>
+      <pre
+        data-testid="compact-tools-prompt"
+        className="rounded-lg border border-border bg-bg/80 p-2.5 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-fg/90"
+      >
+        {COMPACT_TOOLS_PROMPT}
+      </pre>
     </ApiInfo>
   )
 }
@@ -989,12 +1056,15 @@ export function ExtractionMessageInfo({
 export function SkillsSendInfo({
   enabled,
   support,
-  nativeTools
+  nativeTools,
+  cfg
 }: {
   enabled: boolean
   /** Texto exato do prompt de apoio que vai (null = não vai). */
   support: string | null
   nativeTools: boolean
+  /** Compactação (1.11.0): as definições mostradas são as que vão. */
+  cfg?: CompactCfg
 }): React.JSX.Element {
   return (
     <ApiInfo
@@ -1003,7 +1073,7 @@ export function SkillsSendInfo({
       code={
         enabled
           ? JSON.stringify(
-              SKILL_TOOL_NAMES.map((n) => currentToolDefinition(n)),
+              SKILL_TOOL_NAMES.map((n) => sentToolDefinition(currentToolDefinition(n), cfg)),
               null,
               2
             )

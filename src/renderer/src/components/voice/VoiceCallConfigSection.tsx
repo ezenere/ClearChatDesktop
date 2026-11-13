@@ -12,6 +12,7 @@ import { useState } from 'react'
 import { TOOL_DEFINITIONS, TOOL_LABELS, TOOL_NAMES } from '@shared/tools'
 import { withTool } from '@shared/deviceTools'
 import type { ChatConfig, ToolName } from '@shared/types'
+import { compactToolsOn } from '@shared/compactTools'
 import {
   DEFAULT_VOICE_CALL_CONFIG,
   VOICE_CALL_PROMPT_MODES,
@@ -32,6 +33,7 @@ import { InheritChoice } from '../ui/InheritChoice'
 import { AudioTagsField } from './AudioTagsField'
 import { DEFAULT_AUDIO_TAGS_PROMPT } from '@shared/audioTags'
 import { ApiInfo, C } from '../ui/Tooltip'
+import { ToolDefInfo } from '../apiDocs'
 import { VoiceCallModelEditor } from './VoiceCallModelEditor'
 
 export function VoiceCallConfigSection({
@@ -169,6 +171,7 @@ export function VoiceCallConfigSection({
             />
             {voice.tools?.enabledTools && (
               <VoiceToolsList
+                cfg={cfg}
                 tools={voice.tools.enabledTools}
                 onChange={(enabledTools) =>
                   set({
@@ -285,7 +288,7 @@ function EndCallField({
           </p>
           <p>
             Ligado, a tool vai na lista de tools dos turnos de voz com esta descrição (nenhuma
-            instrução extra no prompt):
+            instrução extra no prompt) — sempre completa, mesmo com as tools compactadas:
           </p>
           <p
             className="font-mono text-[11px] whitespace-pre-wrap"
@@ -420,9 +423,12 @@ function VoicePromptModeField({
 }
 
 function VoiceToolsList({
+  cfg,
   tools,
   onChange
 }: {
+  /** Config do chat/persona: a compactação da chamada é a dela (aba Tools). */
+  cfg: ChatConfig
   tools: ToolName[]
   onChange: (tools: ToolName[]) => void
 }): React.JSX.Element {
@@ -431,11 +437,17 @@ function VoiceToolsList({
       data-testid="voice-call-tools"
       className="-mx-1.5 max-h-[220px] space-y-px overflow-y-auto rounded-lg border border-border/60 py-1"
     >
+      <p className="px-2.5 pb-1 text-[11px] leading-snug text-faint">
+        {compactToolsOn(cfg)
+          ? 'Vão compactas como no chat (aba Tools → “Enviar tools compactadas”); o </> mostra o que vai.'
+          : 'Vão completas como no chat (aba Tools → “Enviar tools compactadas” desligado).'}
+      </p>
       {TOOL_NAMES.map((t) => {
         const on = tools.includes(t)
         return (
           <div
             key={t}
+            data-tool={t}
             className="flex h-7 items-center gap-2.5 rounded-lg px-2.5 hover:bg-hover/50"
           >
             <Switch
@@ -453,6 +465,7 @@ function VoiceToolsList({
               {TOOL_LABELS[t]}
             </span>
             <span className="truncate font-mono text-[10.5px] text-faint">{t}</span>
+            <ToolDefInfo name={t} nativeTools={cfg.nativeTools} cfg={cfg} />
           </div>
         )
       })}

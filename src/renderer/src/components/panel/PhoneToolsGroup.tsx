@@ -9,9 +9,11 @@ import {
   PHONE_TOOL_LABELS,
   PHONE_TOOL_NAMES
 } from '@shared/deviceTools'
+import type { ChatConfig } from '@shared/types'
 import { Switch } from '../ui/controls'
 import { HelpTip } from '../ui/Tooltip'
 import { InheritMark } from './inherit'
+import { ToolFullChip } from './ToolFullChip'
 
 /**
  * Tools só do celular (§4.3.6): ficam na lista do chat/persona e são alternáveis aqui, mas o
@@ -21,12 +23,18 @@ import { InheritMark } from './inherit'
 export function PhoneToolsGroup({
   tools,
   onToggle,
-  marks = true
+  marks = true,
+  compact
 }: {
   tools: readonly string[]
   onToggle: (tool: string, on: boolean) => void
   /** Marcas "neste chat" (a lista é a do chat; na chamada de voz não há herança por tool). */
   marks?: boolean
+  /** Compactação ligada (1.11.0): chip "compacta"/"completa" — vale quando o chat roda no celular. */
+  compact?: {
+    cfg: Pick<ChatConfig, 'toolsCompact' | 'toolsFull'>
+    patch: (p: Partial<ChatConfig>) => void
+  }
 }): React.JSX.Element {
   return (
     <div data-testid="tools-device-phone" className="mt-2 border-t border-border/60 pt-2">
@@ -63,6 +71,9 @@ export function PhoneToolsGroup({
                 {PHONE_TOOL_LABELS[t]}
               </span>
               {marks && <InheritMark units={[`enabledTools.${t}`]} />}
+              {compact && on && (
+                <ToolFullChip name={t} cfg={compact.cfg} patch={compact.patch} dim />
+              )}
               <span className="truncate font-mono text-[10.5px] text-faint/80">{t}</span>
               <HelpTip label={PHONE_TOOL_LABELS[t]}>
                 {PHONE_TOOL_HELP[t]} Definição e execução no celular: neste computador ela não vai

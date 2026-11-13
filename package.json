@@ -44,6 +44,7 @@
     "test:e2e:auto-title": "electron-vite build && node e2e/auto-title.spec.ts",
     "test:e2e:sync": "electron-vite build && node e2e/sync.spec.ts",
     "test:e2e:inherit-ui": "electron-vite build && node e2e/inherit-ui.spec.ts",
+    "test:e2e:compact-ui": "electron-vite build && node --import ./e2e/ts-hooks.mjs e2e/compact-ui.spec.ts",
     "test:e2e:sync-real": "electron-vite build && node e2e/sync-real.spec.ts",
     "icons": "scripts/icons/render.sh",
     "dist": "npm run typecheck && electron-vite build && electron-builder --linux",

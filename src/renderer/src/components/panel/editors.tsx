@@ -27,8 +27,20 @@ import {
   clampSpillChars,
   clampToolOutput
 } from '@shared/limits'
-import { currentToolDefinition, TOOL_LABELS, TOOL_NAMES } from '@shared/tools'
+import {
+  currentToolDefinition,
+  MEMORY_TOOL_NAMES,
+  SKILL_TOOL_NAMES,
+  TOOL_LABELS,
+  TOOL_NAMES
+} from '@shared/tools'
 import { APP_TOOL_NAMES, PHONE_TOOL_NAMES, withTool } from '@shared/deviceTools'
+import {
+  COMPACTABLE_TOOL_NAMES,
+  compactToolsOn,
+  normalizeToolsFull,
+  planTools
+} from '@shared/compactTools'
 import type { ChatConfig, ChatParams, ToolName } from '@shared/types'
 import { api } from '../../lib/api'
 import { cn, formatTokens, modelMeta } from '../../lib/format'
@@ -36,6 +48,7 @@ import { useStore } from '../../store'
 import {
   CacheInfo,
   CompactPromptInfo,
+  CompactToolsInfo,
   ConfineInfo,
   ContextWindowInfo,
   EnvInfo,
@@ -64,6 +77,7 @@ import {
 import { SmartApproveSection } from './SmartApproveSection'
 import { InheritMark } from './inherit'
 import { PhoneToolsGroup } from './PhoneToolsGroup'
+import { ToolFullChip } from './ToolFullChip'
 import { ChatApprovalSection } from '../approvals/ChatApprovalSection'
 import { memoryConfigOf, memoryWillSend } from '../../lib/memory'
 import { skillsConfigOf } from '../../lib/skills'
@@ -684,6 +698,38 @@ export function ContextSettingsSection({
 
 // ---------------- Tools ----------------
 
+/** Memória e skills (ligadas nas seções delas): só o modo de envio (compacta/completa) e o <>. */
+function OtherToolsGroup({ cfg, patch }: CfgProps): React.JSX.Element {
+  return (
+    <div data-testid="tools-other-compact" className="mt-2 border-t border-border/60 pt-2">
+      <div className="flex items-baseline gap-2 px-0.5">
+        <span className="text-[11px] font-medium tracking-wide text-subtle uppercase">
+          Memória e skills
+        </span>
+        <span className="min-w-0 flex-1 text-[11px] leading-snug text-faint">
+          Vão quando a memória/as skills estão ligadas (seções próprias).
+        </span>
+      </div>
+      <div className="-mx-1.5 mt-1 space-y-px">
+        {[...MEMORY_TOOL_NAMES, ...SKILL_TOOL_NAMES].map((t) => (
+          <div
+            key={t}
+            data-tool={t}
+            className="flex h-8 items-center gap-2.5 rounded-lg px-1.5 hover:bg-hover/50"
+          >
+            <span className="min-w-0 flex-1 truncate text-[12.5px] text-fg/80">
+              {TOOL_LABELS[t]}
+            </span>
+            <ToolFullChip name={t} cfg={cfg} patch={patch} />
+            <span className="truncate font-mono text-[10.5px] text-faint">{t}</span>
+            <ToolDefInfo name={t} nativeTools={cfg.nativeTools} cfg={cfg} />
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 export function ToolsListSection({ cfg, patch }: CfgProps): React.JSX.Element {
   // liga/desliga sem perder nada: as do celular e as desconhecidas ficam na lista (§4.3.6)
   const toggleTool = (t: string, on: boolean): void =>
@@ -691,25 +737,48 @@ export function ToolsListSection({ cfg, patch }: CfgProps): React.JSX.Element {
   const count = TOOL_NAMES.filter((t) => cfg.enabledTools.includes(t)).length
   const phoneOn = PHONE_TOOL_NAMES.filter((t) => cfg.enabledTools.includes(t as ToolName)).length
   const phoneOff = phoneOn < PHONE_TOOL_NAMES.length
+  // tools compactadas (1.11.0): ligado por padrão; cada tool pode ir "completa"
+  const compact = compactToolsOn(cfg)
+  const fullCount = normalizeToolsFull(cfg.toolsFull).length
   // aberta por padrão (é o principal da aba); recolhida, o resumo mostra quantas estão ligadas
   return (
     <CollapsibleSection
       id="tools-list"
       title="Ferramentas"
       defaultOpen
-      inherit={APP_TOOL_NAMES.map((t) => `enabledTools.${t}`)}
+      inherit={[
+        ...APP_TOOL_NAMES.map((t) => `enabledTools.${t}`),
+        'toolsCompact',
+        ...COMPACTABLE_TOOL_NAMES.map((t) => `toolsFull.${t}`)
+      ]}
       inheritClosed
       summary={{
-        text: `${count}/${TOOL_NAMES.length} ligadas${phoneOff ? ` · celular ${phoneOn}/${PHONE_TOOL_NAMES.length}` : ''}`,
-        changed: count < TOOL_NAMES.length || phoneOff
+        text: `${count}/${TOOL_NAMES.length} ligadas${phoneOff ? ` · celular ${phoneOn}/${PHONE_TOOL_NAMES.length}` : ''} · ${compact ? `compactas${fullCount ? ` (${fullCount} completa${fullCount > 1 ? 's' : ''})` : ''}` : 'completas'}`,
+        changed: count < TOOL_NAMES.length || phoneOff || !compact || fullCount > 0
       }}
     >
+      <div data-testid="tools-compact-row" className="mb-2.5">
+        <ToggleRow
+          label="Enviar tools compactadas"
+          help="Cada tool vai só com o nome e uma descrição curta; o modelo lê a definição completa com search_tool antes de usar. Marque “completa” nas que devem ir inteiras."
+          checked={compact}
+          onChange={(toolsCompact) => patch({ toolsCompact })}
+          info={<CompactToolsInfo />}
+          inherit={['toolsCompact']}
+          status={
+            compact
+              ? 'Economiza contexto. Vai também a search_tool e uma instrução curta no fim do system prompt.'
+              : undefined
+          }
+        />
+      </div>
       <div className="-mx-1.5 space-y-px">
         {TOOL_NAMES.map((t) => {
           const on = cfg.enabledTools.includes(t)
           return (
             <div
               key={t}
+              data-tool={t}
               className="flex h-8 items-center gap-2.5 rounded-lg px-1.5 hover:bg-hover/50"
             >
               <Switch
@@ -727,13 +796,19 @@ export function ToolsListSection({ cfg, patch }: CfgProps): React.JSX.Element {
                 {TOOL_LABELS[t]}
               </span>
               <InheritMark units={[`enabledTools.${t}`]} />
+              {compact && on && <ToolFullChip name={t} cfg={cfg} patch={patch} />}
               <span className="truncate font-mono text-[10.5px] text-faint">{t}</span>
-              <ToolDefInfo name={t} nativeTools={cfg.nativeTools} />
+              <ToolDefInfo name={t} nativeTools={cfg.nativeTools} cfg={cfg} />
             </div>
           )
         })}
       </div>
-      <PhoneToolsGroup tools={cfg.enabledTools} onToggle={toggleTool} />
+      {compact && <OtherToolsGroup cfg={cfg} patch={patch} />}
+      <PhoneToolsGroup
+        tools={cfg.enabledTools}
+        onToggle={toggleTool}
+        compact={compact ? { cfg, patch } : undefined}
+      />
     </CollapsibleSection>
   )
 }
@@ -742,7 +817,10 @@ export function ToolsPromptSection({ cfg, patch }: CfgProps): React.JSX.Element 
   const enabledDefs = TOOL_NAMES.filter((t) => cfg.enabledTools.includes(t)).map((t) =>
     currentToolDefinition(t)
   )
-  const toolsText = cfg.toolsPromptText ?? defaultToolsPrompt(enabledDefs, cfg.nativeTools)
+  // o texto gerado segue a compactação (1.11.0): compactas com a descrição curta + search_tool
+  const toolsText =
+    cfg.toolsPromptText ??
+    defaultToolsPrompt(planTools(enabledDefs, cfg).definitions, cfg.nativeTools)
   return (
     <CollapsibleSection
       id="tools-sending"

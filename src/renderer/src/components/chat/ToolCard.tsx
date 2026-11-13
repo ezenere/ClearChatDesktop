@@ -1,6 +1,8 @@
 import {
   Ban,
+  BookOpenText,
   Bot,
+  Clock,
   Check,
   ChevronRight,
   CircleX,
@@ -88,7 +90,9 @@ const ICONS: Partial<Record<ToolName, LucideIcon>> = {
   wait_subagents: Hourglass,
   cancel_subagent: CircleStop,
   message_subagent: MessageSquareText,
-  ask_user: MessageCircleQuestion
+  ask_user: MessageCircleQuestion,
+  datetime: Clock,
+  search_tool: BookOpenText
 }
 
 const shortId = (id: string): string => (id.length > 12 ? `${id.slice(0, 8)}…` : id)
@@ -145,6 +149,12 @@ function summary(name: string, args: Record<string, unknown> | null): string {
         .join(' · ')
     case 'delegate_task':
       return pick('title') || pick('task')
+    case 'datetime':
+      return pick('format')
+    case 'search_tool':
+      return Array.isArray(args.names)
+        ? args.names.filter((n) => typeof n === 'string').join(', ')
+        : pick('names')
     case 'search_files': {
       const where = [pick('glob'), pick('path')].filter(Boolean).join(' · ')
       return `/${pick('pattern')}/${where ? `  ${where}` : ''}`

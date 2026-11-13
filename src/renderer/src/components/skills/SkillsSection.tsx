@@ -43,7 +43,12 @@ export function SkillsSection({
       id="skills"
       inherit={['skills']}
       aside={
-        <SkillsSendInfo enabled={sc.enabled} support={support} nativeTools={cfg.nativeTools} />
+        <SkillsSendInfo
+          enabled={sc.enabled}
+          support={support}
+          nativeTools={cfg.nativeTools}
+          cfg={cfg}
+        />
       }
     >
       <div data-testid={chatScope ? 'skills-panel' : 'preset-skills'} className="space-y-3">

@@ -33,6 +33,7 @@ const KEY_LABELS: Record<string, string> = {
   nativeTools: 'Enviar tools nativas',
   toolsInPrompt: 'Texto das tools no system prompt',
   toolsPromptText: 'Texto das tools',
+  toolsCompact: 'Enviar tools compactadas',
   envInPrompt: 'Bloco de ambiente',
   cacheEnabled: 'Token caching',
   subagentSystemPrompt: 'System prompt dos subagentes',
@@ -61,6 +62,7 @@ export function unitLabel(unit: string): string {
   const sub = unit.slice(key.length + 1)
   if (key === 'params') return PARAM_LABELS[sub] ?? sub
   if (key === 'enabledTools') return `Tool ${toolLabel(sub)}`
+  if (key === 'toolsFull') return `Tool ${toolLabel(sub)} vai completa`
   if (key === 'approvalModes') return `Aprovação: ${ITEM_LABEL[sub as ApprovalItem] ?? sub}`
   return KEY_LABELS[unit] ?? unit
 }
@@ -96,6 +98,7 @@ export function unitValueText(
     return typeof value === 'string' ? short(value, 60) : String(value)
   }
   if (key === 'enabledTools') return onOff(value, true)
+  if (key === 'toolsFull') return value ? 'completa' : 'compacta'
   if (key === 'approvalModes')
     return value
       ? modeLabel(sub as ApprovalItem, value as ApprovalMode)
@@ -115,6 +118,8 @@ export function unitValueText(
       return typeof value === 'number' ? `${Math.round(value * 100)}%` : '90%'
     case 'maxToolOutputChars':
       return typeof value === 'number' ? `${value.toLocaleString('pt-BR')} caracteres` : 'padrão'
+    case 'toolsCompact':
+      return onOff(value !== false)
     case 'acceptEditsInRoot':
       return typeof value === 'boolean' ? onOff(value) : 'padrão global'
     case 'memory':
