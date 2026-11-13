@@ -735,10 +735,13 @@ ChatConfig.toolsFull?: ToolName[]      // com a compactação, estas vão comple
   textos do app, não editáveis, e DEVEM estar visíveis na UI onde a compactação é configurada (o prompt
   e a `search_tool` ao lado da opção; a definição compacta ou completa de cada tool no detalhe "enviado à
   API" dela, conforme o modo).
-- **Uso:** uma tool compacta chamada com argumentos válidos roda normalmente (ler antes é orientação, não
-  trava). Argumentos inválidos (JSON que não é objeto, obrigatório ausente, parâmetro fora do esquema
-  quando ele tem `additionalProperties: false`, tipo ou `enum` errado — números/booleanos em texto
-  valem) → o resultado de erro DEVE trazer a definição completa da tool, para o modelo se corrigir.
+- **Uso:** uma tool compacta roda com os argumentos **como vierem** (ler antes é orientação, não trava;
+  cada tool mantém as tolerâncias dela — ex.: `present_file` aceita `files` como texto ou `path` solto —,
+  e os clientes NÃO DEVEM barrar a chamada só por não seguir o esquema). Se a tool devolver **erro** e os
+  argumentos não seguirem o esquema (JSON que não é objeto, obrigatório ausente, parâmetro fora do
+  esquema quando ele tem `additionalProperties: false`, tipo ou `enum` errado — números/booleanos em
+  texto valem), o resultado DEVE trazer, junto do erro da tool, os problemas e a definição completa,
+  para o modelo se corrigir.
 - **Alcance:** vale para todas as tools da request — as de `enabledTools` e as que entram por outras
   configurações (memória, skills) —, nos turnos normais, nos subagentes e na chamada de voz
   (`voice.tools.enabledTools`). Exceção: `end_call` vai sempre completa (o comportamento da despedida
