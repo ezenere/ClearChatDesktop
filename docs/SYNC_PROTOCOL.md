@@ -778,10 +778,14 @@ gravado na config):
   (`cache_control`) fica na última tool **não** adiada do app (a API recusa nas adiadas; sem nenhuma
   carregada, nenhuma tool leva `cache_control`). A busca roda no servidor,
   dentro da mesma resposta, e a API expande as definições achadas. Sem a nossa `tool_search`; vai um
-  **prompt fixo nativo** curto no fim do system prompt (separado por linha em branco), dizendo que há
-  ferramentas adiadas e que o modelo deve procurá-las com a busca de ferramentas antes de dizer que não
-  tem uma (texto do app, não editável, visível na UI como o da versão local; sem nenhuma tool adiada, não
-  vai). Motivo: sem ele, modelos mais simples sem raciocínio não percebem que podem buscar.
+  **prompt fixo nativo** no fim do system prompt (separado por linha em branco): `Algumas ferramentas
+  deste chat estão adiadas e só aparecem depois de buscadas: use {busca} antes de dizer que não tem uma
+  ferramenta. Adiadas: {nomes}.` — `{busca}` = `tool_search_tool_regex` (Anthropic) ou `a busca de
+  ferramentas (openrouter:tool_search)` (OpenRouter); `{nomes}` = as tools adiadas **nesta** request, na
+  ordem do app, separadas por `, ` (as que vão carregadas por aparecerem no histórico ficam de fora).
+  Texto do app, não editável, visível na UI como o da versão local; sem nenhuma tool adiada, não vai.
+  Motivo: sem ele (ou só com a menção à busca, sem os nomes), modelos mais simples sem raciocínio não
+  percebem que podem buscar.
 - **Busca nativa do OpenRouter** — provedor `openrouter`, modelo servido pela **Messages API** do
   OpenRouter (os `endpoints` do modelo em `/models`) e chat compatível com ela (sem áudio na entrada, sem
   parâmetros ou `extraBody` exclusivos da Chat Completions): a
