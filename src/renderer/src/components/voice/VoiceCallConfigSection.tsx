@@ -10,6 +10,7 @@
 // o próprio texto que entra na request, nessa ordem.
 import { useState } from 'react'
 import { TOOL_DEFINITIONS, TOOL_LABELS, TOOL_NAMES } from '@shared/tools'
+import { withTool } from '@shared/deviceTools'
 import type { ChatConfig, ToolName } from '@shared/types'
 import {
   DEFAULT_VOICE_CALL_CONFIG,
@@ -25,6 +26,7 @@ import { cn } from '../../lib/format'
 import { useVoiceSettings } from '../../lib/voice/voiceSettings'
 import { useStore } from '../../store'
 import { CollapsibleSection, ToggleRow } from '../panel/fields'
+import { PhoneToolsGroup } from '../panel/PhoneToolsGroup'
 import { AutoTextarea, Button, Switch } from '../ui/controls'
 import { InheritChoice } from '../ui/InheritChoice'
 import { AudioTagsField } from './AudioTagsField'
@@ -440,13 +442,7 @@ function VoiceToolsList({
               size="sm"
               checked={on}
               label={TOOL_LABELS[t]}
-              onChange={(v) =>
-                onChange(
-                  v
-                    ? TOOL_NAMES.filter((n) => n === t || tools.includes(n))
-                    : tools.filter((n) => n !== t)
-                )
-              }
+              onChange={(v) => onChange(withTool(tools, t, v))}
             />
             <span
               className={cn(
@@ -460,6 +456,14 @@ function VoiceToolsList({
           </div>
         )
       })}
+      {/* só no celular (§4.3.6): na lista, alternáveis, mas nunca enviadas daqui */}
+      <div className="px-1">
+        <PhoneToolsGroup
+          tools={tools}
+          marks={false}
+          onToggle={(t, v) => onChange(withTool(tools, t, v))}
+        />
+      </div>
     </div>
   )
 }

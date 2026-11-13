@@ -1,6 +1,7 @@
 // Textos e valores padrão. Ver SPEC.md → ChatConfig / Construção da request.
 import type { ChatConfig } from './types'
-import { TOOL_NAMES, type ToolDefinition } from './tools'
+import type { ToolDefinition } from './tools'
+import { APP_TOOL_NAMES } from './deviceTools'
 import { DEFAULT_APP_SIGNATURE } from './appSignatures'
 import { LIMITS } from './limits'
 import { providerKind, type ProviderKind } from './providerKinds'
@@ -47,7 +48,9 @@ export function DEFAULT_CHAT_CONFIG(
     model: opts.model ?? '',
     systemPrompt: opts.systemPrompt ?? DEFAULT_SYSTEM_PROMPT,
     params: {},
-    enabledTools: [...TOOL_NAMES],
+    // todas as tools do app, inclusive as de um tipo de aparelho (§4.3.6): quem roda o turno manda
+    // ao modelo só as que executa (as do celular nunca vão do computador, e vice-versa)
+    enabledTools: [...APP_TOOL_NAMES],
     nativeTools: true,
     toolsInPrompt: false,
     toolsPromptText: null,

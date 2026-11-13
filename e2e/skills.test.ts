@@ -540,6 +540,37 @@ test('definições: 3 tools fixas, fora de TOOL_NAMES, sem nomes de skills', () 
   assert.ok(!JSON.stringify(SKILL_TOOL_NAMES.map((n) => TOOL_DEFINITIONS[n])).includes('pdf-tools'))
 })
 
+test('request: tools só do celular (§4.3.6) ficam na lista do chat mas nunca vão do computador', () => {
+  const s0 = { depth: 0, model: 'm' } as any
+  const tools = ['read_file', 'get_location', 'web_search', 'nearby_places', 'mcp_futura']
+  // nativas + texto das tools no system prompt (gerado das disponíveis)
+  const chat = chatWith(undefined, { enabledTools: tools, toolsInPrompt: true })
+  assert.deepEqual(availableTools(chat, s0), ['read_file', 'web_search'])
+  const body = buildRequest(chat, s0, [], provider, env).body as any
+  assert.deepEqual(
+    body.tools.map((t: any) => t.function.name),
+    ['read_file', 'web_search']
+  )
+  const sys = textOf(body.messages[0].content)
+  assert.ok(sys.includes('web_search') && !/get_location|nearby_places|mcp_futura/.test(sys))
+  // modo texto (sem campo tools): idem
+  const txt = buildRequest(
+    chatWith(undefined, { enabledTools: tools, toolsInPrompt: true, nativeTools: false }),
+    s0,
+    [],
+    provider,
+    env
+  ).body as any
+  assert.equal(txt.tools, undefined)
+  assert.ok(!/get_location|nearby_places/.test(textOf(txt.messages[0].content)))
+  // padrão do app (todas, inclusive as do celular): o computador manda só as dele
+  const def = chatWith(undefined, { enabledTools: DEFAULT_CHAT_CONFIG('/w').enabledTools })
+  const names = (buildRequest(def, s0, [], provider, env).body as any).tools.map(
+    (t: any) => t.function.name
+  )
+  assert.ok(names.includes('shell') && !names.includes('get_location'))
+})
+
 test('request: skills desligadas → nada (sem prompt, sem tools); ligadas → prompt de apoio + tools no fim', () => {
   const s0 = { depth: 0, model: 'm' } as any
   const off = buildRequest(chatWith(undefined), s0, [], provider, env).body as any

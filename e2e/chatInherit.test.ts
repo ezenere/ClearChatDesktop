@@ -2,7 +2,8 @@
 // unidades (params/tools/aprovações por subchave), valor efetivo da persona com a cadeia Novos
 // chats → persona → chat, regra do cache, provedor apagado → par padrão, edição/voltar a herdar,
 // migração determinística, congelamento, troca de persona, patch do chat.update e o merge 3-way
-// (overrides por subchave + a cópia que não sobrescreve valor próprio).
+// (overrides por subchave + a cópia que não sobrescreve valor próprio); tools de um tipo de aparelho
+// (padrão com as do celular, preservação de tools desconhecidas, migração só no tipo em que rodou).
 // Rodar: npm run test:unit
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -36,6 +37,19 @@ import {
 import { DEFAULT_CHAT_CONFIG, DEFAULT_SYSTEM_PROMPT } from '../src/shared/defaults.ts'
 import { sanitizePresetConfig, type PresetConfig } from '../src/shared/presets.ts'
 import { TOOL_NAMES } from '../src/shared/tools.ts'
+import {
+  APP_TOOL_NAMES,
+  chatRanOn,
+  COMPUTER_TOOL_NAMES,
+  PHONE_TOOLS,
+  runsOn,
+  toolDevice,
+  toolLabel,
+  withTool,
+  type ChatRanOn
+} from '../src/shared/deviceTools.ts'
+import { normalizeToolList } from '../src/shared/types.ts'
+import { migrateConfigTools } from '../src/shared/toolRename.ts'
 import { usesLocalTools } from '../src/shared/sync.ts'
 import type { ChatConfig } from '../src/shared/types.ts'
 
@@ -47,6 +61,10 @@ const env = (over: Partial<InheritEnv['defaults']> = {}): InheritEnv => ({
 })
 
 const persona = (cfg: PresetConfig): PresetConfig => sanitizePresetConfig(cfg)
+
+/** Chat que só rodou no computador (registro com hostCwd / local deste PC) e só no celular. */
+const PC: ChatRanOn = { computer: true, phone: false }
+const PHONE: ChatRanOn = { computer: false, phone: true }
 
 /** Chat criado com a persona (≥ 1.10.0, nada mudado no formulário). */
 function chatOf(p: PresetConfig, e = env(), extra: Partial<InheritConfig> = {}): InheritConfig {
@@ -70,7 +88,7 @@ test('unidades: par do modelo, assinatura, params/tools/aprovações por subchav
     'params.temperature',
     'params.seed'
   ])
-  assert.equal(unitsOfKey('enabledTools').length, TOOL_NAMES.length)
+  assert.equal(unitsOfKey('enabledTools').length, APP_TOOL_NAMES.length)
   assert.ok(unitsOfKey('approvalModes').includes('approvalModes.commands'))
   const units = allUnits(DEFAULT_CHAT_CONFIG('/w'))
   assert.ok(units.includes('model') && units.includes('appSignature'))
@@ -84,7 +102,7 @@ test('readUnit/writeUnit: subchaves e tools na ordem do app', () => {
   writeUnit(c, 'enabledTools.shell', false)
   assert.equal(readUnit(c, 'enabledTools.shell'), false)
   writeUnit(c, 'enabledTools.shell', true)
-  assert.deepEqual(c.enabledTools, TOOL_NAMES)
+  assert.deepEqual(c.enabledTools, APP_TOOL_NAMES)
   writeUnit(c, 'params.temperature', 0.3)
   writeUnit(c, 'approvalModes.commands', 'always')
   assert.equal(readUnit(c, 'params.temperature'), 0.3)
@@ -114,7 +132,8 @@ test('persona efetiva: o que ela define; o resto, "Novos chats" (modelo, system 
   const pe = personaEffectiveConfig(p, env())
   assert.equal(pe.systemPrompt, 'Revisor.')
   assert.deepEqual([pe.providerId, pe.model], ['or', 'base/model'])
-  assert.deepEqual(pe.enabledTools, TOOL_NAMES)
+  // tools padrão do app = todas, inclusive as do celular (§4.3.6)
+  assert.deepEqual(pe.enabledTools, APP_TOOL_NAMES)
   const empty = personaEffectiveConfig({}, env({ defaultSystemPrompt: 'Padrão do usuário' }))
   assert.equal(empty.systemPrompt, 'Padrão do usuário')
   assert.equal(
@@ -199,7 +218,11 @@ test('unidade própria AUSENTE vale como ausente (memória desligada)', () => {
   const p = persona({ memory: { enabled: true } as never })
   let rec = chatOf(p)
   assert.equal(effectiveChatConfig(rec, p, env()).memory?.enabled, true)
-  rec = applyChatConfigPatch(rec, { overrides: { memory: true } }, { env: env(), persona: () => p })
+  rec = applyChatConfigPatch(
+    rec,
+    { overrides: { memory: true } },
+    { env: env(), persona: () => p, ranOn: PC }
+  )
   // virou própria guardando o valor que tinha (o efetivo)…
   assert.equal(effectiveChatConfig(rec, p, env()).memory?.enabled, true)
   // …e depois de removida no chat, fica ausente (= desligada) mesmo com a persona ligada
@@ -260,7 +283,7 @@ test('Novo chat: overrides enviados = o que o usuário mudou; config completa (c
   )
   assert.deepEqual(rec.overrides, { model: true })
   assert.deepEqual([rec.providerId, rec.model, rec.systemPrompt], ['or', 'o/x', 'P'])
-  assert.deepEqual(rec.enabledTools, TOOL_NAMES)
+  assert.deepEqual(rec.enabledTools, APP_TOOL_NAMES)
   assert.equal(rec.cwd, '/w')
 })
 
@@ -271,7 +294,7 @@ test('Novo chat sem overrides (API antiga/testes): calculados pela diferença', 
     p,
     env()
   )
-  assert.deepEqual(Object.keys(rec.overrides!).length, TOOL_NAMES.length)
+  assert.deepEqual(Object.keys(rec.overrides!).length, APP_TOOL_NAMES.length)
   assert.ok(!isOwn(rec, 'systemPrompt'))
 })
 
@@ -293,18 +316,19 @@ test('migração: iguais herdam, diferentes ficam próprios; determinística', (
     params: { temperature: 0.2, seed: 3 },
     enabledTools: TOOL_NAMES.filter((t) => t !== 'shell')
   }
-  const a = migrateChatOverrides(legacy, p, env())!
-  const b = migrateChatOverrides(JSON.parse(JSON.stringify(legacy)), p, env())!
+  const a = migrateChatOverrides(legacy, p, env(), PC)!
+  const b = migrateChatOverrides(JSON.parse(JSON.stringify(legacy)), p, env(), PC)!
   assert.deepEqual(a, b)
+  // o chat antigo não tinha as tools do celular: a diferença não vira própria (rodou no PC)
   assert.deepEqual(Object.keys(a.overrides!).sort(), [
     'enabledTools.shell',
     'params.seed',
     'systemPrompt'
   ])
   // já migrado / sem persona / persona inexistente → nada
-  assert.equal(migrateChatOverrides(a, p, env()), null)
-  assert.equal(migrateChatOverrides({ ...legacy, presetId: undefined }, p, env()), null)
-  assert.equal(migrateChatOverrides(legacy, null, env()), null)
+  assert.equal(migrateChatOverrides(a, p, env(), PC), null)
+  assert.equal(migrateChatOverrides({ ...legacy, presetId: undefined }, p, env(), PC), null)
+  assert.equal(migrateChatOverrides(legacy, null, env(), PC), null)
 })
 
 test('migração: cache igual ao herdado do provedor do chat; voz igual à da persona → null', () => {
@@ -323,7 +347,7 @@ test('migração: cache igual ao herdado do provedor do chat; voz igual à da pe
     cacheEnabled: false,
     voice: { enabled: true, voicePrompt: 'Outro', model: null, tools: null, fillers: null }
   }
-  const m = migrateChatOverrides(legacy, p, env())!
+  const m = migrateChatOverrides(legacy, p, env(), PC)!
   // o par é próprio; o cache false é o herdado do provedor openai do chat → herda
   assert.deepEqual(Object.keys(m.overrides!), ['model'])
   assert.equal(m.voice?.enabled, null)
@@ -378,7 +402,7 @@ test('voz: herdar (migração) e preencher (congelamento)', () => {
 
 test('patch: sem overrides = edição; com overrides = como enviado (voltar a herdar remoto)', () => {
   const p = persona({ systemPrompt: 'P' })
-  const ctx = { env: env(), persona: (id: string) => (id === 'p1' ? p : null) }
+  const ctx = { env: env(), persona: (id: string) => (id === 'p1' ? p : null), ranOn: PC }
   let rec = applyChatConfigPatch(chatOf(p), { systemPrompt: 'meu' }, ctx)
   assert.deepEqual(rec.overrides, { systemPrompt: true })
   rec = applyChatConfigPatch(rec, { overrides: {} }, ctx)
@@ -392,7 +416,11 @@ test('patch: sem overrides = edição; com overrides = como enviado (voltar a he
 test('patch: presetId null = congelar; outro id = trocar (migra o antigo antes)', () => {
   const a = persona({ systemPrompt: 'A' })
   const b = persona({ systemPrompt: 'B' })
-  const ctx = { env: env(), persona: (id: string) => (id === 'pa' ? a : id === 'pb' ? b : null) }
+  const ctx = {
+    env: env(),
+    persona: (id: string) => (id === 'pa' ? a : id === 'pb' ? b : null),
+    ranOn: PC
+  }
   const legacy: InheritConfig = {
     ...personaEffectiveConfig(a, env()),
     cwd: '/w',
@@ -464,4 +492,197 @@ test('config efetiva é completa (os campos obrigatórios de ChatConfig existem)
   const eff: ChatConfig = effectiveChatConfig(rec, persona({}), env())
   for (const k of ['providerId', 'model', 'systemPrompt', 'params', 'enabledTools', 'cwd'] as const)
     assert.notEqual(eff[k], undefined, k)
+})
+
+// ---------------- tools de um tipo de aparelho (§4.3.6) ----------------
+
+test('aparelho: grupos, padrão do app com as do celular, rótulos', () => {
+  assert.deepEqual(PHONE_TOOLS, ['get_location', 'nearby_places'])
+  assert.equal(COMPUTER_TOOL_NAMES.length, 12)
+  assert.ok(COMPUTER_TOOL_NAMES.includes('present_file'))
+  assert.equal(toolDevice('shell'), 'computer')
+  assert.equal(toolDevice('bash'), 'computer')
+  assert.equal(toolDevice('get_location'), 'phone')
+  assert.equal(toolDevice('web_search'), null)
+  assert.equal(toolDevice('futura'), null)
+  assert.ok(runsOn('web_search', 'phone') && runsOn('web_search', 'computer'))
+  assert.ok(!runsOn('nearby_places', 'computer') && runsOn('nearby_places', 'phone'))
+  assert.ok(!runsOn('read_file', 'phone'))
+  // padrão de "Novos chats" (sem persona e persona sem tools) = todas, inclusive as do celular
+  assert.deepEqual(DEFAULT_CHAT_CONFIG('/w').enabledTools, [...TOOL_NAMES, ...PHONE_TOOLS])
+  assert.equal(toolLabel('get_location'), 'Localização')
+  assert.equal(toolLabel('shell'), 'Terminal (shell)')
+  assert.equal(toolLabel('mcp_x'), 'mcp_x')
+})
+
+test('aparelho: ligar/desligar preserva as do celular e as desconhecidas (ordem do app)', () => {
+  const list = ['web_search', 'futura', 'get_location', 'shell'] as never as string[]
+  const on = withTool(list, 'read_file', true)
+  assert.deepEqual(on, ['read_file', 'shell', 'web_search', 'get_location', 'futura'])
+  const off = withTool(on, 'shell', false)
+  assert.deepEqual(off, ['read_file', 'web_search', 'get_location', 'futura'])
+  assert.deepEqual(withTool(off, 'nearby_places', true), [
+    'read_file',
+    'web_search',
+    'get_location',
+    'nearby_places',
+    'futura'
+  ])
+  // writeUnit (edição/voltar a herdar) idem
+  const c: Partial<ChatConfig> = { enabledTools: list as never }
+  writeUnit(c, 'enabledTools.list_dir', true)
+  assert.deepEqual(c.enabledTools, ['list_dir', 'shell', 'web_search', 'get_location', 'futura'])
+})
+
+test('aparelho: listas com tools desconhecidas/do celular sobrevivem a normalizar e regravar', () => {
+  const tools = [
+    'bash',
+    'get_location',
+    'nearby_places',
+    'mcp_futura'
+  ] as never as ChatConfig['enabledTools']
+  assert.deepEqual(normalizeToolList(tools), [
+    'shell',
+    'get_location',
+    'nearby_places',
+    'mcp_futura'
+  ])
+  assert.ok(
+    migrateConfigTools({ enabledTools: tools }).enabledTools!.includes('get_location' as never)
+  )
+  // persona: sanitizar (ao salvar/ler) mantém a lista e a voz
+  const p = sanitizePresetConfig({
+    enabledTools: ['web_search', 'get_location', 'mcp_futura'],
+    voice: { tools: { enabledTools: ['nearby_places', 'mcp_futura'], maxToolOutputChars: null } }
+  } as never)
+  assert.deepEqual(p.enabledTools, ['web_search', 'get_location', 'mcp_futura'])
+  assert.deepEqual(p.voice?.tools?.enabledTools, ['nearby_places', 'mcp_futura'])
+  // chat que herda a lista: editar outra tool vira própria só ela; as outras seguem a persona
+  const rec = chatOf(p)
+  assert.deepEqual(rec.enabledTools, ['web_search', 'get_location', 'mcp_futura'])
+  const ed = applyChatEdit(
+    rec,
+    { enabledTools: withTool(rec.enabledTools, 'shell', true) },
+    p,
+    env()
+  )
+  assert.deepEqual(ed.overrides, { 'enabledTools.shell': true })
+  assert.deepEqual(ed.enabledTools, ['shell', 'web_search', 'get_location', 'mcp_futura'])
+  const eff = effectiveChatConfig(ed, p, env())
+  assert.deepEqual(eff.enabledTools, ['shell', 'web_search', 'get_location', 'mcp_futura'])
+  // marca própria numa tool do celular / desconhecida: preservada nos overrides (edição, voltar a
+  // herdar outra unidade, merge)
+  const own = applyChatEdit(
+    ed,
+    { enabledTools: withTool(eff.enabledTools, 'get_location', false) },
+    p,
+    env()
+  )
+  assert.deepEqual(Object.keys(own.overrides!).sort(), [
+    'enabledTools.get_location',
+    'enabledTools.shell'
+  ])
+  assert.equal(
+    effectiveChatConfig(own, p, env()).enabledTools.includes('get_location' as never),
+    false
+  )
+  const withUnknown = {
+    ...own,
+    overrides: { ...own.overrides, 'enabledTools.mcp_futura': true as const }
+  }
+  const rv = revertToInherit(withUnknown, ['enabledTools.shell'], p, env())
+  assert.deepEqual(Object.keys(rv.overrides!).sort(), [
+    'enabledTools.get_location',
+    'enabledTools.mcp_futura'
+  ])
+  assert.ok(rv.enabledTools.includes('mcp_futura' as never))
+  const merged = mergeChatConfig3(
+    rv as never,
+    rv as never,
+    { ...rv, systemPrompt: 'x' } as never
+  ) as unknown as InheritConfig
+  assert.deepEqual(merged.overrides, rv.overrides)
+  assert.deepEqual(merged.enabledTools, rv.enabledTools)
+})
+
+test('aparelho: chatRanOn — hostCwd = rodou num computador; sem hostCwd = no celular; local = PC', () => {
+  assert.deepEqual(chatRanOn({ deviceId: 'd', path: '/p' }), PC)
+  assert.deepEqual(chatRanOn(null), PHONE)
+  assert.deepEqual(chatRanOn(undefined), PHONE)
+  assert.deepEqual(chatRanOn(null, true), PC)
+})
+
+test('migração: tool do computador diferente só vira própria se o chat rodou num computador', () => {
+  const p = persona({ systemPrompt: 'P' }) // sem tools: herda o padrão do app (todas)
+  const pe = personaEffectiveConfig(p, env())
+  // chat antigo do desktop: sem as do celular (o app antigo não as conhecia) e o shell desligado
+  const pcLegacy: InheritConfig = {
+    ...pe,
+    cwd: '/w',
+    presetId: 'p1',
+    enabledTools: TOOL_NAMES.filter((t) => t !== 'shell')
+  }
+  const m = migrateChatOverrides(pcLegacy, p, env(), PC)!
+  // o "shell desligado" deliberado fica; as do celular passam a herdar (o PC nunca as roda)
+  assert.deepEqual(m.overrides, { 'enabledTools.shell': true })
+  const eff = effectiveChatConfig(m, p, env())
+  assert.ok(!eff.enabledTools.includes('shell'))
+  assert.ok(eff.enabledTools.includes('get_location' as never))
+  // o mesmo registro sem hostCwd (nunca rodou num computador): o shell também herda
+  const ph = migrateChatOverrides(pcLegacy, p, env(), PHONE)!
+  assert.deepEqual(ph.overrides, {
+    'enabledTools.get_location': true,
+    'enabledTools.nearby_places': true
+  })
+})
+
+test('migração: chat criado no celular (sem as do computador) herda-as; as do celular contam', () => {
+  const p = persona({ systemPrompt: 'P' })
+  const pe = personaEffectiveConfig(p, env())
+  const phoneTools = APP_TOOL_NAMES.filter((t) => runsOn(t, 'phone') && t !== 'nearby_places')
+  const phoneLegacy: InheritConfig = {
+    ...pe,
+    cwd: '',
+    presetId: 'p1',
+    enabledTools: [...phoneTools, 'mcp_futura' as never]
+  }
+  const m = migrateChatOverrides(phoneLegacy, p, env(), PHONE)!
+  // computador: nada próprio; nearby_places desligada no celular: própria; a desconhecida difere
+  assert.deepEqual(Object.keys(m.overrides!).sort(), [
+    'enabledTools.mcp_futura',
+    'enabledTools.nearby_places'
+  ])
+  const eff = effectiveChatConfig(m, p, env())
+  assert.ok(eff.enabledTools.includes('shell'), 'herda as do computador (roda sem elas no celular)')
+  assert.ok(!eff.enabledTools.includes('nearby_places' as never))
+  assert.ok(eff.enabledTools.includes('mcp_futura' as never), 'desconhecida preservada')
+  // o mesmo chat rodando num computador: as do computador desligadas viram próprias
+  const pc = migrateChatOverrides(phoneLegacy, p, env(), PC)!
+  assert.ok(isOwn(pc, 'enabledTools.shell') && !isOwn(pc, 'enabledTools.nearby_places'))
+  // tools sem tipo de aparelho: diferença vira própria em qualquer caso
+  const noWeb = {
+    ...phoneLegacy,
+    enabledTools: phoneLegacy.enabledTools.filter((t) => t !== 'web_search')
+  }
+  assert.ok(isOwn(migrateChatOverrides(noWeb, p, env(), PHONE)!, 'enabledTools.web_search'))
+  assert.ok(isOwn(migrateChatOverrides(noWeb, p, env(), PC)!, 'enabledTools.web_search'))
+})
+
+test('patch: trocar a persona de um chat não migrado usa o tipo de aparelho em que ele rodou', () => {
+  const a = persona({ systemPrompt: 'A' })
+  const b = persona({ systemPrompt: 'B' })
+  const legacy: InheritConfig = {
+    ...personaEffectiveConfig(a, env()),
+    cwd: '',
+    presetId: 'pa',
+    enabledTools: APP_TOOL_NAMES.filter((t) => runsOn(t, 'phone'))
+  }
+  const persona_ = (id: string): PresetConfig | null => (id === 'pa' ? a : id === 'pb' ? b : null)
+  const sw = applyChatConfigPatch(
+    legacy,
+    { presetId: 'pb' },
+    { env: env(), persona: persona_, ranOn: PHONE }
+  )
+  assert.deepEqual(sw.overrides, {})
+  assert.ok(sw.enabledTools.includes('shell'), 'segue a nova persona (todas)')
 })

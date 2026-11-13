@@ -3,7 +3,8 @@
 // 1.10.0): Novo chat marca como próprio só o que o usuário mudou no formulário; no painel do chat
 // os campos próprios ganham "neste chat ↺" (voltar a herdar, com o valor herdado no tooltip) e os
 // herdados seguem a persona ao vivo (editada pela UI das Configurações); o seletor "Persona de
-// origem" troca de persona (mantém os próprios) e "Nenhuma" congela (explica antes de aplicar).
+// origem" troca de persona (mantém os próprios) e "Nenhuma" congela (explica antes de aplicar); as
+// tools só do celular aparecem esmaecidas em "Só no celular", alternáveis, e não vão na request.
 // Provedor OpenAI-compatible FALSO local (nada de key real, nada de rede), userData isolado, sync
 // apontado para um endereço morto (nunca o servidor de produção), microfone negado.
 // Screenshots em $CLEARCHAT_SHOTS (padrão $CLEARCHAT_E2E_DIR/shots).
@@ -278,6 +279,52 @@ async function main(): Promise<void> {
         async () => (await chat()).config.enabledTools.includes('shell'),
         'shell herdada de novo'
       )
+    }
+  )
+
+  await step(
+    'Tools: "Só no celular" esmaecido com a nota, alternável, herda como as outras; não vai na request',
+    async () => {
+      await panelTab('Tools')
+      const grp = panel().getByTestId('tools-device-phone')
+      await grp.scrollIntoViewIfNeeded()
+      await grp.getByText(/Não vão ao modelo quando o chat roda neste computador/).waitFor()
+      const loc = grp.getByRole('switch', { name: 'Localização' })
+      assert((await loc.getAttribute('aria-checked')) === 'true', 'ligada (padrão do app, herdado)')
+      assert((await mark('enabledTools.get_location').count()) === 0, 'herdada (sem marca)')
+      const c0 = await chat()
+      assert(
+        c0.config.enabledTools.includes('get_location') &&
+          !c0.config.overrides?.['enabledTools.get_location'],
+        'na lista do chat sem ser própria'
+      )
+      // a request daqui nunca leva as do celular (nem no texto das tools)
+      const req = await api<any>('agent.previewRequest', c0.mainSessionId)
+      const names = (req.body.tools ?? []).map((t: any) => t.function.name)
+      assert(names.includes('read_file') && !names.includes('get_location'), names.join(','))
+      assert(!JSON.stringify(req.body).includes('nearby_places'), 'nada do celular na request')
+      await loc.click()
+      await mark('enabledTools.get_location').waitFor({ timeout: 5000 })
+      const c = await waitFor(async () => {
+        const x = await chat()
+        return x.config.overrides?.['enabledTools.get_location'] && x
+      }, 'get_location própria')
+      assert(!c.config.enabledTools.includes('get_location'), 'desligada no chat')
+      assert(c.config.enabledTools.includes('nearby_places'), 'a outra continua')
+      assert(
+        Object.keys(c.config.overrides).filter((u) => u.startsWith('enabledTools.')).length === 1,
+        'só a escolha do usuário vira própria'
+      )
+      await grp.scrollIntoViewIfNeeded()
+      await shot('inherit-07-tools-so-no-celular')
+      await mark('enabledTools.get_location').click()
+      await waitFor(async () => {
+        const x = await chat()
+        return !x.config.overrides?.['enabledTools.get_location'] &&
+          x.config.enabledTools.includes('get_location')
+          ? x
+          : null
+      }, 'get_location herda de novo')
     }
   )
 

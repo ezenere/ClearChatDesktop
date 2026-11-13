@@ -189,6 +189,8 @@ export function availableTools(
   let siblings: boolean | undefined // calculado só se preciso (consulta o banco)
   const siblingOk = (n: ToolName): boolean =>
     SIBLING_TOOLS.includes(n) && (siblings ??= hasSiblings(session))
+  // TOOL_NAMES = as que o computador executa: as só do celular (get_location, nearby_places — §4.3.6)
+  // ficam na lista do chat, mas nunca vão daqui (nem na request nem no texto das tools)
   const base = TOOL_NAMES.filter(
     (n) =>
       enabled.has(n) &&

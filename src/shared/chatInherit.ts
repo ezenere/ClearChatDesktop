@@ -9,6 +9,7 @@
 // herdado/próprio, "voltar a herdar") e o mobile (vendora este arquivo) calculam igual.
 import { APPROVAL_ITEMS } from './approvalPolicy'
 import { supportsCacheControl } from './defaults'
+import { APP_TOOL_NAMES, orderedTools, toolDevice, type ChatRanOn } from './deviceTools'
 import { normalizeMemoryConfig } from './memory'
 import {
   PRESET_FIELDS,
@@ -20,7 +21,6 @@ import {
 } from './presets'
 import { providerKind } from './providerKinds'
 import { normalizeSkillsConfig } from './skills'
-import { TOOL_NAMES } from './tools'
 import { TOOL_ALIASES, type ChatConfig, type ChatParams, type ToolName } from './types'
 import { normalizeVoiceCallConfig, type VoiceCallConfig } from './voice'
 
@@ -113,7 +113,8 @@ export function unitsOfKey(
     for (const c of cfgs)
       for (const k of Object.keys(isObj(c?.params) ? c.params : {})) names.add(k)
   else if (key === 'enabledTools') {
-    for (const t of TOOL_NAMES) names.add(t)
+    // todas as do app (as do celular inclusive, §4.3.6) + as desconhecidas que vierem nas listas
+    for (const t of APP_TOOL_NAMES) names.add(t)
     for (const c of cfgs) for (const t of toolsOf(c)) names.add(t)
   } else if (key === 'approvalModes') {
     for (const i of APPROVAL_ITEMS) names.add(i)
@@ -187,10 +188,9 @@ export function writeUnit(cfg: Partial<ChatConfig>, unit: string, value: unknown
       return
     }
     const set = new Set(on ? [...cur, sub] : cur.filter((t) => t !== sub))
-    // ordem do app; tools fora de TOOL_NAMES (de outra versão) ficam no fim, na ordem em que vieram
-    const known = new Set<string>(TOOL_NAMES)
-    const extras = [...new Set([...cur, sub])].filter((t) => set.has(t) && !known.has(t))
-    c.enabledTools = [...TOOL_NAMES.filter((t) => set.has(t)), ...(extras as ToolName[])]
+    // ordem do app; tools que o app não conhece (de outra versão/aparelho) ficam no fim, na ordem
+    // em que vieram — preservadas (§4.3.6)
+    c.enabledTools = orderedTools(set, [...cur, sub])
     return
   }
   if (key === 'approvalModes') {
@@ -480,22 +480,41 @@ export function voiceFilledFromPersona(
 // ---------------- ciclo de vida ----------------
 
 /**
+ * Diferença numa unidade que a migração NÃO marca como própria: uma tool de um tipo de aparelho em
+ * que o chat nunca rodou (§4.3.6 — ex.: chat criado no celular, sem as tools do computador, passa a
+ * herdá-las; chat antigo do desktop, sem as do celular, idem).
+ */
+function deviceDifference(unit: string, ranOn: ChatRanOn): boolean {
+  if (!unit.startsWith('enabledTools.')) return false
+  const d = toolDevice(unit.slice(13))
+  return d !== null && !ranOn[d]
+}
+
+/**
  * Migração única de um chat antigo (com `presetId` e SEM `overrides` — apps < 1.10.0), depois de um
  * pull completo: `overrides` = as unidades cujo valor no chat difere (JSON) do valor efetivo da
- * persona; as iguais passam a herdar. Na `voice`, campos iguais ao campo não nulo da persona → null.
+ * persona; as iguais passam a herdar. Uma diferença numa tool de um tipo de aparelho só vira própria
+ * se o chat já rodou naquele tipo (`ranOn` — `chatRanOn` em ./deviceTools: `hostCwd` do registro /
+ * chat local deste computador). Na `voice`, campos iguais ao campo não nulo da persona → null.
  * Determinística (só depende do que sincroniza). null = nada a migrar (sem persona, persona que não
  * existe aqui, ou já migrado).
  */
 export function migrateChatOverrides(
   record: InheritConfig,
   persona: PresetConfig | null | undefined,
-  env: InheritEnv
+  env: InheritEnv,
+  ranOn: ChatRanOn
 ): InheritConfig | null {
   if (!record.presetId || !persona || hasOverrides(record)) return null
   const pe = personaEffectiveConfig(persona, env, record.cwd)
   const ov: ChatOverrides = {}
   for (const u of allUnits(record, pe))
-    if (u !== 'cacheEnabled' && !sameUnit(u, readUnit(record, u), readUnit(pe, u))) ov[u] = true
+    if (
+      u !== 'cacheEnabled' &&
+      !sameUnit(u, readUnit(record, u), readUnit(pe, u)) &&
+      !deviceDifference(u, ranOn)
+    )
+      ov[u] = true
   // o cache herdado depende do provedor efetivo do chat (o par já decidido acima)
   const probe = composeInherited(record, pe, ov)
   if (
@@ -608,6 +627,11 @@ export interface ChatPatchContext {
   env: InheritEnv
   /** Config (sanitizada) da persona com esse id NESTE dispositivo; null = não existe aqui. */
   persona: (id: string) => PresetConfig | null
+  /**
+   * Em que tipos de aparelho o chat já rodou (`chatRanOn`) — só usado se o patch troca a persona de
+   * um chat ainda não migrado (a migração contra a antiga vem antes).
+   */
+  ranOn: ChatRanOn
 }
 
 /**
@@ -637,7 +661,7 @@ export function applyChatConfigPatch(
       persona = null
     } else if (next !== rec.presetId) {
       if (rec.presetId && persona && !hasOverrides(rec))
-        rec = migrateChatOverrides(rec, persona, ctx.env) ?? rec
+        rec = migrateChatOverrides(rec, persona, ctx.env, ctx.ranOn) ?? rec
       // a voz herdada da persona antiga não vai junto: os campos null passam a seguir a nova
       const np = ctx.persona(next)
       rec = switchPersona(rec, next, np, ctx.env)

@@ -5,8 +5,8 @@ import { APP_SIGNATURES } from '@shared/appSignatures'
 import { ITEM_LABEL, modeLabel } from '@shared/approvalPolicy'
 import { keyOfUnit, type InheritEnv } from '@shared/chatInherit'
 import { isChatProvider } from '@shared/providerKinds'
-import { TOOL_LABELS } from '@shared/tools'
-import type { ApprovalItem, ApprovalMode, Provider, ToolName } from '@shared/types'
+import { toolLabel } from '@shared/deviceTools'
+import type { ApprovalItem, ApprovalMode, Provider } from '@shared/types'
 
 /** Ambiente da herança: padrões de "Novos chats" + provedores de chat (o mesmo que o main lê). */
 export function inheritEnvFrom(
@@ -60,7 +60,7 @@ export function unitLabel(unit: string): string {
   const key = keyOfUnit(unit)
   const sub = unit.slice(key.length + 1)
   if (key === 'params') return PARAM_LABELS[sub] ?? sub
-  if (key === 'enabledTools') return `Tool ${TOOL_LABELS[sub as ToolName] ?? sub}`
+  if (key === 'enabledTools') return `Tool ${toolLabel(sub)}`
   if (key === 'approvalModes') return `Aprovação: ${ITEM_LABEL[sub as ApprovalItem] ?? sub}`
   return KEY_LABELS[unit] ?? unit
 }

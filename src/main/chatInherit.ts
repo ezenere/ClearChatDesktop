@@ -15,6 +15,7 @@ import {
   type InheritEnv
 } from '@shared/chatInherit'
 import { DEFAULT_CHAT_CONFIG } from '@shared/defaults'
+import { chatRanOn, type ChatRanOn } from '@shared/deviceTools'
 import { sanitizePresetConfig, type PresetConfig } from '@shared/presets'
 import { isChatProvider } from '@shared/providerKinds'
 import { migrateConfigTools } from '@shared/toolRename'
@@ -112,6 +113,36 @@ export function effectiveFromJson(conn: Conn, configJson: string): InheritConfig
   return effectiveOf(conn, chatRecordFrom(conn, configJson))
 }
 
+const has = (conn: Conn, sql: string, ...args: unknown[]): boolean => {
+  try {
+    return !!conn.prepare(sql).get(...args)
+  } catch {
+    return false // tabela/coluna do sync ainda não existe (banco sem o esquema do sync)
+  }
+}
+
+/**
+ * Em que tipos de aparelho o chat já rodou (§4.3.6, migração das tools de um tipo de aparelho):
+ * computador = o registro tem `hostCwd` (sync_chat.host_cwd — o host computador o grava ao virar
+ * host) ou o chat é LOCAL deste computador: nunca foi ao servidor (sem login — o logout apaga o
+ * estado do sync — ou ainda não enviado) ou é só ao vivo hospedado aqui (§23); celular = o registro
+ * não tem `hostCwd`.
+ */
+export function chatRanOnHere(conn: Conn, chatId: string): ChatRanOn {
+  let hostCwd: unknown = null
+  try {
+    const r = conn.prepare('SELECT host_cwd FROM sync_chat WHERE chat_id = ?').get(chatId) as
+      { host_cwd: string | null } | undefined
+    hostCwd = r?.host_cwd ? parse<unknown>(r.host_cwd, null) : null
+  } catch {
+    /* sem o esquema do sync */
+  }
+  const local =
+    !has(conn, "SELECT 1 FROM sync_records WHERE type = 'chat' AND id = ?", chatId) ||
+    has(conn, "SELECT 1 FROM chats WHERE id = ? AND storage IN ('live', 'live_pending')", chatId)
+  return chatRanOn(hostCwd, local)
+}
+
 const writeConfig = (conn: Conn, id: string, cfg: InheritConfig): void => {
   conn.prepare('UPDATE chats SET config_json = ? WHERE id = ?').run(JSON.stringify(cfg), id)
 }
@@ -119,7 +150,8 @@ const writeConfig = (conn: Conn, id: string, cfg: InheritConfig): void => {
 /**
  * Migração única dos chats antigos (com `presetId` e sem `overrides`) contra a persona e os padrões
  * DAQUI — chamar depois de um pull completo (logado) ou na inicialização (sem login; chats só ao
- * vivo também). Grava o registro (o trigger do sync o marca para envio). Retorna os ids migrados.
+ * vivo também). Tools de um tipo de aparelho: a diferença só vira própria se o chat rodou nele
+ * (`chatRanOnHere`). Grava o registro (o trigger do sync o marca para envio). Retorna os ids migrados.
  */
 export function migrateChatInheritance(conn: Conn): string[] {
   const rows = conn
@@ -135,7 +167,12 @@ export function migrateChatInheritance(conn: Conn): string[] {
   conn.transaction(() => {
     for (const r of rows) {
       const rec = chatRecordFrom(conn, r.config_json)
-      const next = migrateChatOverrides(rec, presetConfigOf(conn, rec.presetId), env)
+      const next = migrateChatOverrides(
+        rec,
+        presetConfigOf(conn, rec.presetId),
+        env,
+        chatRanOnHere(conn, r.id)
+      )
       if (!next) continue
       writeConfig(conn, r.id, next)
       out.push(r.id)

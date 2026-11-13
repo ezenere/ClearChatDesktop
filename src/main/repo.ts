@@ -16,6 +16,7 @@ import {
   type InheritEnv
 } from '@shared/chatInherit'
 import {
+  chatRanOnHere,
   chatRecordFrom,
   effectiveOf,
   freezeChatsOfPreset,
@@ -695,10 +696,11 @@ function mergeParams(base: ChatParams, patch: ChatParams | undefined): ChatParam
 const chatRow = (id: string): ChatRow | undefined =>
   getDb().prepare('SELECT * FROM chats WHERE id = ?').get(id) as ChatRow | undefined
 
-/** Contexto da interpretação de patches de config (persona e padrões lidos agora). */
-const patchContext = (): ChatPatchContext => ({
+/** Contexto da interpretação de patches de config do chat `chatId` (persona e padrões lidos agora). */
+const patchContext = (chatId: string): ChatPatchContext => ({
   env: inheritEnvOf(getDb()),
-  persona: (id) => presetConfigOf(getDb(), id)
+  persona: (id) => presetConfigOf(getDb(), id),
+  ranOn: chatRanOnHere(getDb(), chatId)
 })
 
 export const chatsRepo = {
@@ -812,9 +814,12 @@ export const chatsRepo = {
         delete definedCfg.smartApprove
       if (patch.config.params !== undefined) definedCfg.params = patch.config.params
       // smartApprove legado (enabled/tools, ≤ 0.4.0) no patch → modos por item
-      record = migrateSmartApproveConfig(applyChatConfigPatch(record, definedCfg, patchContext()), {
-        globalModes: legacyGlobalModes
-      })
+      record = migrateSmartApproveConfig(
+        applyChatConfigPatch(record, definedCfg, patchContext(id)),
+        {
+          globalModes: legacyGlobalModes
+        }
+      )
     }
     const title = patch?.title !== undefined ? patch.title : cur.title
     const now = Date.now()

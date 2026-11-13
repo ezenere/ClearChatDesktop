@@ -28,6 +28,7 @@ import {
   clampToolOutput
 } from '@shared/limits'
 import { currentToolDefinition, TOOL_LABELS, TOOL_NAMES } from '@shared/tools'
+import { APP_TOOL_NAMES, PHONE_TOOL_NAMES, withTool } from '@shared/deviceTools'
 import type { ChatConfig, ChatParams, ToolName } from '@shared/types'
 import { api } from '../../lib/api'
 import { cn, formatTokens, modelMeta } from '../../lib/format'
@@ -62,6 +63,7 @@ import {
 } from './fields'
 import { SmartApproveSection } from './SmartApproveSection'
 import { InheritMark } from './inherit'
+import { PhoneToolsGroup } from './PhoneToolsGroup'
 import { ChatApprovalSection } from '../approvals/ChatApprovalSection'
 import { memoryConfigOf, memoryWillSend } from '../../lib/memory'
 import { skillsConfigOf } from '../../lib/skills'
@@ -683,24 +685,23 @@ export function ContextSettingsSection({
 // ---------------- Tools ----------------
 
 export function ToolsListSection({ cfg, patch }: CfgProps): React.JSX.Element {
-  const toggleTool = (t: ToolName, on: boolean): void =>
-    patch({
-      enabledTools: on
-        ? TOOL_NAMES.filter((n) => n === t || cfg.enabledTools.includes(n))
-        : cfg.enabledTools.filter((n) => n !== t)
-    })
+  // liga/desliga sem perder nada: as do celular e as desconhecidas ficam na lista (§4.3.6)
+  const toggleTool = (t: string, on: boolean): void =>
+    patch({ enabledTools: withTool(cfg.enabledTools, t, on) })
   const count = TOOL_NAMES.filter((t) => cfg.enabledTools.includes(t)).length
+  const phoneOn = PHONE_TOOL_NAMES.filter((t) => cfg.enabledTools.includes(t as ToolName)).length
+  const phoneOff = phoneOn < PHONE_TOOL_NAMES.length
   // aberta por padrão (é o principal da aba); recolhida, o resumo mostra quantas estão ligadas
   return (
     <CollapsibleSection
       id="tools-list"
       title="Ferramentas"
       defaultOpen
-      inherit={TOOL_NAMES.map((t) => `enabledTools.${t}`)}
+      inherit={APP_TOOL_NAMES.map((t) => `enabledTools.${t}`)}
       inheritClosed
       summary={{
-        text: `${count}/${TOOL_NAMES.length} ligadas`,
-        changed: count < TOOL_NAMES.length
+        text: `${count}/${TOOL_NAMES.length} ligadas${phoneOff ? ` · celular ${phoneOn}/${PHONE_TOOL_NAMES.length}` : ''}`,
+        changed: count < TOOL_NAMES.length || phoneOff
       }}
     >
       <div className="-mx-1.5 space-y-px">
@@ -732,6 +733,7 @@ export function ToolsListSection({ cfg, patch }: CfgProps): React.JSX.Element {
           )
         })}
       </div>
+      <PhoneToolsGroup tools={cfg.enabledTools} onToggle={toggleTool} />
     </CollapsibleSection>
   )
 }

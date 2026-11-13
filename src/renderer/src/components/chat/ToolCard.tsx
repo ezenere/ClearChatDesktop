@@ -36,6 +36,7 @@ import {
 } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 import { TOOL_LABELS } from '@shared/tools'
+import { toolLabel } from '@shared/deviceTools'
 import { approxTokens } from '@shared/limits'
 import type { ApprovalRequest, MessageMeta, Session, StoredMessage, ToolName } from '@shared/types'
 import { cn, formatTokens, prettyJson } from '../../lib/format'
@@ -412,7 +413,7 @@ export function ToolCard({
 
   const expanded = open || !!approval
   const subId = result?.meta.subSessionId ?? subSession?.id
-  const label = TOOL_LABELS[name] ?? call.name
+  const label = TOOL_LABELS[name] ?? toolLabel(call.name)
   let sum = summary(call.name, args)
   if (targetChat)
     sum = [
