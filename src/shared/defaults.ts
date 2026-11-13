@@ -54,6 +54,9 @@ export function DEFAULT_CHAT_CONFIG(
     nativeTools: true,
     toolsInPrompt: false,
     toolsPromptText: null,
+    // tools compactadas (protocolo 1.11.0): ligado é o padrão do app; nenhuma vai completa
+    toolsCompact: true,
+    toolsFull: [],
     envInPrompt: true,
     cacheEnabled: supportsCacheControl(
       providerKind({ baseUrl: opts.baseUrl ?? DEFAULT_BASE_URL, kind: opts.kind })

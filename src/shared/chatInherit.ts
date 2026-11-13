@@ -8,6 +8,7 @@
 // Funções puras (sem Node/Electron/DOM): o main (repo, sync, host ao vivo), o renderer (marcas de
 // herdado/próprio, "voltar a herdar") e o mobile (vendora este arquivo) calculam igual.
 import { APPROVAL_ITEMS } from './approvalPolicy'
+import { COMPACTABLE_TOOL_NAMES } from './compactTools'
 import { supportsCacheControl } from './defaults'
 import { APP_TOOL_NAMES, orderedTools, toolDevice, type ChatRanOn } from './deviceTools'
 import { normalizeMemoryConfig } from './memory'
@@ -61,7 +62,17 @@ function canon(v: unknown): string {
 export const INHERIT_KEYS: readonly string[] = PRESET_FIELDS.filter((k) => k !== 'voice')
 
 /** Chaves com várias unidades (cada subchave/tool é uma unidade; LWW pela chave inteira, §7.5). */
-export const SHARED_INHERIT_KEYS = ['params', 'enabledTools', 'approvalModes'] as const
+export const SHARED_INHERIT_KEYS = ['params', 'enabledTools', 'toolsFull', 'approvalModes'] as const
+/** Chaves-lista de tools (cada tool é uma unidade booleana "está na lista"). */
+const TOOL_LIST_KEYS = ['enabledTools', 'toolsFull'] as const
+type ToolListKey = (typeof TOOL_LIST_KEYS)[number]
+const isToolListKey = (k: string): k is ToolListKey =>
+  (TOOL_LIST_KEYS as readonly string[]).includes(k)
+/** Ordem do app de cada lista (as desconhecidas vão no fim, preservadas — §4.3.6). */
+const TOOL_LIST_ORDER: Record<ToolListKey, readonly string[]> = {
+  enabledTools: APP_TOOL_NAMES,
+  toolsFull: COMPACTABLE_TOOL_NAMES
+}
 type SharedKey = (typeof SHARED_INHERIT_KEYS)[number]
 const isSharedKey = (k: string): k is SharedKey =>
   (SHARED_INHERIT_KEYS as readonly string[]).includes(k)
@@ -95,10 +106,12 @@ export function isKnownUnit(unit: string): boolean {
   return unit === key && unitOfKey(key) === key
 }
 
-function toolsOf(cfg: Partial<ChatConfig> | null | undefined): string[] {
-  return Array.isArray(cfg?.enabledTools)
-    ? cfg.enabledTools.filter((t): t is ToolName => typeof t === 'string')
-    : []
+function toolsOf(
+  cfg: Partial<ChatConfig> | null | undefined,
+  key: ToolListKey = 'enabledTools'
+): string[] {
+  const list = cfg?.[key]
+  return Array.isArray(list) ? list.filter((t): t is ToolName => typeof t === 'string') : []
 }
 
 /** Unidades de uma chave compartilhada presentes em qualquer das configs (+ as conhecidas do app). */
@@ -112,10 +125,11 @@ export function unitsOfKey(
   if (key === 'params')
     for (const c of cfgs)
       for (const k of Object.keys(isObj(c?.params) ? c.params : {})) names.add(k)
-  else if (key === 'enabledTools') {
-    // todas as do app (as do celular inclusive, §4.3.6) + as desconhecidas que vierem nas listas
-    for (const t of APP_TOOL_NAMES) names.add(t)
-    for (const c of cfgs) for (const t of toolsOf(c)) names.add(t)
+  else if (isToolListKey(key)) {
+    // todas as do app (as do celular inclusive, §4.3.6; em toolsFull também memória e skills) + as
+    // desconhecidas que vierem nas listas
+    for (const t of TOOL_LIST_ORDER[key]) names.add(t)
+    for (const c of cfgs) for (const t of toolsOf(c, key)) names.add(t)
   } else if (key === 'approvalModes') {
     for (const i of APPROVAL_ITEMS) names.add(i)
     for (const c of cfgs)
@@ -132,7 +146,10 @@ export function allUnits(...cfgs: (Partial<ChatConfig> | null | undefined)[]): s
   return out
 }
 
-/** Valor de uma unidade numa config (`model` = o par; `enabledTools.<t>` = está na lista). */
+/**
+ * Valor de uma unidade numa config (`model` = o par; `enabledTools.<t>`/`toolsFull.<t>` = está na
+ * lista; lista ausente = undefined).
+ */
 export function readUnit(cfg: Partial<ChatConfig> | null | undefined, unit: string): unknown {
   if (!cfg) return undefined
   if (unit === 'model') return { providerId: cfg.providerId ?? '', model: cfg.model ?? '' }
@@ -144,8 +161,8 @@ export function readUnit(cfg: Partial<ChatConfig> | null | undefined, unit: stri
   const key = keyOfUnit(unit)
   const sub = unit.slice(key.length + 1)
   if (key === 'params') return isObj(cfg.params) ? (cfg.params as Plain)[sub] : undefined
-  if (key === 'enabledTools')
-    return Array.isArray(cfg.enabledTools) ? toolsOf(cfg).includes(sub) : undefined
+  if (isToolListKey(key))
+    return Array.isArray(cfg[key]) ? toolsOf(cfg, key).includes(sub) : undefined
   if (key === 'approvalModes')
     return isObj(cfg.approvalModes) ? (cfg.approvalModes as Plain)[sub] : undefined
   return (cfg as Plain)[key]
@@ -180,17 +197,17 @@ export function writeUnit(cfg: Partial<ChatConfig>, unit: string, value: unknown
     c.params = next
     return
   }
-  if (key === 'enabledTools') {
-    const cur = toolsOf(cfg)
+  if (isToolListKey(key)) {
+    const cur = toolsOf(cfg, key)
     const on = value === true
     if (on === cur.includes(sub)) {
-      if (!Array.isArray(c.enabledTools)) c.enabledTools = cur
+      if (!Array.isArray(c[key])) c[key] = cur
       return
     }
     const set = new Set(on ? [...cur, sub] : cur.filter((t) => t !== sub))
     // ordem do app; tools que o app não conhece (de outra versão/aparelho) ficam no fim, na ordem
     // em que vieram — preservadas (§4.3.6)
-    c.enabledTools = orderedTools(set, [...cur, sub])
+    c[key] = orderedTools(set, [...cur, sub], TOOL_LIST_ORDER[key])
     return
   }
   if (key === 'approvalModes') {
@@ -205,11 +222,15 @@ export function writeUnit(cfg: Partial<ChatConfig>, unit: string, value: unknown
   else c[key] = clone(value)
 }
 
-/** Igualdade de valores de uma unidade (memória/skills normalizadas; ausente = null). */
+/**
+ * Igualdade de valores de uma unidade (memória/skills normalizadas; tools como booleano;
+ * `toolsCompact` ausente = true; ausente = null).
+ */
 export function sameUnit(unit: string, a: unknown, b: unknown): boolean {
   if (unit === 'memory') return canon(normalizeMemoryConfig(a)) === canon(normalizeMemoryConfig(b))
   if (unit === 'skills') return canon(normalizeSkillsConfig(a)) === canon(normalizeSkillsConfig(b))
-  if (unit.startsWith('enabledTools.')) return !!a === !!b
+  if (unit === 'toolsCompact') return (a !== false) === (b !== false)
+  if (unit.startsWith('enabledTools.') || unit.startsWith('toolsFull.')) return !!a === !!b
   return canon(a ?? null) === canon(b ?? null)
 }
 
@@ -225,8 +246,9 @@ export function normalizeOverrides(v: unknown): ChatOverrides | undefined {
   const out: ChatOverrides = {}
   for (const [k, val] of Object.entries(v)) {
     if (val !== true || !k) continue
-    const name = k.startsWith('enabledTools.') ? k.slice(13) : null
-    out[name ? `enabledTools.${TOOL_ALIASES[name] ?? name}` : k] = true
+    const key = keyOfUnit(k)
+    const name = isToolListKey(key) ? k.slice(key.length + 1) : null
+    out[name ? `${key}.${TOOL_ALIASES[name] ?? name}` : k] = true
   }
   return out
 }
@@ -266,7 +288,7 @@ export function personaDefines(persona: PresetConfig | null | undefined, unit: s
   if (unit === 'model') return !!persona.model?.trim()
   if (unit === 'appSignature') return persona.appSignature !== undefined
   const key = keyOfUnit(unit)
-  if (key === 'enabledTools') return Array.isArray(persona.enabledTools)
+  if (isToolListKey(key)) return Array.isArray(persona[key])
   if (key === 'params' || key === 'approvalModes') return readUnit(persona, unit) !== undefined
   return (persona as Plain)[key] !== undefined
 }

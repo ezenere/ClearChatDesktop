@@ -245,7 +245,12 @@ const mkChat = (over: Partial<Chat['config']> = {}): Chat => ({
   mainSessionId: 's1',
   createdAt: 0,
   updatedAt: 0,
-  config: { ...DEFAULT_CHAT_CONFIG(ROOT, { providerId: 'p1', model: 'm' }), ...over }
+  // definições completas (a compactação, 1.11.0, tem testes próprios em compactTools.test.ts)
+  config: {
+    ...DEFAULT_CHAT_CONFIG(ROOT, { providerId: 'p1', model: 'm' }),
+    toolsCompact: false,
+    ...over
+  }
 })
 
 test('ask_user: só na sessão principal; sem confirmação nem Smart-Approve', () => {

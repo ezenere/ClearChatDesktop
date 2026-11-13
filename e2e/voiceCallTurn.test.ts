@@ -22,6 +22,7 @@ import {
   DEFAULT_VOICE_CALL_DEFAULTS,
   type VoiceCallState
 } from '@shared/voice'
+import { COMPACT_TOOLS_PROMPT } from '@shared/compactTools'
 
 const TMP = mkdtempSync(join(process.env.CLEARCHAT_TEST_TMP || tmpdir(), 'clearchat-voicecall-'))
 process.env.CLEARCHAT_TEST_USERDATA = TMP
@@ -687,8 +688,16 @@ test('overrides do modo voz: voice.model/voice.tools/voicePrompt só nas request
   assert.equal(req.body.temperature, 0.1, 'params da chamada substituem os do chat')
   assert.deepEqual(
     (req.body.tools ?? []).map((t: any) => t.function.name),
-    ['shell', 'end_call'],
-    'só as tools liberadas na chamada (+ end_call, que é da chamada)'
+    ['shell', 'end_call', 'search_tool'],
+    'só as tools liberadas na chamada (+ end_call, que é da chamada; + search_tool: compactas, 1.11.0)'
+  )
+  // tools compactadas na chamada: shell compacta, end_call SEMPRE completa (a despedida está nela)
+  const [shellDef, endCallDef] = req.body.tools
+  assert.deepEqual(shellDef.function.parameters, { type: 'object', properties: {} })
+  assert.match(endCallDef.function.description, /Encerra a chamada de voz/)
+  assert.ok(
+    textOf(req.body.messages[0].content).endsWith('\n\n' + COMPACT_TOOLS_PROMPT),
+    'prompt fixo das tools compactadas no fim do system prompt'
   )
   assert.ok(
     textOf(req.body.messages[0].content).includes('persona base\n\n'),

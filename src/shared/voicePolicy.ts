@@ -245,11 +245,16 @@ export const TOOL_PHRASE_AFTER_PREAMBLE_MS = 3000
 /** A frase de ferramenta não repete nenhuma das últimas N usadas. */
 export const TOOL_PHRASE_RECENT_WINDOW = 3
 
-/** Tools sem frase (a própria tool já é a fala/interação: despedida, pergunta na tela). */
-const TOOLS_WITHOUT_PHRASE = new Set(['end_call', 'ask_user'])
+/**
+ * Tools sem frase: a própria tool já é a fala/interação (despedida, pergunta na tela) ou é
+ * instantânea e não é "o trabalho" do turno — `search_tool` (só lê a definição de uma tool
+ * compactada, 1.11.0: a frase fica para a tool de verdade que vem depois) e `datetime`.
+ */
+const TOOLS_WITHOUT_PHRASE = new Set(['end_call', 'ask_user', 'search_tool', 'datetime'])
 
 /**
- * Categoria da frase de uma tool (null = tool sem frase — `end_call`, `ask_user`). Tools do celular
+ * Categoria da frase de uma tool (null = tool sem frase — `end_call`, `ask_user`, `search_tool`,
+ * `datetime`). Tools do celular
  * (`get_location`, `nearby_places`) caem em `location`; desconhecidas, em `generic`.
  */
 export function toolPhraseCategory(toolName: string): ToolPhraseCategory | null {

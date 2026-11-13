@@ -510,6 +510,8 @@ test('snapshot por sessão: congela no 1º request; renova em refresh/compactaç
     })
     const { chat, sessionId } = insertChat(conn, memory)
     chat.config.toolsInPrompt = true
+    // definições completas (a compactação, 1.11.0, tem testes próprios em compactTools.test.ts)
+    chat.config.toolsCompact = false
     const session = { id: sessionId, depth: 0 as const, model: 'm' }
 
     // preview antes do 1º request: índice atual, ainda sem snapshot
@@ -1202,10 +1204,13 @@ test('runner: índice na request, memory_write do agente persiste (aprovação "
     textOf(first.messages[0].content),
     /<memory>[\s\S]*## Perfil[\s\S]*### Padrão — escrita\n\(vazia\)/
   )
+  // tools compactadas (padrão, 1.11.0): as de memória vão compactas + a search_tool no fim; o
+  // memory_write do agente (argumentos válidos) roda normalmente sem ler a definição antes
   assert.deepEqual(
     first.tools.map((t: any) => t.function.name),
-    MEMORY_TOOL_NAMES
+    [...MEMORY_TOOL_NAMES, 'search_tool']
   )
+  assert.deepEqual(first.tools[0].function.parameters, { type: 'object', properties: {} })
   const saved = memory.listMemories({ query: 'palmeiras' })
   assert.equal(saved.length, 1)
   assert.equal(saved[0].collectionId, profileCol)

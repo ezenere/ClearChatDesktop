@@ -55,6 +55,17 @@ export const PHONE_TOOL_HELP: Record<PhoneToolName, string> = {
 }
 
 /**
+ * Descrição curta de cada tool do celular (tools compactadas, protocolo 1.11.0 — @shared/compactTools):
+ * o que vai no lugar da definição quando ela é enviada compacta (1 a 20 palavras, pt-BR).
+ */
+export const PHONE_TOOL_SHORT: Record<PhoneToolName, string> = {
+  get_location:
+    'Localização atual do usuário pelo celular: coordenadas, precisão e bairro/cidade (pode pedir aprovação).',
+  nearby_places:
+    'Busca lugares por perto no OpenStreetMap (restaurantes, farmácias, mercados…), com endereço, horário e distância.'
+}
+
+/**
  * Todas as tools de `enabledTools` que o app conhece, na ordem do app (as do celular no fim) — é o
  * padrão de "Novos chats" (§4.3.6: as tools padrão do app são todas, inclusive as de um tipo de
  * aparelho) e a ordem em que as listas são regravadas.
@@ -115,11 +126,18 @@ export function withTool(list: readonly string[], name: string, on: boolean): To
   return orderedTools(set, [...cur, name])
 }
 
-/** As tools de `set` na ordem do app; as desconhecidas no fim, na ordem de `seen`. */
-export function orderedTools(set: ReadonlySet<string>, seen: readonly string[]): ToolName[] {
-  const known = new Set<string>(APP_TOOL_NAMES)
+/**
+ * As tools de `set` na ordem do app (`order`, padrão `APP_TOOL_NAMES`); as desconhecidas no fim, na
+ * ordem de `seen`.
+ */
+export function orderedTools(
+  set: ReadonlySet<string>,
+  seen: readonly string[],
+  order: readonly string[] = APP_TOOL_NAMES
+): ToolName[] {
+  const known = new Set<string>(order)
   const extras = [...new Set(seen)].filter((t) => set.has(t) && !known.has(t))
-  return [...APP_TOOL_NAMES.filter((t) => set.has(t)), ...(extras as ToolName[])]
+  return [...(order.filter((t) => set.has(t)) as ToolName[]), ...(extras as ToolName[])]
 }
 
 // ---------------- migração (§4.3.6) ----------------

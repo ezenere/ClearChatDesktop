@@ -47,6 +47,8 @@ const chat = (over: Partial<Chat['config']> = {}): Chat => ({
     ...DEFAULT_CHAT_CONFIG('/work', { providerId: 'pa', model: 'm', systemPrompt: 'SYS' }),
     enabledTools: ['read_file'],
     envInPrompt: false,
+    // definições completas (a compactação, 1.11.0, tem testes próprios em compactTools.test.ts)
+    toolsCompact: false,
     ...over
   } as Chat['config']
 })

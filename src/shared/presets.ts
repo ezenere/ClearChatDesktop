@@ -1,7 +1,13 @@
 // Personas (presets de chat): quais campos de ChatConfig um preset guarda e como é aplicado.
 // Funções puras — usadas pelo main (sanitizar ao salvar; valor efetivo da persona na herança ao
 // vivo, @shared/chatInherit) e pelo renderer (snapshot/aplicar).
-import type { ChatConfig, ChatParams, Preset, Provider } from './types'
+import {
+  normalizeToolList,
+  type ChatConfig,
+  type ChatParams,
+  type Preset,
+  type Provider
+} from './types'
 import { DEFAULT_CHAT_CONFIG, supportsCacheControl } from './defaults'
 import { defaultModelRef, resolvePresetModel } from './models'
 import { providerKind, type ProviderKind } from './providerKinds'
@@ -35,6 +41,8 @@ export const PRESET_FIELDS = [
   'nativeTools',
   'toolsInPrompt',
   'toolsPromptText',
+  'toolsCompact',
+  'toolsFull',
   'envInPrompt',
   'cacheEnabled',
   'subagentSystemPrompt',
@@ -82,6 +90,14 @@ export function sanitizePresetConfig(cfg: unknown): PresetConfig {
   const out: Record<string, unknown> = {}
   for (const k of PRESET_FIELDS) {
     if (src[k] === undefined) continue
+    // tools compactadas (1.11.0): `toolsCompact` só booleano; `toolsFull` lista de nomes (as
+    // desconhecidas preservadas — §4.3.6)
+    if (k === 'toolsCompact' && typeof src[k] !== 'boolean') continue
+    if (k === 'toolsFull') {
+      const list = normalizeToolList(src[k])
+      if (list) out[k] = list
+      continue
+    }
     out[k] =
       k === 'params'
         ? cleanParams(src[k] as ChatParams)

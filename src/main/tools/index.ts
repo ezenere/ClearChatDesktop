@@ -11,6 +11,7 @@ import { getChatInfoTool, listChatsTool } from './chats'
 import { readHistoryTool } from './history'
 import { browseUrl, webSearch } from './web'
 import { listSkillsTool, skillLoadTool, skillReadTool } from './skills'
+import { runDatetimeTool } from '@shared/datetime'
 import {
   fail,
   isInside,
@@ -68,7 +69,9 @@ const IMPLS: Partial<Record<ToolName, Impl>> = {
   read_history: readHistoryTool,
   list_skills: listSkillsTool,
   skill_load: skillLoadTool,
-  skill_read: skillReadTool
+  skill_read: skillReadTool,
+  // data/hora do aparelho que roda o turno, no fuso dele (1.11.0; sem aprovação)
+  datetime: async (args) => runDatetimeTool(args)
 }
 
 /** Faz parse dos argumentos (string JSON da tool_call). */

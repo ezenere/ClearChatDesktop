@@ -107,6 +107,8 @@ const chatWith = (skills?: any, extra: any = {}): any => ({
     model: 'm',
     enabledTools: ['read_file', 'shell'],
     skills,
+    // definições completas (a compactação, 1.11.0, tem testes próprios em compactTools.test.ts)
+    toolsCompact: false,
     ...extra
   }
 })

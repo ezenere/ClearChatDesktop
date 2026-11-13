@@ -39,6 +39,8 @@ const mkChat = (over: Partial<Chat['config']> = {}): Chat => ({
   updatedAt: 0,
   config: {
     ...DEFAULT_CHAT_CONFIG('/work', { providerId: 'p1', model: 'm', systemPrompt: 'SYS' }),
+    // definições completas (a compactação, 1.11.0, tem testes próprios em compactTools.test.ts)
+    toolsCompact: false,
     ...over
   }
 })
@@ -80,10 +82,10 @@ test('system + env + tools + cache_control na cópia', () => {
     { type: 'text', text: 'leia x', cache_control: { type: 'ephemeral' } }
   ])
   assert.equal(JSON.stringify(hist), before, 'histórico não pode ser mutado')
-  assert.equal(body.tools.length, 25) // inclui present_file (só na principal)
+  assert.equal(body.tools.length, 26) // inclui present_file (só na principal) e datetime
   // num subagente (sem ask_user: subagentes não perguntam ao usuário), as tools de gerenciar subagentes só aparecem depois do primeiro delegate_task
   const sub1 = buildRequest(mkChat(), { depth: 1, model: 'm' }, hist, orProvider, env).body as any
-  assert.equal(sub1.tools.length, 19)
+  assert.equal(sub1.tools.length, 20)
   assert.ok(!sub1.tools.some((t: any) => t.function.name === 'message_subagent'))
   const delegated = [
     ...hist,
@@ -97,7 +99,7 @@ test('system + env + tools + cache_control na cópia', () => {
     sm({ role: 'tool', tool_call_id: 'd1', content: 'ok' })
   ]
   const req2 = buildRequest(mkChat(), { depth: 1, model: 'm' }, delegated, orProvider, env)
-  assert.equal((req2.body as any).tools.length, 23)
+  assert.equal((req2.body as any).tools.length, 24)
   assert.ok(!(req2.body as any).tools.some((t: any) => t.function.name === 'ask_user'))
   assert.equal(body.tools[0].function.name, 'list_dir')
   assert.ok(body.tools.some((t: any) => t.function.name === 'search_files'))
@@ -165,7 +167,7 @@ test('sem cache, sem env, system vazio → sem mensagem system; depth 2 sem dele
   assert.ok(!body.tools.some((t: any) => t.function.name === 'delegate_task'))
   // ferramentas de subagentes só existem com delegate_task disponível
   assert.ok(!body.tools.some((t: any) => t.function.name === 'check_subagents'))
-  assert.equal(body.tools.length, 18)
+  assert.equal(body.tools.length, 19)
 })
 
 test('toolsInPrompt usa só as tools disponíveis; nativeTools=false omite tools', () => {

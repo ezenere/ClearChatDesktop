@@ -12,6 +12,7 @@ import {
   type ToolDefinition
 } from '@shared/tools'
 import { normalizeSkillsConfig, skillsActiveFor } from '@shared/skills'
+import { planTools, withCompactPrompt, type ToolsPlan } from '@shared/compactTools'
 import { activeHistory, isDisplayOnly } from '@shared/context'
 import { bwrapAvailable, shellLabel } from '../tools/bash'
 import { expandAttachments, hoistToolMedia } from '../attachments'
@@ -294,9 +295,37 @@ export function toolDefinitions(
 }
 
 /**
+ * As definições chegam ao modelo? (campo `tools`, ou o texto das tools GERADO pelo app no system
+ * prompt — um `toolsPromptText` escrito pelo usuário vai como está e não leva definições).
+ */
+function toolsReachModel(cfg: ChatConfig): boolean {
+  return cfg.nativeTools || (cfg.toolsInPrompt && cfg.toolsPromptText == null)
+}
+
+/**
+ * Tools da request com a compactação (protocolo 1.11.0 — @shared/compactTools): as disponíveis da
+ * sessão (completas, ajustadas aos provedores) → compactas as que não estão em `toolsFull` (com a
+ * compactação ligada), `search_tool` no fim e o prompt fixo, se alguma foi compacta. Vale para os
+ * turnos normais, subagentes e a chamada de voz (`end_call` sempre completa). Sem tools chegando ao
+ * modelo (sem tools nativas e sem o texto gerado) → nada é compactado. Usado na request, no
+ * preview, na execução (`search_tool`, erro de argumentos) e na estimativa da compactação.
+ */
+export function toolsPlan(
+  chat: Chat,
+  session: SessionRef,
+  history?: StoredMessage[],
+  providerNames?: string[]
+): ToolsPlan {
+  const full = toolDefinitions(availableTools(chat, session, history), providerNames)
+  if (!toolsReachModel(chat.config)) return { definitions: full, full, compacted: [], prompt: null }
+  return planTools(full, chat.config)
+}
+
+/**
  * Conteúdo do system prompt (string; vazio = não envia): system prompt → <environment> → memória
  * (índice + help, só na principal com memória ativa) → prompt de apoio das skills (se ligado) →
- * texto das tools (modo texto).
+ * texto das tools (modo texto; o gerado segue a compactação) → prompt fixo das tools compactadas
+ * (só com alguma compacta).
  */
 export function systemContent(
   chat: Chat,
@@ -317,14 +346,14 @@ export function systemContent(
     add(memory.help ?? '')
   }
   add(skillsSupportPrompt(chat, session) ?? '')
+  const plan = toolsPlan(chat, session, history)
   if (cfg.toolsInPrompt) {
-    const defs = toolDefinitions(availableTools(chat, session, history))
     add(
       cfg.toolsPromptText ??
-        defaultToolsPrompt(defs, cfg.nativeTools, { subagent: session.depth > 0 })
+        defaultToolsPrompt(plan.definitions, cfg.nativeTools, { subagent: session.depth > 0 })
     )
   }
-  return s
+  return withCompactPrompt(s, plan)
 }
 
 export function parseExtraBody(extra: string | undefined): Record<string, unknown> | null {
@@ -487,7 +516,8 @@ export function buildRequest(
     cfg.appSignatureCustom
   )
   const adapter = adapterFor(kind)
-  const tools = availableTools(chat, session, history)
+  // compactação (1.11.0): as definições como vão (compactas + search_tool, ou completas)
+  const tools = toolsPlan(chat, session, history).definitions
   const params = cfg.params ?? {}
   const extra = parseExtraBody(params.extraBody)
   // Só o que o modelo aceita (o resto fica salvo no chat, mas não vai) — ver @shared/modelParams.
@@ -503,7 +533,7 @@ export function buildRequest(
       body: buildAnthropicBody({
         model: session.model,
         messages: sent,
-        tools: cfg.nativeTools && tools.length ? toolDefinitions(tools) : undefined,
+        tools: cfg.nativeTools && tools.length ? tools : undefined,
         params: support.send,
         cacheEnabled: cfg.cacheEnabled,
         extra
@@ -526,7 +556,7 @@ export function buildRequest(
     stream_options: { include_usage: true }
   }
 
-  if (cfg.nativeTools && tools.length) body.tools = toolDefinitions(tools)
+  if (cfg.nativeTools && tools.length) body.tools = tools
 
   const { reasoning_effort: effort, ...sampling } = support.send
   Object.assign(body, sampling)

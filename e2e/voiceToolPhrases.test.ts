@@ -139,7 +139,11 @@ test('toolPhraseCategory: web/arquivos/comandos/memória/subagentes/informaçõe
     ['mcp_qualquer_coisa', 'generic'],
     ['', 'generic'],
     ['end_call', null],
-    ['ask_user', null]
+    ['ask_user', null],
+    // 1.11.0: search_tool (lê a definição de uma tool compactada) e datetime são instantâneas — a
+    // frase fica para a próxima tool do turno
+    ['search_tool', null],
+    ['datetime', null]
   ]
   for (const [name, cat] of cases) assert.equal(toolPhraseCategory(name), cat, name)
 })

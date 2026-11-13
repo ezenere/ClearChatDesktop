@@ -134,6 +134,7 @@ import {
   modelInfoFor,
   setProviderNamesSource,
   setSiblingsSource,
+  toolsPlan,
   voiceCallContextFor
 } from './request'
 import type { BuiltRequest } from './request'
@@ -182,7 +183,13 @@ import {
 } from '@shared/askUser'
 import { cancelQuestion, getQuestion, listQuestions, requestQuestion } from './questions'
 import { resolveAskUserQuestions } from '../askUserImages'
-import { MEMORY_TOOL_NAMES, SKILL_TOOL_NAMES } from '@shared/tools'
+import { MEMORY_TOOL_NAMES, SEARCH_TOOL, SKILL_TOOL_NAMES } from '@shared/tools'
+import {
+  invalidArgsText,
+  runSearchTool,
+  validateToolArgs,
+  withFullDefinition
+} from '@shared/compactTools'
 import { afterCompaction, ensureSnapshot, runMemoryToolFor } from '../memory'
 import { isTypedFirstMessage, scheduleAutoTitle } from '../autoTitle'
 import { manualSkillParts, sandboxSkillDirs, sessionSkills } from '../skills'
@@ -1205,7 +1212,10 @@ async function step(st: RunState, signal: AbortSignal): Promise<StepResult> {
     availableTools(reqChat, session, history).length &&
     acc.content
   ) {
-    const parsed = parseTextToolCalls(acc.content, availableTools(reqChat, session, history))
+    // a `search_tool` (tools compactadas) também vale no fallback do JSON sem as tags
+    const known: string[] = availableTools(reqChat, session, history)
+    if (toolsPlan(reqChat, session, history).compacted.length) known.push(SEARCH_TOOL)
+    const parsed = parseTextToolCalls(acc.content, known)
     if (parsed.length) {
       const parts: string[] = []
       // read_file de imagem/PDF no modo texto: os parts vão na própria mensagem user sintética
@@ -1532,17 +1542,45 @@ async function executeTool(
   // o gate espelha as tools enviadas na request (SPEC → "Chamada de voz (meia-duplex)")
   const call = voiceCallContextFor(chat, session)
   const gateChat = call ? applyVoiceCallChat(chat, call) : chat
+  // tools compactadas (protocolo 1.11.0, @shared/compactTools): o mesmo plano da request — a
+  // `search_tool` devolve as definições completas das enviadas; uma tool que foi compacta e chega
+  // com argumentos inválidos recebe o erro com a definição completa dela
+  // (sem o histórico: compacta ou não só depende da config; a search_tool o lê para listar
+  // exatamente as enviadas)
+  const plan = toolsPlan(gateChat, session)
+  if (name === SEARCH_TOOL && plan.compacted.length) {
+    let sargs: Record<string, unknown>
+    try {
+      sargs = parseToolArgs(rawArgs)
+    } catch (e) {
+      return done({ content: `Erro: ${errMsg(e)}`, status: 'error' })
+    }
+    const sent = toolsPlan(gateChat, session, messagesRepo.path(session.id))
+    return done(runSearchTool(sargs, sent.full))
+  }
   if (!availableTools(gateChat, session).includes(name)) {
     return done({
       content: `Erro: a ferramenta "${rawName}" não está disponível nesta sessão.`,
       status: 'error'
     })
   }
+  const compactDef = plan.compacted.includes(name)
+    ? plan.full.find((d) => d.function.name === name)
+    : undefined
   let args: Record<string, unknown>
   try {
     args = parseToolArgs(rawArgs)
   } catch (e) {
-    return done({ content: `Erro: ${errMsg(e)}`, status: 'error' })
+    const text = `Erro: ${errMsg(e)}`
+    return done({
+      content: compactDef ? withFullDefinition(text, compactDef) : text,
+      status: 'error'
+    })
+  }
+  if (compactDef) {
+    const problems = validateToolArgs(compactDef, args)
+    if (problems.length)
+      return done({ content: invalidArgsText(compactDef, problems), status: 'error' })
   }
   // chamada de voz: `end_call` não pede aprovação (só encerra a chamada — o VoiceCallManager vê o
   // resultado no histórico e desliga quando a resposta terminar de tocar)

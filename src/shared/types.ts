@@ -104,6 +104,8 @@ export type ToolName =
   | 'process_list'
   | 'process_stop'
   | 'ask_user'
+  // data e hora do aparelho que roda o turno (protocolo 1.11.0; portátil, sem aprovação)
+  | 'datetime'
   // memória modular (SPEC → Memória): disponibilidade pela config de memória, não por enabledTools
   | 'memory_search'
   | 'memory_read'
@@ -116,6 +118,8 @@ export type ToolName =
   | 'skill_read'
   // chamada de voz: só nos turnos da chamada (SPEC → Chamada de voz → end_call), nunca por enabledTools
   | 'end_call'
+  // tools compactadas (protocolo 1.11.0, @shared/compactTools): automática, nunca escolhível
+  | 'search_tool'
 
 /**
  * Tools cujo padrão global é PERGUNTAR (modo `lists`; ver approvalPolicy.ts) — os itens Comandos,
@@ -190,6 +194,14 @@ export interface ChatConfig {
   toolsInPrompt: boolean
   /** null = texto padrão gerado (defaults.ts); editável. */
   toolsPromptText: string | null
+  /**
+   * "Enviar tools compactadas" (protocolo 1.11.0, @shared/compactTools): cada tool fora de
+   * `toolsFull` vai só com o nome + a descrição curta do app (esquema vazio) e a `search_tool`
+   * devolve a definição completa. Ausente = true (padrão do app).
+   */
+  toolsCompact?: boolean
+  /** Com a compactação, estas vão completas (as de `enabledTools`, memória e skills). Ausente = []. */
+  toolsFull?: ToolName[]
   /** Anexa bloco <environment> (cwd, SO, shell) ao system prompt (padrão true). */
   envInPrompt: boolean
   /** Adiciona breakpoints cache_control (padrão: true se baseUrl contém openrouter.ai). */

@@ -21,7 +21,7 @@ import {
   availableTools,
   buildRequest,
   systemContent,
-  toolDefinitions,
+  toolsPlan,
   type BuiltRequest,
   type EnvInfo
 } from './request'
@@ -197,7 +197,9 @@ export function compactionMeta(
   )
   const sys = systemContent(chat, session, env, history)
   const toolsChars =
-    chat.config.nativeTools && tools.length ? JSON.stringify(toolDefinitions(tools)).length : 0
+    chat.config.nativeTools && tools.length
+      ? JSON.stringify(toolsPlan(chat, session, history).definitions).length
+      : 0
   const pendingChars = pending.reduce((n, m) => n + JSON.stringify(m.message.content).length, 0)
   const overhead = Math.ceil(
     (sys.length + toolsChars + (text.length - summary.length) + pendingChars) / 4
