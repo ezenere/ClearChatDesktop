@@ -1,6 +1,10 @@
 // Personas (presets de chat): quais campos de ChatConfig um preset guarda e como é aplicado.
-// Funções puras — usadas pelo main (sanitizar ao salvar) e pelo renderer (snapshot/aplicar).
-import type { ChatConfig, ChatParams, Preset } from './types'
+// Funções puras — usadas pelo main (sanitizar ao salvar; valor efetivo da persona na herança ao
+// vivo, @shared/chatInherit) e pelo renderer (snapshot/aplicar).
+import type { ChatConfig, ChatParams, Preset, Provider } from './types'
+import { DEFAULT_CHAT_CONFIG, supportsCacheControl } from './defaults'
+import { defaultModelRef, resolvePresetModel } from './models'
+import { providerKind, type ProviderKind } from './providerKinds'
 import { migrateConfigTools } from './toolRename'
 import { migrateLegacyApprovals, normalizeChatModes } from './approvalPolicy'
 import { normalizeMemoryConfig } from './memory'
@@ -124,6 +128,84 @@ export function applyPreset(base: ChatConfig, preset: PresetConfig | null | unde
     ...p,
     params: { ...cleanParams(base.params), ...(p.params ?? {}) }
   }
+}
+
+/**
+ * Padrões de "Novos chats" (settings sincronizadas `defaultModel` = `defaultProviderId` +
+ * `defaultModel`, e `defaultSystemPrompt`): a base de um chat novo e o valor que a persona herda
+ * nos campos que ela não define (cadeia Novos chats → persona → chat, protocolo §4.3.6).
+ */
+export interface NewChatDefaults {
+  defaultProviderId?: string | null
+  defaultModel?: string | null
+  defaultSystemPrompt?: string | null
+}
+
+/** Provedor como a base/persona precisa: id (o par do modelo) e tipo (o padrão do cache). */
+export type PresetProvider = Pick<Provider, 'id' | 'baseUrl'> & { kind?: ProviderKind | null }
+
+/**
+ * Config que um chat novo teria sem persona. Modelo = o par padrão (provedor + modelo) de "Novos
+ * chats"; sem ele (ou com o provedor apagado), nenhum — o Novo chat pede para escolher. Sem
+ * `defaultSystemPrompt` → o texto padrão do app. `providers` = os provedores de chat daqui.
+ */
+export function newChatBase(
+  defaults: NewChatDefaults,
+  providers: readonly PresetProvider[],
+  cwd = ''
+): ChatConfig {
+  const ref = defaultModelRef(
+    defaults,
+    providers.map((p) => p.id)
+  )
+  const provider = providers.find((p) => p.id === ref.providerId)
+  return DEFAULT_CHAT_CONFIG(cwd, {
+    providerId: ref.providerId,
+    model: ref.model,
+    systemPrompt: defaults.defaultSystemPrompt ?? undefined,
+    baseUrl: provider?.baseUrl,
+    kind: provider ? providerKind({ baseUrl: provider.baseUrl, kind: provider.kind }) : undefined
+  })
+}
+
+/**
+ * Config completa de uma persona: persona sobre a base. Provedor + modelo andam juntos
+ * (`resolvePresetModel`): sem modelo ou com o provedor apagado → o par padrão. Sem
+ * `cacheEnabled` na persona → segue o provedor (OpenRouter e Anthropic ligam).
+ */
+export function resolvePreset(
+  base: ChatConfig,
+  preset: Pick<Preset, 'config'> | null | undefined,
+  providers: readonly PresetProvider[]
+): ChatConfig {
+  const cfg = applyPreset(base, preset?.config)
+  const { ref } = resolvePresetModel(
+    { providerId: base.providerId, model: base.model },
+    preset?.config,
+    providers.map((p) => p.id)
+  )
+  cfg.providerId = ref.providerId
+  cfg.model = ref.model
+  if (preset?.config.cacheEnabled === undefined) {
+    const prov = providers.find((p) => p.id === cfg.providerId)
+    if (prov)
+      cfg.cacheEnabled = supportsCacheControl(
+        providerKind({ baseUrl: prov.baseUrl, kind: prov.kind })
+      )
+  }
+  return cfg
+}
+
+/** A persona define um modelo cujo provedor foi apagado (→ usa o par padrão; a UI avisa). */
+export function presetProviderMissing(
+  preset: Pick<Preset, 'config'> | null | undefined,
+  providers: readonly Pick<Provider, 'id'>[]
+): boolean {
+  return resolvePresetModel(
+    { providerId: '', model: '' },
+    preset?.config,
+    providers.map((p) => p.id)
+  ).missingProvider
 }
 
 /** Mescla um patch (com semântica de chat: params nulos = remover) num rascunho de persona. */

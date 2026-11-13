@@ -253,8 +253,20 @@ export interface ChatConfig {
    * personas); sincroniza com a config do chat. Ver contextCapture.ts.
    */
   capturedContext?: CapturedContextState
-  /** Persona (preset) de onde o chat veio — só informativo (ver Preset). */
+  /**
+   * Persona (preset) de origem: o chat a HERDA AO VIVO (protocolo 1.10.0 — @shared/chatInherit):
+   * cada unidade fora de `overrides` segue o valor efetivo dela (e, onde ela não define, os padrões
+   * de "Novos chats"). Ausente = sem persona (valores próprios).
+   */
   presetId?: string
+  /**
+   * Unidades próprias do chat (`model`, `params.<nome>`, `enabledTools.<tool>`,
+   * `approvalModes.<item>`, `appSignature`, `smartApprove`/`memory`/`skills` e as demais chaves de
+   * PresetConfig uma a uma); as outras herdam a persona. Ausente = chat anterior à 1.10.0 (ainda não
+   * migrado) ou sem persona. `voice`, `cwd`, `presetId` e `capturedContext` ficam fora (sempre do
+   * chat). Ver SYNC_PROTOCOL.md §4.3.6.
+   */
+  overrides?: Record<string, true>
 }
 
 /** Rótulos que o juiz do Smart-Approve deve responder na 1ª linha. */

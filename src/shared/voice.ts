@@ -1521,9 +1521,11 @@ export const DEFAULT_TURN_TIMING: TurnTiming = resolveTurnTiming(DEFAULT_VOICE_C
 
 /**
  * Camadas chat → persona da chamada de voz: cada campo `null`/ausente do chat herda o da persona
- * de origem (`ChatConfig.presetId`, lida AO VIVO). A persona também entra por snapshot na criação
- * do chat (`applyPreset`), então os dois coincidem até alguém mudar um dos lados; um campo que o
- * chat devolveu a "★ padrão" (null) segue a persona atual. Persona ausente → o próprio chat.
+ * de origem (`ChatConfig.presetId`, lida AO VIVO). A `voice` fica fora de `ChatConfig.overrides`
+ * (herança ao vivo do resto da config, protocolo 1.10.0 — @shared/chatInherit): chat novo nasce sem
+ * voz própria (tudo herda); a migração dos chats antigos põe null nos campos iguais aos da persona e
+ * o congelamento (persona apagada/"Nenhuma") preenche os null com os dela. Um campo que o chat
+ * devolveu a "★ padrão" (null) segue a persona atual. Persona ausente → o próprio chat.
  */
 export function layerVoiceCallConfig(
   chat: VoiceCallConfig | null | undefined,
@@ -1559,8 +1561,9 @@ export function layerVoiceCallConfig(
 export type VoiceCallSource = 'chat' | 'persona' | 'global'
 
 /**
- * Chamada liberada? Precedência chat > persona > global. Com o snapshot da persona o chat costuma
- * ter o mesmo valor dela — valor igual ao da persona conta como "da persona" (o motivo exibido).
+ * Chamada liberada? Precedência chat > persona > global. Chats antigos (cópia da persona feita na
+ * criação, antes da herança ao vivo) podem ter o mesmo valor dela — valor igual ao da persona conta
+ * como "da persona" (o motivo exibido).
  */
 export function resolveVoiceCallEnabled(
   chat: VoiceCallConfig | null | undefined,
@@ -1666,11 +1669,11 @@ export interface VoicePromptPart {
 }
 
 /**
- * O que a chamada põe no prompt, na ordem (transparência — a prévia da aba Voz e de Configurações
- * → Áudio usa o MESMO cálculo que a request): `replacesSystem` = o system prompt do chat sai
- * (modo substituto com prompt do modo voz); `parts` = os textos acrescentados (vazios saem). O
- * ÚNICO texto que a chamada muda é o "Prompt do modo voz" da persona/chat (+ a instrução das tags de
- * voz, só com o opt-in e visível/editável) — o app não põe prompt próprio (2026-11-12).
+ * O que a chamada põe no prompt, na ordem — o cálculo que a request usa (`applyVoiceCallChat`):
+ * `replacesSystem` = o system prompt do chat sai (modo substituto com prompt do modo voz); `parts` =
+ * os textos acrescentados (vazios saem). O ÚNICO texto que a chamada muda é o "Prompt do modo voz"
+ * da persona/chat (+ a instrução das tags de voz, só com o opt-in) — ambos visíveis e editáveis nos
+ * próprios campos da aba Voz; o app não põe prompt próprio (2026-11-12).
  */
 export function voicePromptLayout(
   call: Pick<ResolvedVoiceCall, 'voicePrompt' | 'promptMode'> &
