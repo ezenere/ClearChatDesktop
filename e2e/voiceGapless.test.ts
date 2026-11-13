@@ -30,6 +30,9 @@ import { TtsStreamRelay } from '../src/main/voice/ttsStreamRelay.ts'
 import { VoiceCallManager, type VoiceCallAmend } from '../src/main/voice/call.ts'
 import {
   PCM_FADE_IN_MS,
+  PCM_START_EARLY_FRAMES,
+  PCM_VOLUME_SMOOTH_S,
+  pcmNodeStartTime,
   PcmStreamSource,
   UtteranceQueue,
   WebAudioPcmPlayer,
@@ -471,10 +474,26 @@ class ManualAudioContext {
   state = 'running'
   readonly destination = {}
   readonly out = new Float32Array(RATE * 20)
-  readonly placed: { frame: number; len: number; first: number; stopped: boolean }[] = []
+  readonly placed: {
+    frame: number
+    len: number
+    first: number
+    stopped: boolean
+    /** O `when` de `start(when)` × taxa (quadros, sem arredondar). */
+    at: number
+  }[] = []
+  /** Mudanças de volume no relógio do áudio (`setTargetAtTime`). */
+  readonly gainTargets: { value: number; at: number; tau: number }[] = []
   #live: { end: number; node: { onended: null | (() => void) }; rec: { stopped: boolean } }[] = []
   createGain(): unknown {
-    return { gain: { value: 1 }, connect: () => undefined, disconnect: () => undefined }
+    const targets = this.gainTargets
+    const gain = {
+      value: 1,
+      setTargetAtTime(value: number, at: number, tau: number): void {
+        targets.push({ value, at, tau })
+      }
+    }
+    return { gain, connect: () => undefined, disconnect: () => undefined }
   }
   createBuffer(_ch: number, n: number): unknown {
     const data = new Float32Array(n)
@@ -497,7 +516,7 @@ class ManualAudioContext {
       start(at: number): void {
         const data = node.buffer!.getChannelData()
         const frame = Math.round(at * RATE)
-        const rec = { frame, len: data.length, first: data[0], stopped: false }
+        const rec = { frame, len: data.length, first: data[0], stopped: false, at: at * RATE }
         ctx.placed.push(rec)
         for (let i = 0; i < data.length; i++) ctx.out[frame + i] += data[i]
         ctx.#live.push({ end: (frame + data.length) / RATE, node, rec })
@@ -627,4 +646,61 @@ test('player: o pedaço que chega depois do fim agendado (underrun) recomeça à
   const late = ctx.placed[1]
   assert.equal(late.frame, Math.ceil((0.5 + 0.03) * RATE))
   assert.ok(Math.abs(late.first) < Math.abs(pcm16ToFloat(a.subarray(4800, 4802))[0]))
+})
+
+test('player: cada nó começa um milésimo de quadro ANTES do quadro exato (o Chromium erra o fim do nó que começa em cima do quadro)', async () => {
+  const ctx = new ManualAudioContext()
+  const q = pcmQueue(ctx, [])
+  const a = rampPcm(msToSamples(300))
+  // pedaços de tamanhos variados, como chegam da rede
+  q.enqueue({
+    id: 'u1',
+    audio: a.subarray(0, 1001 * 2),
+    mime: MIME,
+    kind: 'sentence',
+    streaming: true
+  })
+  await sleep(1)
+  for (const [from, to] of [
+    [1001, 1502],
+    [1502, 4000],
+    [4000, 7200]
+  ])
+    q.pushChunk({ id: 'u1', pcm: a.subarray(from * 2, to * 2), done: false })
+  q.pushChunk({ id: 'u1', pcm: new Uint8Array(0), done: true })
+  await sleep(1)
+  assert.equal(ctx.placed.length, 4)
+  for (const p of ctx.placed) {
+    assert.ok(p.at < p.frame, `início ${p.at} antes do quadro ${p.frame}`)
+    assert.ok(
+      p.frame - p.at <= PCM_START_EARLY_FRAMES * 1.01,
+      `no máximo ${PCM_START_EARLY_FRAMES} quadro antes`
+    )
+  }
+  // e continuam emendados no quadro exato (o arredondamento do motor cai no quadro certo)
+  for (let i = 1; i < ctx.placed.length; i++)
+    assert.equal(ctx.placed[i].frame, ctx.placed[i - 1].frame + ctx.placed[i - 1].len)
+  assert.ok(
+    Math.abs(pcmNodeStartTime(48_000, 48_000) - (1 - PCM_START_EARLY_FRAMES / 48_000)) < 1e-12
+  )
+  assert.equal(pcmNodeStartTime(0, 48_000), 0, 'nunca negativo')
+})
+
+test('player: o volume (ducking/fade) muda no relógio do áudio com uma curva curta — sem degraus no ganho', async () => {
+  const ctx = new ManualAudioContext()
+  const q = pcmQueue(ctx, [])
+  q.enqueue({ id: 'u1', audio: rampPcm(msToSamples(500)), mime: MIME, kind: 'sentence' })
+  await sleep(1)
+  await ctx.advance(0.1)
+  q.setVolume(0.5)
+  q.setDuck(0.3)
+  const t = ctx.gainTargets
+  assert.ok(t.length >= 2, 'mudanças pelo setTargetAtTime')
+  assert.deepEqual(
+    t.slice(-2).map((x) => [x.value, x.at, x.tau]),
+    [
+      [0.5, 0.1, PCM_VOLUME_SMOOTH_S],
+      [0.15, 0.1, PCM_VOLUME_SMOOTH_S]
+    ]
+  )
 })

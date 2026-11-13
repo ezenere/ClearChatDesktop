@@ -34,6 +34,7 @@
     "test:e2e:context-menu": "electron-vite build && node e2e/context-menu.spec.ts",
     "test:e2e:chat-bars": "node e2e/chat-bars-ui.spec.ts",
     "test:e2e:voice-ui": "node e2e/voice-ui.spec.ts",
+    "test:e2e:playback": "node --import ./e2e/ts-hooks.mjs e2e/voice-playback.spec.ts",
     "test:e2e:audio-ux": "node e2e/audio-settings-ux.spec.ts",
     "test:e2e:gpu-real": "electron-vite build && node e2e/gpu-real.spec.ts",
     "test:e2e:gpu-ui": "node e2e/gpu-mode-ui.spec.ts",

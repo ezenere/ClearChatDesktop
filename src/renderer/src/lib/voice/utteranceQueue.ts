@@ -157,6 +157,26 @@ class DomAudioPlayer implements UtterancePlayer {
 const PCM_LEAD_S = 0.03
 /** Rampa de entrada (ms) no começo da utterance e depois de um buraco (underrun) — sem estalo. */
 export const PCM_FADE_IN_MS = 5
+/**
+ * Quanto (em quadros) cada pedaço começa ANTES do quadro exato dele: o Chromium (Electron 44 /
+ * Chrome 152, medido num OfflineAudioContext em 2026-11-13 — `e2e/voice-playback.spec.ts`) erra o
+ * fim de um `AudioBufferSourceNode` cujo início cai EXATAMENTE num quadro — em parte dos pedaços o resto
+ * do quantum de 128 quadros sai com o áudio de 128 quadros antes (lixo somado ao pedaço seguinte:
+ * o "estalinho" contínuo na fala da chamada, a cada pedaço da rede). Com o início um milésimo de
+ * quadro antes, a saída é idêntica ao PCM amostra a amostra (a interpolação de 0,001 quadro é
+ * inaudível — erro < 1e-5) e o fim sai certo. Ver `pcmNodeStartTime`.
+ */
+export const PCM_START_EARLY_FRAMES = 1e-3
+/**
+ * Constante de tempo (s) da mudança de volume no player PCM (ducking/fade de saída): a rampa em
+ * passos de 10 ms vira uma curva contínua no relógio do áudio — sem degraus ("zíper") no ganho.
+ */
+export const PCM_VOLUME_SMOOTH_S = 0.004
+
+/** Instante (s) do `start()` do nó que deve começar no quadro `frame` (ver `PCM_START_EARLY_FRAMES`). */
+export function pcmNodeStartTime(frame: number, sampleRate: number): number {
+  return Math.max(0, frame - PCM_START_EARLY_FRAMES) / sampleRate
+}
 
 // ---------------- partes puras do player PCM (testadas em e2e/voiceCallFix.test.ts) ----------------
 
@@ -334,7 +354,14 @@ export class WebAudioPcmPlayer implements UtterancePlayer {
 
   set volume(v: number) {
     this.#volume = v
-    if (this.#gain) this.#gain.gain.value = v
+    const gain = this.#gain
+    const ctx = this.#ctx
+    if (!gain) return
+    // no relógio do áudio, com uma curva curta: o ducking/fade de saída chegam em passos de 10 ms
+    // (setInterval) — cada passo seco no `value` era um degrau audível
+    if (ctx && typeof gain.gain.setTargetAtTime === 'function')
+      gain.gain.setTargetAtTime(v, ctx.currentTime, PCM_VOLUME_SMOOTH_S)
+    else gain.gain.value = v
   }
 
   get positionMs(): number {
@@ -396,7 +423,7 @@ export class WebAudioPcmPlayer implements UtterancePlayer {
     const node = ctx.createBufferSource()
     node.buffer = buffer
     node.connect(gain)
-    node.start(startFrame / ctx.sampleRate)
+    node.start(pcmNodeStartTime(startFrame, ctx.sampleRate))
     this.#nodes.add(node)
     node.onended = () => {
       this.#nodes.delete(node)
