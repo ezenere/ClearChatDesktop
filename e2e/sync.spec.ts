@@ -1326,6 +1326,188 @@ async function main(): Promise<void> {
     await B.page.keyboard.press('Escape')
   })
 
+  // ---------------- herança ao vivo da persona (protocolo 1.10.0, §4.3.6) ----------------
+
+  let inhPreset = ''
+  let inhChat: any = null
+  const chatRecs = (id: string): any[] => srv.records(userId).filter((r) => r.id === id)
+
+  await step(
+    'herança 1.10.0: persona editada em A muda o chat herdado em B sem regravar o chat',
+    async () => {
+      const cfg = {
+        providerId,
+        model: 'fake/agent',
+        systemPrompt: 'Herança v1',
+        autoCompact: true,
+        enabledTools: []
+      }
+      inhPreset = (
+        await api(A, 'presets.create', { name: 'Herdada', icon: 'sparkles', config: cfg })
+      ).id
+      inhChat = await api(A, 'chats.create', {
+        title: 'Chat que herda',
+        config: { presetId: inhPreset, overrides: {}, cwd: BASE },
+        storage: 'online'
+      })
+      assert(JSON.stringify(inhChat.config.overrides) === '{}', 'nasce herdando tudo')
+      await settled(A)
+      await waitFor(
+        async () => (await api(B, 'chats.get', inhChat.id))?.config.systemPrompt === 'Herança v1',
+        15_000,
+        'B recebe o chat'
+      )
+      const rev0 = chatRecs(inhChat.id).find((r) => r.type === 'chat')?.rev
+      await api(A, 'presets.update', inhPreset, {
+        config: { ...cfg, systemPrompt: 'Herança v2', contextWindow: 32000 }
+      })
+      await settled(A)
+      const c = await waitFor(
+        async () => {
+          const x = await api(B, 'chats.get', inhChat.id)
+          return x?.config.systemPrompt === 'Herança v2' && x
+        },
+        15_000,
+        'B segue a persona nova'
+      )
+      assert(c.config.contextWindow === 32000, 'campo que a persona passou a definir')
+      assert(
+        chatRecs(inhChat.id).find((r) => r.type === 'chat')?.rev === rev0,
+        'o registro do chat não foi regravado'
+      )
+      return `rev do chat ${rev0} (inalterada)`
+    }
+  )
+
+  await step(
+    'herança: campo sobrescrito em B vira próprio e sobrevive à próxima edição da persona em A',
+    async () => {
+      await api(B, 'chats.update', inhChat.id, { config: { systemPrompt: 'Meu prompt em B' } })
+      await settled(B)
+      await waitFor(
+        async () => {
+          const x = await api(A, 'chats.get', inhChat.id)
+          return x?.config.overrides?.systemPrompt && x.config.systemPrompt === 'Meu prompt em B'
+        },
+        15_000,
+        'A recebe o próprio'
+      )
+      await api(A, 'presets.update', inhPreset, {
+        config: {
+          providerId,
+          model: 'fake/agent',
+          systemPrompt: 'Herança v3',
+          autoCompact: false,
+          enabledTools: []
+        }
+      })
+      await settled(A)
+      await waitFor(
+        async () => {
+          const x = await api(B, 'chats.get', inhChat.id)
+          return x?.config.autoCompact === false && x.config.systemPrompt === 'Meu prompt em B'
+        },
+        15_000,
+        'B: herdado mudou, próprio ficou'
+      )
+      // B vê a marca "neste chat" no prompt e nada no resto
+      await B.page.reload()
+      await B.page.waitForFunction(() => !!(window as any).api, null, { timeout: 30_000 })
+      await openChatUi(B, 'Chat que herda')
+      if (!(await B.page.getByTestId('right-panel').isVisible()))
+        await B.page.getByRole('banner').getByRole('button', { name: 'Abrir painel' }).click()
+      const panel = B.page.getByTestId('right-panel')
+      await panel.getByRole('tab', { name: 'Modelo' }).click()
+      await panel.getByTestId('inherit-banner').waitFor({ timeout: 10_000 })
+      const sp = panel.getByTestId('collapse-system-prompt')
+      if ((await sp.getAttribute('aria-expanded')) !== 'true') await sp.click()
+      await panel
+        .locator('[data-testid="inherit-revert"][data-units="systemPrompt"]')
+        .waitFor({ timeout: 10_000 })
+      await shot(B, '50-heranca-proprio-em-b')
+      await B.page.getByRole('banner').getByRole('button', { name: 'Fechar painel' }).click()
+    }
+  )
+
+  await step(
+    'herança: persona apagada em A congela o chat (enviado antes do tombstone) também em B',
+    async () => {
+      await api(A, 'presets.delete', inhPreset)
+      await settled(A)
+      const c = await waitFor(
+        async () => {
+          const x = await api(B, 'chats.get', inhChat.id)
+          return x && !x.config.presetId && x
+        },
+        15_000,
+        'B recebe o chat congelado'
+      )
+      assert(c.config.systemPrompt === 'Meu prompt em B', 'próprio mantido')
+      assert(c.config.autoCompact === false && c.config.model === 'fake/agent', 'herdados gravados')
+      assert(c.config.overrides?.systemPrompt === true, 'overrides mantido')
+      const chatSeq = chatRecs(inhChat.id).find((r) => r.type === 'chat')!.seq
+      const tomb = chatRecs(inhPreset).find((r) => r.type === 'preset')!
+      assert(tomb.deleted && chatSeq < tomb.seq, 'chat antes do tombstone')
+      assert(!(await api<any[]>(B, 'presets.list')).some((p) => p.id === inhPreset), 'B apagou')
+    }
+  )
+
+  await step(
+    'herança: chat sem overrides (gravado por um app < 1.10.0) migra depois do pull completo',
+    async () => {
+      const cfg = { providerId, model: 'fake/agent', systemPrompt: 'Legado', autoCompact: true }
+      const pid = (
+        await api(A, 'presets.create', { name: 'Legado', icon: 'sparkles', config: cfg })
+      ).id
+      const c = await api(A, 'chats.create', {
+        title: 'Chat legado',
+        config: { presetId: pid, overrides: {}, cwd: BASE },
+        storage: 'online'
+      })
+      await settled(A)
+      // simula o app antigo: a cópia sem `overrides`, com um campo mudado no próprio chat
+      const { default: Database } = await import('better-sqlite3')
+      const db = new Database(join(A.dir, 'clearchat.db'))
+      try {
+        const row = db.prepare('SELECT config_json FROM chats WHERE id = ?').get(c.id) as any
+        const legacy = JSON.parse(row.config_json)
+        delete legacy.overrides
+        legacy.autoCompact = false
+        db.prepare('UPDATE chats SET config_json = ? WHERE id = ?').run(
+          JSON.stringify(legacy),
+          c.id
+        )
+      } finally {
+        db.close()
+      }
+      // o próximo ciclo de A: pull completo → migra → envia; B recebe já migrado
+      await api(A, 'sync.syncNow')
+      const got = await waitFor(
+        async () => {
+          const x = await api(B, 'chats.get', c.id)
+          return x?.config.overrides && x
+        },
+        20_000,
+        'B recebe o chat migrado'
+      )
+      assert(
+        JSON.stringify(got.config.overrides) === '{"autoCompact":true}',
+        `overrides ${JSON.stringify(got.config.overrides)}`
+      )
+      // migrado: a persona muda o prompt e o chat acompanha; o próprio fica
+      await api(A, 'presets.update', pid, { config: { ...cfg, systemPrompt: 'Legado v2' } })
+      await settled(A)
+      await waitFor(
+        async () => {
+          const x = await api(B, 'chats.get', c.id)
+          return x?.config.systemPrompt === 'Legado v2' && x.config.autoCompact === false
+        },
+        15_000,
+        'B segue a persona, mantém o próprio'
+      )
+    }
+  )
+
   await step(
     'captcha: instância com Turnstile → janela do captcha → token → código enviado',
     async () => {
