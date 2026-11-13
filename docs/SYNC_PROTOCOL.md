@@ -1,6 +1,6 @@
 # ClearChat Sync — Protocolo v1 (contrato)
 
-> **Versão do protocolo: 1.10.0** · status: contrato inicial (ainda sem implementação) · data: 2026-11-12
+> **Versão do protocolo: 1.11.0** · status: contrato inicial (ainda sem implementação) · data: 2026-11-13
 >
 > ⚠️ **AVISO — CONTRATO COMPARTILHADO ENTRE OS REPOSITÓRIOS**
 > Fonte única: `docs/SYNC_PROTOCOL.md` e `docs/test-vectors/` do repositório pai `ezenere/ClearChat`.
@@ -375,7 +375,7 @@ Todo plaintext é um objeto JSON com `sv` (versão do esquema do tipo, hoje `1`)
 `environment`/`capture`/`capturePrompts`/`thinkingTokens`/`cache` (os dois últimos desde 1.4.1), `ContextCaptureConfig.thinkingTokens`/`cache` (desde 1.4.1),
 `MessageMeta.autoTitle`/`presentFiles`/`reasoningMs`; desde 1.5.0, tipos do app com o áudio (depois do 0.9.0):
 `ChatConfig.voice` (§4.3.6), `MessageMeta.voice`/`voiceCall` e `MessageMeta.kind: 'voice-call'` (§4.3.8),
-`VoiceCallConfig.endCall`/`promptMode`; desde 1.10.0, `ChatConfig.overrides` — herança ao vivo da persona, §4.3.6). Leitores DEVEM ignorar campos
+`VoiceCallConfig.endCall`/`promptMode`; desde 1.10.0, `ChatConfig.overrides` — herança ao vivo da persona, §4.3.6; desde 1.11.0, `ChatConfig.toolsCompact`/`toolsFull` e as tools `datetime`/`search_tool`, §4.3.6). Leitores DEVEM ignorar campos
 desconhecidos e DEVEM preservá-los ao regravar (merge por campo); escritores NÃO DEVEM enviar `undefined`.
 
 #### 4.3.1 `provider`
@@ -610,6 +610,7 @@ ChatConfig.overrides?: { [unidade: string]: true }   // unidades próprias do ch
   | `model` | `providerId` + `model` (o par anda junto) |
   | `params.<nome>` | `params[<nome>]` — cada parâmetro é uma unidade (`params.temperature`, `params.extraBody`…) |
   | `enabledTools.<tool>` | se a tool `<tool>` está em `enabledTools` (cada tool é uma unidade; renomes de tool do app valem também para o nome da unidade) |
+  | `toolsFull.<tool>` | se a tool `<tool>` está em `toolsFull` (desde 1.11.0 — tools compactadas, abaixo) |
   | `approvalModes.<item>` | `approvalModes[<item>]` (cada item de aprovação) |
   | `appSignature` | `appSignature` + `appSignatureCustom` |
   | `smartApprove`, `memory`, `skills` | a seção inteira |
@@ -710,6 +711,50 @@ Vale também para `voice.tools.enabledTools`. Regras:
   causa do aparelho): uma vez por dispositivo, depois de um pull completo, o cliente DEVERIA tirar de
   `overrides` de cada chat as unidades `enabledTools.<t>` de tools de um tipo de aparelho em que o chat
   nunca rodou (mesmo critério da migração) e enviar os chats alterados.
+
+**Tools compactadas e `datetime` (desde 1.11.0).**
+```ts
+ChatConfig.toolsCompact?: boolean      // "Enviar as tools compactadas"; ausente = true (padrão do app)
+ChatConfig.toolsFull?: ToolName[]      // com a compactação, estas vão completas; ausente = []
+```
+- **Compactação (padrão ligada).** Para economizar contexto, cada tool enviada ao modelo que **não** está
+  em `toolsFull` vai **compacta**: só o nome e uma **descrição curta** do app (1 a 20 palavras, sem
+  detalhes de uso), com um esquema de parâmetros vazio que aceita qualquer objeto. Havendo pelo menos uma
+  tool compacta, o host acrescenta automaticamente a tool **`search_tool`** (sempre completa:
+  `{ names: string[] }` → a definição completa — descrição e esquema de parâmetros, exatamente como
+  iriam sem compactação — de cada tool pedida entre as enviadas; nome desconhecido → erro com a lista
+  das disponíveis) e um **prompt fixo** curto no fim do system prompt (separado por linha em branco)
+  dizendo que as tools compactas precisam ser lidas com `search_tool` antes do uso. Sem nenhuma tool
+  compacta (compactação desligada, ou todas em `toolsFull`), não há `search_tool` nem o prompt.
+  `search_tool` **não** é uma tool escolhível: escritores NÃO DEVEM pô-la em `enabledTools`/`toolsFull`
+  (leitores a ignoram lá).
+- **Transparência:** o prompt fixo, a definição da `search_tool` e a descrição curta de cada tool são
+  textos do app, não editáveis, e DEVEM estar visíveis na UI onde a compactação é configurada (o prompt
+  e a `search_tool` ao lado da opção; a definição compacta ou completa de cada tool no detalhe "enviado à
+  API" dela, conforme o modo).
+- **Uso:** uma tool compacta chamada com argumentos válidos roda normalmente (ler antes é orientação, não
+  trava). Argumentos inválidos → o resultado de erro DEVE trazer a definição completa da tool, para o
+  modelo se corrigir.
+- **Alcance:** vale para todas as tools da request — as de `enabledTools` e as que entram por outras
+  configurações (memória, skills) —, nos turnos normais, nos subagentes e na chamada de voz
+  (`voice.tools.enabledTools`). Exceção: `end_call` vai sempre completa (o comportamento da despedida
+  está na descrição dela). No modo de tools no prompt (`toolsInPrompt`), o texto **gerado** pelo app
+  segue a mesma regra (compactas com a descrição curta, `search_tool` completa); um `toolsPromptText`
+  escrito pelo usuário vai como está.
+- **Herança (§4.3.6):** `toolsCompact` é uma unidade; `toolsFull.<tool>` é uma unidade por tool (como
+  `enabledTools.<tool>`; a chave `toolsFull` é compartilhada — LWW pela chave inteira, como as outras).
+  Persona sem esses campos → padrão de "Novos chats" (`true` e `[]`).
+- **`datetime`** (tool nova, roda em qualquer aparelho, sem aprovação, no padrão de tools do app):
+  `{ format?: string }` → a data e hora atuais **do aparelho que roda o turno**, no fuso dele. Sem
+  `format`: data/hora ISO 8601 com o deslocamento, o dia da semana por extenso e o fuso (IANA e UTC±hh:mm).
+  Com `format`: o texto formatado com os códigos de `strftime` (`%Y %m %d %H %M %S %A %a %B %b %j %p %I
+  %y %e %u %w %Z %z %F %T %D %s %%`, nomes de dia e mês no idioma do app); código desconhecido → erro
+  com a lista dos aceitos. O system prompt continua sem data/hora (o prefixo fica estável para o cache):
+  `datetime` é o jeito de o modelo saber o momento.
+- **Histórico:** chamadas de `search_tool` e `datetime` são mensagens de tool comuns (§4.3.8). Apps
+  < 1.11.0 as mostram como tools desconhecidas, ignoram `toolsCompact`/`toolsFull` (preservados no
+  merge por chave do chat; editar uma **persona** num app < 1.11.0 os apaga dela) e não conhecem
+  `datetime` em `enabledTools` (DEVERIAM preservá-la, §4.3.6 "Tools de um tipo de aparelho").
 
 #### 4.3.7 `session`
 
@@ -2415,6 +2460,7 @@ gastem o limite do dono do e-mail ou o bloqueiem.
 | 1.8.0 (emenda) | 2026-11-12 | Remoção sem mudança de fio: `interjections` (em `voiceCallDefaults` e em `config.voice` de chat/persona) vira legado — escritores não enviam, leitores ignoram; a chamada de voz não tem mais interjeições nem modo sombra (§4.3.6).. Também aditivos (sem mudança de fio): tags de voz `audioTags`/`audioTagsPrompt` (chat/persona e `voiceCallDefaults`), campos de "falar por cima" em `voiceCallDefaults.turn`, novos padrões das frases de demora (8000/15000), `audioInput.activationDb` como parte do dispositivo `MessageMeta.voice.unheard` e as frases de ferramenta (`voiceCallDefaults.toolPhrases`, `config.voice.toolPhrases`). |
 | 1.9.0 | 2026-11-12 | Voz por persona: `config.voice.tts`/`config.voice.stt` (chat/persona; motor/provedor, modelo, voz, parâmetros e idioma; herança chat → persona → settings do dispositivo; indisponível no dispositivo → as globais dele; ditado usa a transcrição da persona). As settings `audioInput`, `sttSettings`, `ttsSettings` e `voiceCallDefaults` viram **locais do dispositivo** (escritores não enviam, leitores ignoram; os registros antigos ficam no servidor). Sem mudança no servidor além da versão. |
 | 1.10.0 | 2026-11-12 | Adições compatíveis — **chats herdam a persona ao vivo** (§4.3.6): `ChatConfig.overrides` (`{ [unidade]: true }`) marca o que é próprio do chat; o resto segue o valor efetivo da persona (o dela ou, se ela não define, o padrão de "Novos chats" — cadeia Novos chats → persona → chat, ao vivo); unidades (`model` = par provedor+modelo, `params.<nome>`, `enabledTools.<tool>`, `approvalModes.<item>`, `appSignature` com o custom, `smartApprove`/`memory`/`skills` inteiras, as demais chaves de `PresetConfig` uma a uma; `voice` continua com `null` = herda, `cwd`/`presetId`/`capturedContext` sempre próprios); `config` continua completa como cópia informativa (gravada ao criar, migrar, voltar a herdar, trocar de persona e congelar; não regravada a cada edição da persona); migração única dos chats antigos depois de um pull completo (iguais à persona → herdam; diferentes → próprios; na `voice`, iguais à persona → `null`); trocar de persona mantém `overrides`; persona apagada → os chats dela congelam antes (valores efetivos gravados, `presetId` removido, enviados antes do tombstone) (§4.3.3, §7.7); `overrides` mesclado por subchave e cópia informativa que não sobrescreve valor próprio no conflito (§7.5); `chat.update` com/sem `overrides` (§23.7); nota no merge do primeiro login (§12). Tools de um tipo de aparelho (só no computador / só no celular, com limpeza única dos chats marcados por builds de teste): mesma lista em todos os aparelhos, o host manda ao modelo só as que roda, nunca viram próprias por causa do aparelho, padrão do app inclui as do celular, preservadas por quem não as conhece, migração só as marca próprias se o chat rodou naquele tipo; o celular hospeda chats com ferramentas locais sem elas (antes recusava); aviso forte de troca de host só para chats com `hostCwd`; `present_file` em `usesLocalTools`; o merge do primeiro login grava `hostCwd` (§4.3.6, §8.9, §12). Apps < 1.10.0 leem a cópia e preservam `overrides`; edições deles em campos herdados não valem nos apps novos. Sem mudança no servidor além da versão. |
+| 1.11.0 | 2026-11-13 | Adições compatíveis — **tools compactadas** (§4.3.6): `ChatConfig.toolsCompact` (padrão ligado) e `toolsFull` (as que vão completas); tool compacta = nome + descrição curta do app (1–20 palavras) com esquema vazio; `search_tool` automática (só com alguma tool compacta, nunca escolhível) devolve a definição completa; prompt fixo curto no fim do system prompt; textos do app visíveis na UI; erro de argumentos devolve a definição completa; vale para memória/skills, subagentes, chamada de voz (menos `end_call`) e o texto gerado do modo tools no prompt; unidades de herança `toolsCompact` e `toolsFull.<tool>`. Tool **`datetime`** (`format` opcional, códigos `strftime`, fuso do aparelho que roda o turno; no padrão de tools; o system prompt continua sem data). Apps < 1.11.0 ignoram os campos novos e mostram as tools novas como desconhecidas. Sem mudança no servidor além da versão. |
 
 ---
 
