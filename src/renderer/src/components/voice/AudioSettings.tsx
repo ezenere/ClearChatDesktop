@@ -29,8 +29,7 @@ import {
   DEFAULT_TTS_SETTINGS,
   DEFAULT_TURN_SILENCE_MS,
   DEFAULT_VOICE_CALL_DEFAULTS,
-  resolveBargeIn,
-  voicePromptLayout
+  resolveBargeIn
 } from '@shared/voice'
 import type { AudioInputSettings } from '@shared/voice'
 import { api, errorMessage } from '../../lib/api'
@@ -54,7 +53,6 @@ import { ToolPhrasesSettings } from './ToolPhrasesSettings'
 import { LocalModelsScreen } from './LocalModelsScreen'
 import { MicActivationLevel } from './MicActivationLevel'
 import { AudioTagsField } from './AudioTagsField'
-import { VoicePromptPreview } from './VoiceCallConfigSection'
 import { DEFAULT_AUDIO_TAGS_PROMPT } from '@shared/audioTags'
 import type { ProviderOption } from '../../lib/voice/voiceSettingsHelpers'
 import { useInputDeviceList } from '../../lib/voice/useInputDevices'
@@ -731,18 +729,6 @@ export function AudioSettings(): React.JSX.Element | null {
           inheritedPrompt={DEFAULT_AUDIO_TAGS_PROMPT}
           onChange={(v) => saveCallDefaults({ audioTags: v ?? false })}
           onPromptChange={(audioTagsPrompt) => saveCallDefaults({ audioTagsPrompt })}
-        />
-        {/* transparência: o que uma chamada sem prompt próprio na persona/chat muda no prompt */}
-        <VoicePromptPreview
-          layout={voicePromptLayout({
-            voicePrompt: null,
-            promptMode: 'append',
-            audioTags: callDefaults.audioTags,
-            audioTagsPrompt: callDefaults.audioTagsPrompt ?? DEFAULT_AUDIO_TAGS_PROMPT,
-            audioTagsActive: true
-          })}
-          voiceFrom={null}
-          tagsFrom="padrão deste dispositivo"
         />
         <p className="text-[11.5px] text-subtle" data-testid="voice-call-no-hidden-prompt">
           O app não acrescenta prompt próprio na chamada: o único texto a mais é o “Prompt do modo

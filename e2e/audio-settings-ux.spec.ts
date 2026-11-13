@@ -926,26 +926,39 @@ app.on('window-all-closed', () => app.quit())
   )
 
   await step(
-    'sem prompt oculto: persona intocada → "Nada" na prévia; "Usar sugestão" põe o texto NO campo e a prévia mostra',
+    'sem prompt oculto: persona intocada → campo vazio; "Usar sugestão" põe o texto NO campo; sem prévia duplicada; "Prompt do modo voz" acima de "Tags de voz"',
     async () => {
       await openPersonaVoice('chat', 'Revisor de código')
-      const preview = dialog().getByTestId('voice-call-prompt-preview')
-      await preview.scrollIntoViewIfNeeded()
-      assert.equal(await preview.getAttribute('data-parts'), '', 'nada acrescentado')
-      assert.match(await preview.innerText(), /Nada: a chamada manda exatamente o system prompt/)
+      // os dois campos de texto já são o que vai à request — sem a prévia que os repetia
+      assert.equal(await count('voice-call-prompt-preview'), 0, 'sem a prévia do prompt')
       const field = dialog().getByTestId('voice-call-prompt')
+      await field.scrollIntoViewIfNeeded()
+      // ordem natural: "Prompt na chamada" → "Prompt do modo voz" → "Tags de voz"
+      const order = await page.evaluate(() => {
+        const ids = ['voice-call-prompt-mode', 'voice-call-prompt', 'voice-call-audio-tags']
+        const els = ids.map((id) => document.querySelector(`[role="dialog"] [data-testid="${id}"]`))
+        if (els.some((e) => !e)) return `faltando: ${ids.filter((_, i) => !els[i]).join(', ')}`
+        const follows = (a: Element, b: Element): boolean =>
+          !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING)
+        return follows(els[0]!, els[1]!) && follows(els[1]!, els[2]!) ? 'ok' : 'fora de ordem'
+      })
+      assert.equal(order, 'ok', 'Prompt na chamada → Prompt do modo voz → Tags de voz')
       assert.equal(await field.inputValue(), '', 'prompt do modo voz vazio por padrão')
       await dialog().getByTestId('voice-call-prompt-suggest').click()
       await waitFor(async () => (await field.inputValue()).length > 0, 3000, 'sugestão no campo')
       assert.match(await field.inputValue(), /conversa por voz/)
-      await waitFor(
-        async () => (await preview.getAttribute('data-parts')) === 'voice',
-        3000,
-        'prévia com o prompt do modo voz'
-      )
-      assert.match(await preview.innerText(), /Prompt do modo voz — desta persona/)
-      await shot('persona-voice-prompt-preview')
+      await shot('persona-voice-prompt-order')
       await page.keyboard.press('Escape')
+      await page.keyboard.press('Escape')
+      await dialog()
+        .waitFor({ state: 'detached' })
+        .catch(() => undefined)
+      // Configurações → Áudio → Chamada de voz: também sem a prévia (tags + nota de transparência)
+      await openAudio('chat')
+      const call = dialog().getByTestId('voice-call-settings')
+      await call.getByTestId('voice-call-audio-tags').waitFor()
+      await call.getByTestId('voice-call-no-hidden-prompt').waitFor()
+      assert.equal(await count('voice-call-prompt-preview'), 0, 'sem a prévia no global')
       await page.keyboard.press('Escape')
       await dialog()
         .waitFor({ state: 'detached' })
