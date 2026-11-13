@@ -75,6 +75,7 @@ const api: FullClearApi = {
     approve: (requestId, decision, items) => invoke(IPC.agent.approve, requestId, decision, items),
     pendingApprovals: () => invoke(IPC.agent.pendingApprovals),
     previewRequest: (sessionId) => invoke(IPC.agent.previewRequest, sessionId),
+    toolSearchMode: (input) => invoke(IPC.agent.toolSearchMode, input),
     runningSessions: () => invoke(IPC.agent.runningSessions),
     compact: (sessionId, opts) => invoke(IPC.agent.compact, sessionId, opts),
     stopSubagents: (chatId) => invoke(IPC.agent.stopSubagents, chatId),

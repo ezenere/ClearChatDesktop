@@ -43,7 +43,14 @@ import {
   sendsCompact
 } from '@shared/compactTools'
 import type { ChatConfig, ChatParams, ToolName } from '@shared/types'
+import {
+  TOOL_SEARCH_LOCAL_NOTICE,
+  isNativeMode,
+  toolSearchStatus,
+  type ToolSearchModeView
+} from '@shared/toolSearch'
 import { api } from '../../lib/api'
+import { useToolSearchMode } from '../../lib/useToolSearchMode'
 import { cn, formatTokens, modelMeta } from '../../lib/format'
 import { useStore } from '../../store'
 import {
@@ -700,7 +707,11 @@ export function ContextSettingsSection({
 // ---------------- Tools ----------------
 
 /** Memória e skills (ligadas nas seções delas): só o modo de envio (compacta/completa) e o <>. */
-function OtherToolsGroup({ cfg, patch }: CfgProps): React.JSX.Element {
+function OtherToolsGroup({
+  cfg,
+  patch,
+  view
+}: CfgProps & { view: ToolSearchModeView | null }): React.JSX.Element {
   return (
     <div data-testid="tools-other-compact" className="mt-2 border-t border-border/60 pt-2">
       <div className="flex items-baseline gap-2 px-0.5">
@@ -721,9 +732,9 @@ function OtherToolsGroup({ cfg, patch }: CfgProps): React.JSX.Element {
             <span className="min-w-0 flex-1 truncate text-[12.5px] text-fg/80">
               {TOOL_LABELS[t]}
             </span>
-            <ToolFullChip name={t} cfg={cfg} patch={patch} />
+            <ToolFullChip name={t} cfg={cfg} patch={patch} mode={view?.mode} />
             <span className="truncate font-mono text-[10.5px] text-faint">{t}</span>
-            <ToolDefInfo name={t} nativeTools={cfg.nativeTools} cfg={cfg} />
+            <ToolDefInfo name={t} nativeTools={cfg.nativeTools} cfg={cfg} view={view} />
           </div>
         ))}
       </div>
@@ -731,7 +742,63 @@ function OtherToolsGroup({ cfg, patch }: CfgProps): React.JSX.Element {
   )
 }
 
-export function ToolsListSection({ cfg, patch }: CfgProps): React.JSX.Element {
+/**
+ * Linha de status de "Enviar tools compactadas" (1.12.0): o modo efetivo deste chat + modelo
+ * (busca nativa da Anthropic / do OpenRouter / versão local), o motivo quando não é nativo e, na
+ * versão local, o aviso exigido pelo protocolo (§4.3.6).
+ */
+function ToolSearchModeLine({
+  view,
+  fallbackCount
+}: {
+  view: ToolSearchModeView | null
+  fallbackCount: number
+}): React.JSX.Element {
+  if (!view)
+    return (
+      <>
+        {fallbackCount
+          ? `${fallbackCount} das ligadas vão compactas`
+          : 'Todas as ligadas vão completas'}
+      </>
+    )
+  if (view.mode === 'off')
+    return (
+      <span data-testid="tool-search-mode" data-mode="off">
+        Todas as ligadas vão completas
+      </span>
+    )
+  const native = isNativeMode(view.mode)
+  return (
+    <span data-testid="tool-search-mode" data-mode={view.mode} className="block">
+      <b className="font-medium text-fg/85">{view.label}</b>
+      {': '}
+      {toolSearchStatus(view.mode, native ? view.deferred.length : view.compacted.length)}
+      {!native && view.reason && (
+        <span data-testid="tool-search-reason" className="block">
+          Motivo: {view.reason}.
+        </span>
+      )}
+      {!native && (
+        <span
+          data-testid="tool-search-local-notice"
+          className="mt-1 block rounded-md border border-warning/30 bg-warning/10 px-2 py-1 text-warning/90"
+        >
+          {TOOL_SEARCH_LOCAL_NOTICE}
+        </span>
+      )}
+    </span>
+  )
+}
+
+export function ToolsListSection({
+  cfg,
+  patch,
+  chatId
+}: CfgProps & { chatId?: string }): React.JSX.Element {
+  // busca nativa (1.12.0): o modo efetivo deste chat + modelo, calculado no main
+  const view = useToolSearchMode(cfg, chatId)
+  const native = isNativeMode(view?.mode)
   // liga/desliga sem perder nada: as do celular e as desconhecidas ficam na lista (§4.3.6)
   const toggleTool = (t: string, on: boolean): void =>
     patch({ enabledTools: withTool(cfg.enabledTools, t, on) })
@@ -757,24 +824,20 @@ export function ToolsListSection({ cfg, patch }: CfgProps): React.JSX.Element {
       ]}
       inheritClosed
       summary={{
-        text: `${count}/${TOOL_NAMES.length} ligadas${phoneOff ? ` · celular ${phoneOn}/${PHONE_TOOL_NAMES.length}` : ''} · ${compact ? `compactas${fullCount ? ` (${fullCount} completa${fullCount > 1 ? 's' : ''})` : ''}` : 'completas'}`,
+        text: `${count}/${TOOL_NAMES.length} ligadas${phoneOff ? ` · celular ${phoneOn}/${PHONE_TOOL_NAMES.length}` : ''} · ${compact ? `${native ? 'busca nativa' : 'compactas'}${fullCount ? ` (${fullCount} ${native ? 'carregada' : 'completa'}${fullCount > 1 ? 's' : ''})` : ''}` : 'completas'}`,
         changed: count < TOOL_NAMES.length || phoneOff || !compact || fullCount > 0
       }}
     >
       <div data-testid="tools-compact-row" className="mb-2.5">
         <ToggleRow
           label="Enviar tools compactadas"
-          help="Cada tool vai só com o nome e uma descrição curta; o modelo lê a definição completa com search_tool antes de usar. Marque “completa” nas que devem ir inteiras."
+          help="Economiza contexto. Onde o provedor tem busca nativa de ferramentas (Anthropic; OpenRouter pela Messages API), cada tool vai completa mas adiada e o modelo a encontra pela busca do provedor. Nos outros endpoints, a versão local do app: cada tool vai só com o nome e uma descrição curta e o modelo lê a definição completa com tool_search. Marque “completa”/“carregada” nas que devem ir inteiras desde o início."
           checked={compact}
           onChange={(toolsCompact) => patch({ toolsCompact })}
-          info={<CompactToolsInfo />}
+          info={<CompactToolsInfo view={view} />}
           inherit={['toolsCompact']}
           status={
-            !compact
-              ? undefined
-              : compactOn
-                ? `${compactOn} das ligadas vão compactas (+ search_tool e uma instrução curta no fim do system prompt)`
-                : 'Todas as ligadas vão completas'
+            !compact ? undefined : <ToolSearchModeLine view={view} fallbackCount={compactOn} />
           }
         />
       </div>
@@ -802,14 +865,14 @@ export function ToolsListSection({ cfg, patch }: CfgProps): React.JSX.Element {
                 {TOOL_LABELS[t]}
               </span>
               <InheritMark units={[`enabledTools.${t}`]} />
-              {compact && on && <ToolFullChip name={t} cfg={cfg} patch={patch} />}
+              {compact && on && <ToolFullChip name={t} cfg={cfg} patch={patch} mode={view?.mode} />}
               <span className="truncate font-mono text-[10.5px] text-faint">{t}</span>
-              <ToolDefInfo name={t} nativeTools={cfg.nativeTools} cfg={cfg} />
+              <ToolDefInfo name={t} nativeTools={cfg.nativeTools} cfg={cfg} view={view} />
             </div>
           )
         })}
       </div>
-      {compact && <OtherToolsGroup cfg={cfg} patch={patch} />}
+      {compact && <OtherToolsGroup cfg={cfg} patch={patch} view={view} />}
       <PhoneToolsGroup
         tools={cfg.enabledTools}
         onToggle={toggleTool}
@@ -823,7 +886,7 @@ export function ToolsPromptSection({ cfg, patch }: CfgProps): React.JSX.Element 
   const enabledDefs = TOOL_NAMES.filter((t) => cfg.enabledTools.includes(t)).map((t) =>
     currentToolDefinition(t)
   )
-  // o texto gerado segue a compactação (1.11.0): compactas com a descrição curta + search_tool
+  // o texto gerado segue a compactação (1.11.0): compactas com a descrição curta + tool_search
   const toolsText =
     cfg.toolsPromptText ??
     defaultToolsPrompt(planTools(enabledDefs, cfg).definitions, cfg.nativeTools)
@@ -1067,7 +1130,7 @@ export function ToolsEditor({
 }): React.JSX.Element {
   return (
     <>
-      <ToolsListSection {...props} />
+      <ToolsListSection {...props} chatId={chatId} />
       <ChatApprovalSection {...props} chatScope={chatScope} />
       <SkillsSection {...props} chatScope={chatScope} />
       <SmartApproveSection {...props} chatId={chatId} />

@@ -14,6 +14,7 @@ import {
   Radio,
   RotateCcw,
   MessagesSquare,
+  SearchCode,
   Trash2,
   User,
   Users,
@@ -21,6 +22,12 @@ import {
   Zap
 } from 'lucide-react'
 import { splitInterChatText } from '@shared/interChat'
+import {
+  nativeSearchChip,
+  nativeSearches,
+  toolSearchMetaLabel,
+  type NativeTurn
+} from '@shared/toolSearch'
 import { isSiblingKind, splitSiblingText } from '@shared/siblings'
 import { isContextLengthError, isDisplayOnly, latestBoundaryIndex } from '@shared/context'
 import { isBranchEditable, selectionToReach, selEquals, type BranchSel } from '@shared/branches'
@@ -265,6 +272,43 @@ function judgeTotals(msg: StoredMessage, results: Map<string, StoredMessage>): J
   return t.calls ? t : null
 }
 
+/**
+ * Buscas de tools feitas pelo provedor nesta resposta (busca nativa, 1.12.0 — blocos de `native`):
+ * um chip por busca, ex.: "buscou tools: read_file, shell" (o padrão da busca no tooltip).
+ */
+function ToolSearchChips({ native }: { native?: NativeTurn }): React.JSX.Element | null {
+  const list = nativeSearches(native)
+  if (!list.length) return null
+  return (
+    <div className="mt-1.5 flex flex-wrap gap-1.5">
+      {list.map((s, i) => (
+        <Tip
+          key={i}
+          label={
+            <span className="block max-w-[280px] leading-snug">
+              Busca de tools feita pelo {native?.kind === 'openrouter' ? 'OpenRouter' : 'provedor'}
+              {s.query ? (
+                <>
+                  {' '}
+                  com <span className="font-mono">{s.query}</span>
+                </>
+              ) : null}
+              . As encontradas passam a valer nesta conversa.
+            </span>
+          }
+        >
+          <span
+            data-testid="tool-search-chip"
+            className="inline-flex items-center gap-1 rounded-md bg-white/[0.04] px-1.5 py-0.5 text-[11px] text-subtle"
+          >
+            <SearchCode className="size-3" /> {nativeSearchChip(s)}
+          </span>
+        </Tip>
+      ))}
+    </div>
+  )
+}
+
 function UsageFooter({
   msg,
   judge
@@ -306,6 +350,25 @@ function UsageFooter({
       <span key="d" className="tabular-nums">
         {d}
       </span>
+    )
+  // busca nativa de tools (1.12.0): o modo em que a resposta foi gerada (só exibição)
+  const ts = msg.meta.toolSearch
+  const tsLabel = ts ? toolSearchMetaLabel(ts) : null
+  if (ts && tsLabel)
+    parts.push(
+      <Tip
+        key="ts"
+        label={
+          <span className="block max-w-[280px] leading-snug">
+            Envio das tools nesta resposta: {tsLabel}
+            {ts.reason ? ` — ${ts.reason}` : ''}
+          </span>
+        }
+      >
+        <span data-testid="tool-search-meta" data-mode={ts.mode} className="truncate">
+          {tsLabel}
+        </span>
+      </Tip>
     )
   if (judge)
     parts.push(
@@ -1280,6 +1343,7 @@ function AssistantMessage({ msg, ctx }: { msg: StoredMessage; ctx: Ctx }): React
           </div>
         )
       )}
+      <ToolSearchChips native={m.native} />
       {m.tool_calls?.map((tc) => {
         const result = ctx.results.get(tc.id)
         // end_call (chamada de voz): linha compacta de sistema, sem card de tool

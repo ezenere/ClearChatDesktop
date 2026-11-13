@@ -6,8 +6,12 @@
 // (unidade `toolsFull.<tool>`, com "neste chat ↺"); a linha "Data e hora"; desligar a compactação
 // (unidade `toolsCompact`) e o "Ver request" refletindo tudo; o editor de personas com a mesma
 // opção (o chat que herda segue ao vivo); a lista de tools da chamada de voz com o </> do que vai.
-// Provedor OpenAI-compatible FALSO local (nada de key real, nada de rede), userData isolado, sync
-// apontado para um endereço morto (nunca o servidor de produção), microfone negado.
+// Busca nativa de tools (1.12.0): no provedor genérico a linha mostra "Versão local do app", o
+// motivo e o aviso; trocando para um provedor Anthropic FALSO (127.0.0.1 tratado como o host
+// oficial — CLEARCHAT_E2E_NATIVE_HOSTS), "Busca nativa da Anthropic", o </> com a entrada de busca e
+// os itens com defer_loading, e um turno real com o chip "buscou tools: …" na transcrição.
+// Provedores FALSOS locais (nada de key real, nada de rede), userData isolado, sync apontado para um
+// endereço morto (nunca o servidor de produção), microfone negado.
 // Screenshots em $CLEARCHAT_SHOTS (padrão $CLEARCHAT_E2E_DIR/shots).
 //
 // Uso:
@@ -21,12 +25,14 @@ import type { AddressInfo } from 'node:net'
 import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { COMPACT_TOOLS_PROMPT, TOOL_SHORT_DESCRIPTIONS } from '../src/shared/compactTools.ts'
+import { TOOL_SEARCH_LOCAL_NOTICE } from '../src/shared/toolSearch.ts'
 
 const ROOT = resolve(import.meta.dirname, '..')
 const BASE = resolve(process.env.CLEARCHAT_E2E_DIR || join(tmpdir(), 'clearchat-compact-ui'))
 const SHOTS = resolve(process.env.CLEARCHAT_SHOTS || join(BASE, 'shots'))
 const CWD = join(BASE, 'cwd')
 const MODEL = 'fake/agent'
+const CLAUDE = 'claude-haiku-4-5'
 
 let llm: Server
 let llmBase = ''
@@ -45,10 +51,102 @@ async function readBody(req: IncomingMessage): Promise<string> {
   return d
 }
 
+const anthSse = (events: any[]): string =>
+  events.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join('')
+
+/**
+ * Anthropic FALSA (Messages API, SSE nativo): "hora" com tools adiadas → busca do servidor
+ * (server_tool_use + tool_search_tool_result) + tool_use do datetime; depois → texto.
+ */
+function anthropicTurn(body: any): string {
+  const last = (body.messages ?? []).at(-1)
+  const deferred = JSON.stringify(body.tools ?? []).includes('defer_loading')
+  const text = textOf(last?.content).trim()
+  const start = {
+    type: 'message_start',
+    message: { model: body.model, usage: { input_tokens: 40, output_tokens: 1 } }
+  }
+  if (deferred && last?.role === 'user' && text === 'hora')
+    return anthSse([
+      start,
+      {
+        type: 'content_block_start',
+        index: 0,
+        content_block: {
+          type: 'server_tool_use',
+          id: 'srvtoolu_e2e',
+          name: 'tool_search_tool_regex'
+        }
+      },
+      {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'input_json_delta', partial_json: '{"pattern":"date|time"}' }
+      },
+      { type: 'content_block_stop', index: 0 },
+      {
+        type: 'content_block_start',
+        index: 1,
+        content_block: {
+          type: 'tool_search_tool_result',
+          tool_use_id: 'srvtoolu_e2e',
+          content: {
+            type: 'tool_search_tool_search_result',
+            tool_references: [{ type: 'tool_reference', tool_name: 'datetime' }]
+          }
+        }
+      },
+      { type: 'content_block_stop', index: 1 },
+      {
+        type: 'content_block_start',
+        index: 2,
+        content_block: {
+          type: 'tool_use',
+          id: `toolu_e2e${requests.length}`,
+          name: 'datetime',
+          input: {}
+        }
+      },
+      {
+        type: 'content_block_delta',
+        index: 2,
+        delta: { type: 'input_json_delta', partial_json: '{"format":"%Y"}' }
+      },
+      { type: 'content_block_stop', index: 2 },
+      { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 20 } },
+      { type: 'message_stop' }
+    ])
+  return anthSse([
+    start,
+    { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } },
+    { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Pronto.' } },
+    { type: 'content_block_stop', index: 0 },
+    { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 2 } },
+    { type: 'message_stop' }
+  ])
+}
+
 /** "hora" → o modelo chama datetime; depois do resultado (ou qualquer outra coisa) → texto. */
 async function startLlm(): Promise<void> {
   llm = createServer((req, res) => {
     void (async () => {
+      if ((req.url ?? '').startsWith('/anthropic/')) {
+        if (req.method === 'GET') {
+          res.writeHead(200, { 'Content-Type': 'application/json' })
+          res.end(
+            JSON.stringify({
+              data: [{ id: CLAUDE, display_name: 'Claude Haiku 4.5', max_input_tokens: 200000 }],
+              has_more: false
+            })
+          )
+          return
+        }
+        const body = JSON.parse((await readBody(req)) || '{}')
+        requests.push(body)
+        res.writeHead(200, { 'Content-Type': 'text/event-stream' })
+        res.end(anthropicTurn(body))
+        return
+      }
       if (req.method === 'GET' && (req.url ?? '').endsWith('/models')) {
         res.writeHead(200, { 'Content-Type': 'application/json' })
         res.end(
@@ -104,6 +202,8 @@ async function launch(): Promise<void> {
   delete env.ELECTRON_RUN_AS_NODE
   delete env.OPENROUTER_API_KEY
   env.CLEARCHAT_USER_DATA = join(BASE, 'user-data')
+  // provedor falso local no papel do host oficial (busca nativa de tools, 1.12.0) — só neste teste
+  env.CLEARCHAT_E2E_NATIVE_HOSTS = '127.0.0.1'
   // sem login nada vai à rede; mesmo assim, nunca o servidor real
   env.CLEARCHAT_SYNC_URL = 'http://127.0.0.1:9'
   app = await electron.launch({ args: [ROOT], env, timeout: 60_000 })
@@ -253,7 +353,7 @@ async function main(): Promise<void> {
   })
 
   await step(
-    'aba Tools: "Enviar tools compactadas" ligado; o </> mostra o prompt fixo e a search_tool',
+    'aba Tools: "Enviar tools compactadas" ligado; versão local com o motivo e o aviso; o </> mostra o prompt fixo e a tool_search',
     async () => {
       await panelTab('Tools')
       const rowEl = panel().getByTestId('tools-compact-row')
@@ -261,10 +361,24 @@ async function main(): Promise<void> {
       const sw = rowEl.getByRole('switch', { name: 'Enviar tools compactadas' })
       assert((await sw.getAttribute('aria-checked')) === 'true', 'ligado por padrão')
       assert((await mark('toolsCompact').count()) === 0, 'herdado (sem marca)')
+      // provedor OpenAI-compatible genérico → versão local, com o motivo e o aviso do protocolo
+      const line = rowEl.getByTestId('tool-search-mode')
+      await line.waitFor({ timeout: 5000 })
+      assert((await line.getAttribute('data-mode')) === 'local', 'modo local')
+      const lineText = (await line.innerText()).replace(/\s+/g, ' ')
+      assert(lineText.includes('Versão local do app'), lineText)
+      assert(/Motivo: provedor OpenAI-compatible genérico/.test(lineText), lineText)
+      assert(
+        (await rowEl.getByTestId('tool-search-local-notice').innerText()).trim() ===
+          TOOL_SEARCH_LOCAL_NOTICE,
+        'aviso exato da versão local'
+      )
+      await shot('compact-00-versao-local-aviso')
       const tip = await openApi(rowEl)
       assert(tip.includes(COMPACT_TOOLS_PROMPT), 'prompt fixo exato no </>')
-      assert(tip.includes('"name": "search_tool"'), 'definição da search_tool')
+      assert(tip.includes('"name": "tool_search"'), 'definição da tool_search')
       assert(tip.includes('"names"'), 'parâmetro names')
+      assert(tip.includes(TOOL_SEARCH_LOCAL_NOTICE), 'aviso também no </>')
       await page.getByTestId('compact-tools-prompt').waitFor()
       await shot('compact-01-tools-compactadas-api')
     }
@@ -295,7 +409,7 @@ async function main(): Promise<void> {
     assert(tip.includes(TOOL_SHORT_DESCRIPTIONS.datetime), 'descrição curta do datetime')
     const req = await preview()
     const names = req.body.tools.map((t: any) => t.function.name)
-    assert(names.includes('datetime') && names.at(-1) === 'search_tool', names.join(','))
+    assert(names.includes('datetime') && names.at(-1) === 'tool_search', names.join(','))
   })
 
   await step(
@@ -353,7 +467,7 @@ async function main(): Promise<void> {
   })
 
   await step(
-    'desligar a compactação: unidade toolsCompact própria; request sem search_tool nem prompt',
+    'desligar a compactação: unidade toolsCompact própria; request sem tool_search nem prompt',
     async () => {
       await page.mouse.move(5, 5)
       const rowEl = panel().getByTestId('tools-compact-row')
@@ -364,7 +478,7 @@ async function main(): Promise<void> {
       assert((await panel().getByTestId('tool-full-shell').count()) === 0, 'sem chips')
       const req = await preview()
       const names = req.body.tools.map((t: any) => t.function.name)
-      assert(!names.includes('search_tool'), names.join(','))
+      assert(!names.includes('tool_search'), names.join(','))
       assert(!JSON.stringify(req.body.messages).includes(COMPACT_TOOLS_PROMPT), 'sem prompt fixo')
       const sh = req.body.tools.find((t: any) => t.function.name === 'shell')
       assert(sh.function.parameters.properties.command, 'shell completa')
@@ -445,7 +559,7 @@ async function main(): Promise<void> {
       const csw = panel().getByRole('switch', { name: 'Enviar tools compactadas' })
       assert((await csw.getAttribute('aria-checked')) === 'false', 'painel mostra o herdado')
       const req = await preview()
-      assert(!req.body.tools.some((t: any) => t.function.name === 'search_tool'), 'sem search_tool')
+      assert(!req.body.tools.some((t: any) => t.function.name === 'tool_search'), 'sem tool_search')
       // volta ao padrão para os próximos passos
       await api('presets.update', persona, { config: { systemPrompt: 'Você usa tools.' } })
       await waitFor(
@@ -470,6 +584,96 @@ async function main(): Promise<void> {
       await shot('compact-05-voz-tools')
       await page.mouse.move(5, 5)
       await tsw.click()
+    }
+  )
+
+  await step(
+    'busca nativa da Anthropic: linha do modo, </> com a entrada de busca e os itens com defer_loading',
+    async () => {
+      await page.mouse.move(5, 5)
+      await page.keyboard.press('Escape')
+      const p = await api('providers.create', {
+        name: 'Anthropic falsa',
+        kind: 'anthropic',
+        baseUrl: llmBase.replace(/\/v1$/, '/anthropic/v1'),
+        apiKey: 'sk-ant-fake'
+      })
+      const c = await chat()
+      await api('chats.update', c.id, { config: { providerId: p.id, model: CLAUDE } })
+      await waitFor(async () => (await chat()).config.model === CLAUDE && true, 'modelo trocado')
+      // o renderer recarrega a lista de provedores (o novo foi criado direto pela API)
+      await page.reload()
+      await page.waitForFunction(() => !!(window as any).api, null, { timeout: 30_000 })
+      // a recarga abre "Novo chat": volta ao chat pela barra lateral
+      await page.getByRole('heading', { name: 'Novo chat' }).waitFor({ timeout: 20_000 })
+      await page
+        .getByText((await chat()).title || 'hora', { exact: true })
+        .first()
+        .click()
+      await page.getByText('Pronto.').first().waitFor({ timeout: 20_000 })
+      await panelTab('Tools')
+      const rowEl = panel().getByTestId('tools-compact-row')
+      await rowEl.scrollIntoViewIfNeeded()
+      const line = rowEl.getByTestId('tool-search-mode')
+      await waitFor(
+        async () => (await line.getAttribute('data-mode')) === 'native-anthropic',
+        'modo native-anthropic na linha',
+        8000
+      )
+      const lineText = (await line.innerText()).replace(/\s+/g, ' ')
+      assert(lineText.includes('Busca nativa da Anthropic'), lineText)
+      assert((await rowEl.getByTestId('tool-search-local-notice').count()) === 0, 'sem aviso')
+      // chip vira "adiada"
+      assert(
+        (await row('shell').getByTestId('tool-full-shell').innerText()) === 'adiada',
+        'chip adiada'
+      )
+      const tip = await openApi(rowEl)
+      assert(tip.includes('"type": "tool_search_tool_regex_20251119"'), 'entrada de busca no </>')
+      assert(tip.includes('"name": "tool_search_tool_regex"'), tip)
+      assert(!tip.includes(COMPACT_TOOLS_PROMPT), 'sem prompt fixo')
+      await shot('toolsearch-00-native-anthropic-entrada-busca')
+      await page.mouse.move(5, 5)
+      await page.keyboard.press('Escape')
+      const t2 = await openApi(row('shell'))
+      assert(t2.includes('"defer_loading": true'), 'item com defer_loading')
+      assert(t2.includes('"input_schema"') && t2.includes('"command"'), 'definição completa')
+      assert(t2.includes('Vai adiada'), 'explica o modo')
+      await shot('toolsearch-01-native-anthropic-api')
+      const req = await preview()
+      assert(req.url.endsWith('/anthropic/v1/messages'), req.url)
+      const tools = req.body.tools
+      assert(tools.at(-1).type === 'tool_search_tool_regex_20251119', 'busca por último')
+      assert(tools.find((t: any) => t.name === 'shell').defer_loading === true, 'shell adiada')
+      assert(!JSON.stringify(req.body.system ?? '').includes(COMPACT_TOOLS_PROMPT), 'sem prompt')
+      await page.mouse.move(5, 5)
+      await page.keyboard.press('Escape')
+    }
+  )
+
+  await step(
+    'turno com a busca nativa: chip "buscou tools: datetime" e rótulo no rodapé',
+    async () => {
+      const c = await chat()
+      await api('agent.send', c.mainSessionId, 'hora')
+      await waitFor(async () => {
+        const list = await api<any[]>('sessions.messages', c.mainSessionId)
+        const done = list.filter(
+          (m) => m.message.role === 'assistant' && m.message.content === 'Pronto.'
+        )
+        return done.length >= 2 && list
+      }, 'turno nativo terminou')
+      const list = await api<any[]>('sessions.messages', c.mainSessionId)
+      const a = list.filter((m) => m.message.role === 'assistant' && m.message.native).at(-1)
+      assert(a, 'resposta com native gravado')
+      assert(a.meta.toolSearch?.mode === 'native-anthropic', JSON.stringify(a.meta.toolSearch))
+      const chip = page.getByTestId('tool-search-chip').last()
+      await chip.waitFor({ timeout: 5000 })
+      assert((await chip.innerText()).trim() === 'buscou tools: datetime', await chip.innerText())
+      await chip.scrollIntoViewIfNeeded()
+      await chip.hover()
+      await page.getByTestId('tool-search-meta').last().waitFor({ timeout: 5000 })
+      await shot('toolsearch-02-transcript-chip')
     }
   )
 

@@ -4,10 +4,19 @@ import { currentToolDefinition } from '@shared/tools'
 import {
   COMPACT_TOOLS_HELP,
   COMPACT_TOOLS_PROMPT,
+  NATIVE_TOOL_SEARCH_HELP,
   SEARCH_TOOL_DEFINITION,
+  isCompactable,
   sendsCompact,
   sentToolDefinition
 } from '@shared/compactTools'
+import {
+  SEARCH_ENTRY_NOTE,
+  TOOL_SEARCH_LOCAL_NOTICE,
+  isNativeMode,
+  messagesApiTool,
+  type ToolSearchModeView
+} from '@shared/toolSearch'
 import { COMPACTION_NOTE, compactionMessageText } from '@shared/defaults'
 import { LIMITS } from '@shared/limits'
 import { audioFormat, contentText, formatSize, messageAttachments } from '@shared/attachments'
@@ -159,13 +168,21 @@ type CompactCfg = Pick<ChatConfig, 'toolsCompact' | 'toolsFull'>
 export function ToolDefInfo({
   name,
   nativeTools,
-  cfg
+  cfg,
+  view
 }: {
   name: ToolName
   nativeTools: boolean
   /** Compactação (1.11.0): a definição mostrada é a que vai — compacta ou completa. */
   cfg?: CompactCfg
+  /**
+   * Modo de envio do chat (busca nativa, 1.12.0): nos nativos o item mostrado é o da Messages API,
+   * completo, com `defer_loading` (e o `cache_control`, se for o ponto de cache) — exatamente como vai.
+   */
+  view?: ToolSearchModeView | null
 }): React.JSX.Element {
+  if (view && isNativeMode(view.mode) && isCompactable(name))
+    return <NativeToolDefInfo name={name} nativeTools={nativeTools} cfg={cfg} view={view} />
   const compact = sendsCompact(name, cfg)
   return (
     <ApiInfo
@@ -181,7 +198,7 @@ export function ToolDefInfo({
       {compact ? (
         <p data-testid="tool-def-mode" data-mode="compact">
           <b className="text-fg">Vai compacta</b>: só o nome e a descrição curta, com os parâmetros
-          vazios. A definição completa volta ao modelo pela <C>search_tool</C> (e no erro, se ele a
+          vazios. A definição completa volta ao modelo pela <C>tool_search</C> (e no erro, se ele a
           chamar com argumentos inválidos). Marque &quot;completa&quot; para mandá-la inteira.
         </p>
       ) : (
@@ -206,6 +223,54 @@ export function ToolDefInfo({
   )
 }
 
+/** `<>` de uma tool num modo de busca nativa: o item exato da Messages API (adiada ou carregada). */
+function NativeToolDefInfo({
+  name,
+  nativeTools,
+  cfg,
+  view
+}: {
+  name: ToolName
+  nativeTools: boolean
+  cfg?: CompactCfg
+  view: ToolSearchModeView
+}): React.JSX.Element {
+  const deferred = sendsCompact(name, cfg)
+  const item = view.items[name] ?? messagesApiTool(currentToolDefinition(name), deferred)
+  const who = view.mode === 'native-anthropic' ? 'da Anthropic' : 'do OpenRouter'
+  return (
+    <ApiInfo
+      title={<span className="font-mono text-[12px]">{name}</span>}
+      code={JSON.stringify(item, null, 2)}
+      codeLabel="Item exato do array tools (formato da Messages API):"
+      side="left"
+    >
+      {deferred ? (
+        <p data-testid="tool-def-mode" data-mode="deferred">
+          <b className="text-fg">Vai adiada</b> (<C>defer_loading: true</C>): a definição completa
+          vai na request, mas o modelo só a vê depois de encontrá-la pela busca nativa {who}. Marque
+          &quot;carregada&quot; para ele vê-la desde o início.
+        </p>
+      ) : (
+        <p data-testid="tool-def-mode" data-mode="loaded">
+          <b className="text-fg">Vai carregada</b> desde o início (sem <C>defer_loading</C>).
+          {item.cache_control ? (
+            <>
+              {' '}
+              Leva o ponto de cache (<C>cache_control</C>): é a última tool carregada.
+            </>
+          ) : null}
+        </p>
+      )}
+      {!nativeTools && (
+        <p>
+          &quot;Tools nativas&quot; está desligado: o campo <C>tools</C> não é enviado.
+        </p>
+      )}
+    </ApiInfo>
+  )
+}
+
 export function NativeToolsInfo(): React.JSX.Element {
   return (
     <ApiInfo title="Tools nativas" side="left">
@@ -224,21 +289,62 @@ export function NativeToolsInfo(): React.JSX.Element {
 }
 
 /**
- * `<>` de "Enviar tools compactadas" (1.11.0): o que a compactação faz, o prompt fixo e a definição
- * da `search_tool`, exatamente como vão (textos do app, não editáveis).
+ * `<>` de "Enviar tools compactadas": o que vai, exatamente, no modo efetivo do chat (1.12.0).
+ * Versão local (1.11.0): o prompt fixo e a definição da `tool_search` (textos do app, não
+ * editáveis). Busca nativa: a entrada de busca do servidor como vai (descrição do provedor) — sem
+ * prompt do app e sem `tool_search`.
  */
-export function CompactToolsInfo(): React.JSX.Element {
+export function CompactToolsInfo({
+  view
+}: {
+  view?: ToolSearchModeView | null
+}): React.JSX.Element {
+  if (view && isNativeMode(view.mode)) {
+    return (
+      <ApiInfo
+        title={`Tools compactadas · ${view.label}`}
+        code={JSON.stringify(view.searchEntry, null, 2)}
+        codeLabel="Entrada de busca — último item do array tools:"
+        side="left"
+      >
+        <p data-testid="compact-tools-native" data-mode={view.mode}>
+          {NATIVE_TOOL_SEARCH_HELP}
+        </p>
+        <p>
+          Cada tool que não está marcada &quot;carregada&quot; vai com a definição completa e{' '}
+          <C>defer_loading: true</C>; as marcadas (e <C>end_call</C>) vão carregadas, e a última
+          carregada leva o ponto de cache. A entrada de busca abaixo vai por último.{' '}
+          {SEARCH_ENTRY_NOTE[view.mode]} Não há <C>tool_search</C> do app nem instrução no system
+          prompt.
+          {view.mode === 'native-openrouter' && (
+            <>
+              {' '}
+              Enquanto houver tools adiadas, a request vai para <C>/messages</C> (Messages API do
+              OpenRouter) em vez de <C>/chat/completions</C>.
+            </>
+          )}{' '}
+          O <C>{'</>'}</C> de cada tool mostra o item exato.
+        </p>
+      </ApiInfo>
+    )
+  }
   return (
     <ApiInfo
       title="Tools compactadas"
       code={JSON.stringify(SEARCH_TOOL_DEFINITION, null, 2)}
-      codeLabel="search_tool — último item do array tools (sempre completa):"
+      codeLabel="tool_search — último item do array tools (sempre completa):"
       side="left"
     >
       <p>{COMPACT_TOOLS_HELP}</p>
+      {view?.mode === 'local' && (
+        <p data-testid="compact-tools-local">
+          {TOOL_SEARCH_LOCAL_NOTICE}
+          {view.reason ? ` Motivo: ${view.reason}.` : ''}
+        </p>
+      )}
       <p>
         Cada tool que não está marcada &quot;completa&quot; vai só com o nome e a descrição curta do
-        app, com parâmetros vazios. Havendo pelo menos uma compacta, vão também a <C>search_tool</C>{' '}
+        app, com parâmetros vazios. Havendo pelo menos uma compacta, vão também a <C>tool_search</C>{' '}
         (abaixo) e este prompt fixo, no fim do system prompt (precedido de <C>\n\n</C>); sem nenhuma
         compacta, nenhum dos dois. Vale para memória, skills, subagentes e a chamada de voz (menos{' '}
         <C>end_call</C>, sempre completa).

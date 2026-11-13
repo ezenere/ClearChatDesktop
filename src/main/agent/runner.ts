@@ -9,6 +9,7 @@ import type {
   ApprovalItem,
   ApprovalRecord,
   Chat,
+  ChatConfig,
   ContentPart,
   MessageMeta,
   QueuedMessage,
@@ -135,6 +136,7 @@ import {
   buildRequest,
   maskRequest,
   modelInfoFor,
+  resolveToolMode,
   setProviderNamesSource,
   setSiblingsSource,
   setToolSearchCapsSource,
@@ -142,7 +144,14 @@ import {
   voiceCallContextFor
 } from './request'
 import type { BuildOptions, BuiltRequest } from './request'
-import { isNativeMode, isNativeRejection, nativeTurnFrom } from '@shared/toolSearch'
+import {
+  isNativeMode,
+  isNativeRejection,
+  nativeTurnFrom,
+  toolSearchView,
+  type ToolSearchModeResult,
+  type ToolSearchModeView
+} from '@shared/toolSearch'
 import { getToolSearchCaps, markToolSearchFailure } from '../toolSearchCaps'
 import { adapterFor } from './adapters'
 import { connectionErrorText, isConnectionFailure, retryAppClosedText } from '@shared/network'
@@ -3799,6 +3808,36 @@ export function previewRequest(sessionId: string): RequestPreview {
       `Base64 de ${truncated} anexo${truncated > 1 ? 's' : ''} encurtado nesta visualização (…(tamanho)); a request real envia o arquivo inteiro.`
     ]
   }
+}
+
+/**
+ * Busca nativa de tools (1.12.0): o modo efetivo de envio das tools de um chat (a principal, com o
+ * histórico dela) ou de uma config solta (editor de persona) — o MESMO resolvedor da request.
+ * `cfg` (opcional) = a config efetiva mostrada no painel (com o chat, vale no lugar da salva).
+ */
+export function toolSearchModeFor(input: {
+  chatId?: string | null
+  cfg?: ChatConfig | null
+}): ToolSearchModeView {
+  const saved = input.chatId ? chatsRepo.get(input.chatId) : null
+  const config = input.cfg ?? saved?.config
+  if (!config) throw new Error('Chat não encontrado.')
+  const chat: Chat = saved
+    ? { ...saved, config }
+    : { id: '', title: '', mainSessionId: '', createdAt: 0, updatedAt: 0, config }
+  const main = saved ? sessionsRepo.get(saved.mainSessionId) : null
+  const history = main ? messagesRepo.path(main.id) : []
+  const defaults = settingsRepo.get<string>('defaultProviderId')
+  const provider =
+    providersRepo.get(config.providerId) ?? (defaults ? providersRepo.get(defaults) : null)
+  const model = config.model || settingsRepo.get<string>('defaultModel') || ''
+  const sref = { depth: 0 as const, ...(main ? { id: main.id } : {}), model }
+  const kind = provider ? providerKind(provider) : 'openai'
+  const r: ToolSearchModeResult = provider
+    ? resolveToolMode(chat, sref, history, provider)
+    : { mode: 'local', api: 'chat', reason: 'sem provedor/modelo escolhido' }
+  const plan = toolsPlan(chat, sref, history, undefined, r.mode)
+  return toolSearchView(r, plan, kind, config.cacheEnabled)
 }
 
 export function runningSessions(): string[] {

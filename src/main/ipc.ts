@@ -33,7 +33,7 @@ import {
   type VoiceRuntimeStatus,
   type VoiceSettingKind
 } from '@shared/ipc'
-import type { ApiMessage, AttachmentInfo, Chat, QuestionAnswer } from '@shared/types'
+import type { ApiMessage, AttachmentInfo, Chat, ChatConfig, QuestionAnswer } from '@shared/types'
 import {
   chatOfMessage,
   chatOfSession,
@@ -948,6 +948,8 @@ export function registerIpc(): void {
       ...(syncEngine()?.host.mirrorApprovals() ?? [])
     ],
     [IPC.agent.previewRequest]: (sessionId: string) => runner.previewRequest(sessionId),
+    [IPC.agent.toolSearchMode]: (input: { chatId?: string | null; cfg?: ChatConfig | null }) =>
+      runner.toolSearchModeFor(input ?? {}),
     [IPC.agent.runningSessions]: () => [
       ...new Set([...runner.runningSessions(), ...(syncEngine()?.host.mirrorRunning() ?? [])])
     ],

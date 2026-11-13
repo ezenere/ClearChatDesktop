@@ -740,3 +740,63 @@ export const SEARCH_ENTRY_NOTE: Record<NativeToolSearchMode, string> = {
   'native-openrouter':
     'A descrição dessa ferramenta é do OpenRouter (não do app); o app não acrescenta prompt.'
 }
+
+// ---------------- visão para a UI (aba Tools) ----------------
+
+/**
+ * O que a aba Tools mostra sobre o envio das tools (desktop: IPC `agent.toolSearchMode`; mobile:
+ * calculado no próprio aparelho com as mesmas funções).
+ */
+export interface ToolSearchModeView {
+  mode: ToolSearchMode
+  /** "Busca nativa da Anthropic" / "…do OpenRouter (Messages API)" / "Versão local do app" / … */
+  label: string
+  /** Por que não é a busca nativa (versão local). */
+  reason?: string
+  /** Falha lembrada (versão local por causa dela). */
+  failure?: ToolSearchFailure
+  /** Adiadas (modos nativos) e compactas (versão local). */
+  deferred: string[]
+  compacted: string[]
+  /** Tipo do provedor (para a forma dos itens). */
+  kind: ProviderKind
+  /** Nativos: o item EXATO de `tools[]` de cada tool da request (flags e cache inclusive). */
+  items: Record<string, Record<string, unknown>>
+  /** Nativos: a entrada de busca do servidor, como vai (último item de `tools`). */
+  searchEntry: Record<string, unknown> | null
+}
+
+/** Monta a visão a partir do modo resolvido e do plano das tools daquele modo. */
+export function toolSearchView(
+  r: ToolSearchModeResult,
+  plan: {
+    mode: ToolSearchMode
+    full: readonly ToolDefinition[]
+    deferred: readonly string[]
+    compacted: readonly string[]
+    searchEntry: Record<string, unknown> | null
+  },
+  kind: ProviderKind,
+  cache: boolean
+): ToolSearchModeView {
+  const items: Record<string, Record<string, unknown>> = {}
+  if (isNativeMode(plan.mode)) {
+    const arr = nativeToolsArray(plan.full, {
+      deferred: new Set(plan.deferred),
+      entry: null,
+      cache
+    })
+    for (const it of arr) items[String(it.name)] = it
+  }
+  return {
+    mode: plan.mode,
+    label: TOOL_SEARCH_MODE_LABEL[plan.mode],
+    ...(plan.mode === 'local' && r.reason ? { reason: r.reason } : {}),
+    ...(plan.mode === 'local' && r.failure ? { failure: r.failure } : {}),
+    deferred: [...plan.deferred],
+    compacted: [...plan.compacted],
+    kind,
+    items,
+    searchEntry: plan.searchEntry
+  }
+}

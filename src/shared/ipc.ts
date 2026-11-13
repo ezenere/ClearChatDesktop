@@ -110,7 +110,8 @@ export const IPC = {
     smartOverride: 'agent:smartOverride',
     smartApproveTest: 'agent:smartApproveTest',
     setCapturedContext: 'agent:setCapturedContext',
-    undoCapturedContext: 'agent:undoCapturedContext'
+    undoCapturedContext: 'agent:undoCapturedContext',
+    toolSearchMode: 'agent:toolSearchMode'
   },
   fs: {
     listDir: 'fs:listDir',
@@ -1142,6 +1143,15 @@ export interface ClearApi {
     ): Promise<void>
     pendingApprovals(): Promise<ApprovalRequest[]>
     previewRequest(sessionId: string): Promise<RequestPreview>
+    /**
+     * Busca nativa de tools (1.12.0): o modo efetivo de envio das tools para um chat (com o
+     * histórico da principal) ou só uma config (editor de persona) — modo, motivo, adiadas e os
+     * itens exatos de `tools[]` (@shared/toolSearch → ToolSearchModeView).
+     */
+    toolSearchMode(input: {
+      chatId?: string | null
+      cfg?: ChatConfig | null
+    }): Promise<import('./toolSearch').ToolSearchModeView>
     runningSessions(): Promise<string[]>
     /**
      * Compacta a conversa (só sessão principal). Ociosa → roda já; rodando → agenda para o

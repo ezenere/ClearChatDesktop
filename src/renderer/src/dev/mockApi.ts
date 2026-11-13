@@ -1,6 +1,9 @@
 // SOMENTE DESENVOLVIMENTO: window.api simulado para validar o design sem backend.
 // Carregado apenas quando o renderer é buildado com VITE_CLEAR_MOCK=1 (ver main.tsx).
 import { DEFAULT_CHAT_CONFIG } from '@shared/defaults'
+import { planTools } from '@shared/compactTools'
+import { resolveToolSearchMode, toolSearchView } from '@shared/toolSearch'
+import { TOOL_NAMES as MOCK_TOOL_NAMES, currentToolDefinition } from '@shared/tools'
 import { createMockVoiceCatalog } from './mockVoiceCatalog'
 import { createMockGpu } from './mockGpu'
 import { providerKind } from '@shared/providerKinds'
@@ -2232,6 +2235,28 @@ export function createMockApi(scenario: string): ClearApi {
           model: 'mock/judge',
           durationMs: 120
         }),
+      // busca nativa de tools (1.12.0): o mesmo resolvedor do main, com o catálogo do mock
+      toolSearchMode: async (input) => {
+        const c = input?.chatId ? chats.find((x) => x.id === input.chatId) : null
+        const config = input?.cfg ?? c?.config ?? cfg
+        const p = providers.find((x) => x.id === config.providerId) ?? providers[0]
+        const full = config.enabledTools
+          .filter((t) => (MOCK_TOOL_NAMES as string[]).includes(t))
+          .map((t) => currentToolDefinition(t))
+        const local = planTools(full, config, 'local')
+        const r = p
+          ? resolveToolSearchMode({
+              kind: providerKind(p),
+              baseUrl: p.baseUrl,
+              providerId: p.id,
+              model: config.model,
+              cfg: config,
+              wouldCompact: local.compacted.length > 0
+            })
+          : { mode: 'local' as const, api: 'chat' as const, reason: 'sem provedor' }
+        const plan = planTools(full, config, r.mode)
+        return delay(toolSearchView(r, plan, p ? providerKind(p) : 'openai', config.cacheEnabled))
+      },
       previewRequest: async (sid) => {
         const s = sessions.find((x) => x.id === sid)!
         const c = chats.find((x) => x.id === s.chatId)!
