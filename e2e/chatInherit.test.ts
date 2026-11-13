@@ -332,6 +332,22 @@ test('migração: iguais herdam, diferentes ficam próprios; determinística', (
   assert.equal(migrateChatOverrides(legacy, null, env(), PC), null)
 })
 
+test('migração: chat antigo sem datetime (tool que apps < 1.10.0 não conheciam) herda a tool', () => {
+  const p = persona({ systemPrompt: 'P', model: 'p/m', providerId: 'or' })
+  const pe = personaEffectiveConfig(p, env())
+  const legacy: InheritConfig = {
+    ...pe,
+    cwd: '/w',
+    presetId: 'p1',
+    enabledTools: TOOL_NAMES.filter((t) => t !== 'datetime' && t !== 'shell')
+  }
+  const m = migrateChatOverrides(legacy, p, env(), PC)!
+  assert.deepEqual(Object.keys(m.overrides!).sort(), ['enabledTools.shell'])
+  const eff = effectiveChatConfig(m, p, env())
+  assert.ok(eff.enabledTools.includes('datetime'))
+  assert.ok(!eff.enabledTools.includes('shell'))
+})
+
 test('migração: cache igual ao herdado do provedor do chat; voz igual à da persona → null', () => {
   const p = persona({
     model: 'p/m',

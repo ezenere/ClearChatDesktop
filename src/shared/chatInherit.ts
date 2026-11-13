@@ -514,12 +514,27 @@ function deviceDifference(unit: string, ranOn: ChatRanOn): boolean {
 }
 
 /**
+ * Tools que nenhum app < 1.10.0 conhecia (as únicas versões que escrevem chats sem `overrides`): num
+ * chat antigo, a ausência delas na lista não é escolha do usuário — a migração não as marca (herdam).
+ */
+export const TOOLS_NEWER_THAN_LEGACY_CHATS: readonly ToolName[] = ['datetime']
+
+function newerToolMissing(unit: string, record: InheritConfig): boolean {
+  if (!unit.startsWith('enabledTools.')) return false
+  const t = unit.slice(13) as ToolName
+  return (
+    TOOLS_NEWER_THAN_LEGACY_CHATS.includes(t) &&
+    !(Array.isArray(record.enabledTools) && record.enabledTools.includes(t))
+  )
+}
+
+/**
  * Migração única de um chat antigo (com `presetId` e SEM `overrides` — apps < 1.10.0), depois de um
  * pull completo: `overrides` = as unidades cujo valor no chat difere (JSON) do valor efetivo da
  * persona; as iguais passam a herdar. Uma diferença numa tool de um tipo de aparelho só vira própria
  * se o chat já rodou naquele tipo (`ranOn` — `chatRanOn` em ./deviceTools: `hostCwd` do registro /
- * chat local deste computador). Na `voice`, campos iguais ao campo não nulo da persona → null.
- * Determinística (só depende do que sincroniza). null = nada a migrar (sem persona, persona que não
+ * chat local deste computador). Tools que apps < 1.10.0 não conheciam (`datetime`) ausentes da
+ * lista herdam. Na `voice`, campos iguais ao campo não nulo da persona → null. Determinística (só depende do que sincroniza). null = nada a migrar (sem persona, persona que não
  * existe aqui, ou já migrado).
  */
 export function migrateChatOverrides(
@@ -535,7 +550,8 @@ export function migrateChatOverrides(
     if (
       u !== 'cacheEnabled' &&
       !sameUnit(u, readUnit(record, u), readUnit(pe, u)) &&
-      !deviceDifference(u, ranOn)
+      !deviceDifference(u, ranOn) &&
+      !newerToolMissing(u, record)
     )
       ov[u] = true
   // o cache herdado depende do provedor efetivo do chat (o par já decidido acima)

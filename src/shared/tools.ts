@@ -770,7 +770,7 @@ export const TOOL_DEFINITIONS: Record<ToolName, ToolDefinition> = {
       names: {
         type: 'array',
         items: { type: 'string' },
-        description: 'Nomes das ferramentas (ex.: ["read_file", "shell"]).'
+        description: 'Nomes das ferramentas (ex.: ["web_search", "datetime"]).'
       }
     },
     ['names']
