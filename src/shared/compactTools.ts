@@ -111,6 +111,10 @@ export const wordCount = (s: string): number => s.split(/\s+/).filter(Boolean).l
 
 type CompactConfig = Pick<ChatConfig, 'toolsCompact' | 'toolsFull'>
 
+/** Nome antigo → atual (`bash` → `shell`); só as chaves próprias do mapa (nada do protótipo). */
+const aliased = (n: string): string =>
+  Object.prototype.hasOwnProperty.call(TOOL_ALIASES, n) ? TOOL_ALIASES[n] : n
+
 /** "Enviar tools compactadas" ligado? (ausente = true, o padrão do app). */
 export const compactToolsOn = (cfg: Partial<CompactConfig> | null | undefined): boolean =>
   cfg?.toolsCompact !== false
@@ -128,7 +132,7 @@ export function normalizeToolsFull(v: unknown): ToolName[] {
   if (!Array.isArray(v)) return []
   const seen = v
     .filter((t): t is string => typeof t === 'string' && !!t)
-    .map((t) => TOOL_ALIASES[t] ?? t)
+    .map(aliased)
     .filter(isCompactable)
   return orderedTools(new Set(seen), seen, COMPACTABLE_TOOL_NAMES)
 }
@@ -162,7 +166,10 @@ export function sendsCompact(
  * descrição completa, cortada em 20 palavras.
  */
 export function shortToolDescription(name: string, full?: string): string {
-  const own = TOOL_SHORT_DESCRIPTIONS[name]
+  // só as próprias do mapa (um nome como "constructor" não pode cair no protótipo)
+  const own = Object.prototype.hasOwnProperty.call(TOOL_SHORT_DESCRIPTIONS, name)
+    ? TOOL_SHORT_DESCRIPTIONS[name]
+    : undefined
   if (own) return own
   const text = (full ?? '').trim()
   const first = /^[\s\S]*?[.!?](?=\s|$)/.exec(text)?.[0] ?? text
@@ -268,7 +275,7 @@ export function runSearchTool(
     }
   const found: ToolDefinition[] = []
   const unknown: string[] = []
-  for (const n of [...new Set(names.map((x) => TOOL_ALIASES[x] ?? x))]) {
+  for (const n of [...new Set(names.map(aliased))]) {
     const d = full.find((x) => x.function.name === n && n !== SEARCH_TOOL)
     if (d) found.push(d)
     else unknown.push(n)
@@ -352,7 +359,7 @@ function checkObject(
   for (const r of s.required ?? [])
     if (v[r] === undefined || v[r] === null) out.push(`falta "${prefix}${r}" (obrigatório)`)
   for (const [k, x] of Object.entries(v)) {
-    const p = props[k]
+    const p = Object.prototype.hasOwnProperty.call(props, k) ? props[k] : undefined
     if (!p) {
       if (s.additionalProperties === false) out.push(`parâmetro desconhecido: "${prefix}${k}"`)
       continue

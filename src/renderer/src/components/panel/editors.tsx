@@ -39,7 +39,8 @@ import {
   COMPACTABLE_TOOL_NAMES,
   compactToolsOn,
   normalizeToolsFull,
-  planTools
+  planTools,
+  sendsCompact
 } from '@shared/compactTools'
 import type { ChatConfig, ChatParams, ToolName } from '@shared/types'
 import { api } from '../../lib/api'
@@ -740,6 +741,9 @@ export function ToolsListSection({ cfg, patch }: CfgProps): React.JSX.Element {
   // tools compactadas (1.11.0): ligado por padrão; cada tool pode ir "completa"
   const compact = compactToolsOn(cfg)
   const fullCount = normalizeToolsFull(cfg.toolsFull).length
+  const compactOn = TOOL_NAMES.filter(
+    (t) => cfg.enabledTools.includes(t) && sendsCompact(t, cfg)
+  ).length
   // aberta por padrão (é o principal da aba); recolhida, o resumo mostra quantas estão ligadas
   return (
     <CollapsibleSection
@@ -766,9 +770,11 @@ export function ToolsListSection({ cfg, patch }: CfgProps): React.JSX.Element {
           info={<CompactToolsInfo />}
           inherit={['toolsCompact']}
           status={
-            compact
-              ? 'Economiza contexto. Vai também a search_tool e uma instrução curta no fim do system prompt.'
-              : undefined
+            !compact
+              ? undefined
+              : compactOn
+                ? `${compactOn} das ligadas vão compactas (+ search_tool e uma instrução curta no fim do system prompt)`
+                : 'Todas as ligadas vão completas'
           }
         />
       </div>

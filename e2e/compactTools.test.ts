@@ -97,6 +97,7 @@ test('descrição curta: TODAS as tools compactáveis (core, datetime, memória,
   assert.deepEqual(SEARCH_TOOL_DEFINITION.function.parameters.required, ['names'])
   // tool sem descrição do app (de outra versão): 1ª frase, até 20 palavras
   assert.equal(shortToolDescription('mcp_x', 'Faz X. Depois Y.'), 'Faz X.')
+  assert.equal(shortToolDescription('constructor', 'Nome estranho.'), 'Nome estranho.')
   assert.equal(wordCount(shortToolDescription('mcp_y', 'a '.repeat(40))), 20)
 })
 
@@ -248,6 +249,10 @@ test('search_tool: devolve EXATAMENTE a definição sem compactação (ajustadas
     'error'
   )
   assert.match(runSearchTool({}, full).content, /informe "names"/)
+  assert.match(
+    runSearchTool({ names: ['constructor'] }, full).content,
+    /desconhecida: constructor\./
+  )
   // um nome só como texto é aceito
   assert.equal(runSearchTool({ names: 'read_file' }, full).status, 'ok')
 })

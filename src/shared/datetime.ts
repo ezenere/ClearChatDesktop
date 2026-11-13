@@ -114,7 +114,8 @@ export function zonedParts(opts: DateTimeOptions = {}): ZonedParts {
   const timeZone = opts.timeZone || deviceTimeZone()
   const fmt = new Intl.DateTimeFormat('en-US', {
     timeZone,
-    hourCycle: 'h23',
+    // hour12: false (não hourCycle — o Intl de algumas plataformas o ignora); meia-noite pode vir "24" → % 24
+    hour12: false,
     year: 'numeric',
     month: '2-digit',
     day: '2-digit',

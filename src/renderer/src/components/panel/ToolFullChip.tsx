@@ -1,7 +1,7 @@
 // Chip "compacta"/"completa" de uma tool na lista de tools do chat/persona (tools compactadas,
 // protocolo 1.11.0 — @shared/compactTools): marca/desmarca "vai completa" (`toolsFull`) com a
 // marca de herança da unidade `toolsFull.<tool>`.
-import { sendsCompact, TOOL_SHORT_DESCRIPTIONS, withFullTool } from '@shared/compactTools'
+import { sendsCompact, shortToolDescription, withFullTool } from '@shared/compactTools'
 import { toolLabel } from '@shared/deviceTools'
 import type { ChatConfig } from '@shared/types'
 import { cn } from '../../lib/format'
@@ -36,8 +36,8 @@ export function ToolFullChip({
               <>Vai completa (descrição e parâmetros). Clique para mandar compacta.</>
             ) : (
               <>
-                Vai compacta: “{TOOL_SHORT_DESCRIPTIONS[name] ?? name}” — o modelo lê o resto com
-                search_tool. Clique para mandar completa.
+                Vai compacta: “{shortToolDescription(name)}” — o modelo lê o resto com search_tool.
+                Clique para mandar completa.
               </>
             )}
           </span>
