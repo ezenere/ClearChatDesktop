@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 /* eslint-disable @typescript-eslint/explicit-function-return-type -- script Node puro (.mjs), sem anotações de tipo */
 // Smoke test PAGO (centavos) da busca nativa de ferramentas — protocolo 1.12.0.
+// 3ª rodada (--only=v3): só o Haiku 4.5 SEM raciocínio na Anthropic nativa, variantes do prompt fixo
+// nativo × duas perguntas simples, um turno de busca cada (sem reenvio) — qual texto faz buscar.
 // 2ª rodada (--only=v2): o prompt fixo nativo (o Haiku 4.5 sem raciocínio passa a buscar?) e V-2
 // de verdade — tool removida e referências filtradas/vazias depois de uma busca que aconteceu
 // (Anthropic: tool_search_tool_result; OpenRouter: openrouter_tool_search_result como o app manda
@@ -79,6 +81,19 @@ const NATIVE_PROMPT =
   'Algumas ferramentas deste chat estão adiadas (arquivos, terminal, web, data e hora): procure-as com a busca de ferramentas antes de dizer que não tem uma.'
 /** Pergunta sem a dica "procure a ferramenta" (2ª rodada: mede o efeito do prompt nativo). */
 const PLAIN_PROMPT = 'Que horas são agora?'
+
+/**
+ * 3ª rodada: variantes do prompt fixo nativo (o da 2ª rodada não fez o Haiku 4.5 sem raciocínio
+ * buscar). A = nomeia a ferramenta de busca; B = A + os NOMES das adiadas; C = A + as categorias.
+ */
+const V3_BASE =
+  'Algumas ferramentas deste chat estão adiadas e só aparecem depois de buscadas: use tool_search_tool_regex antes de dizer que não tem uma ferramenta.'
+const V3_VARIANTS = {
+  a: V3_BASE,
+  b: `${V3_BASE} Adiadas: list_dir, shell, web_search, datetime.`,
+  c: `${V3_BASE} Adiadas: arquivos, terminal, web, data e hora.`
+}
+const V3_QUESTIONS = { hora: 'Que horas são agora?', arquivos: 'Liste os arquivos da pasta atual.' }
 const PROMPT = 'Que horas são agora? Procure a ferramenta de data e hora e use-a.'
 
 const obj = (properties, required = []) => ({
@@ -275,6 +290,20 @@ const TARGETS = [
   }
 ]
 
+for (const [v, text] of Object.entries(V3_VARIANTS))
+  for (const [q, question] of Object.entries(V3_QUESTIONS))
+    TARGETS.push({
+      id: `v3-${v}-${q}`,
+      group: 'v3',
+      provider: 'anthropic',
+      model: ENV.SMOKE_ANTHROPIC_MODEL || 'claude-haiku-4-5',
+      maxTokens: 300,
+      nativePrompt: true,
+      nativePromptText: text,
+      prompt: question,
+      steps: ['search']
+    })
+
 /** Pergunta do turno 1 do alvo. */
 const promptOf = (t) => t.prompt ?? PROMPT
 
@@ -286,6 +315,7 @@ function answersFor(t, step) {
   if (step === 'undiscovered' || step === 'undiscovered-loaded') a.push('V-1')
   if (step === 'tool-removed' || step === 'refs-empty' || step === 'or-filtered') a.push('V-2')
   if (t.nativePrompt && step === 'search') a.push('prompt-nativo')
+  if (t.group === 'v3') a.push(`v3-${t.id.split('-')[1]}`)
   if ((t.thinking || t.id === 'anthropic-adaptive') && step.startsWith('replay')) a.push('V-3')
   if (t.provider === 'openrouter' && step !== 'pdf') a.push('V-4')
   if (t.provider === 'openrouter' && step.startsWith('replay')) a.push('V-5')
@@ -316,7 +346,8 @@ function withCache(messages) {
 function body(t, { messages, tools, noMaxTokens = false }) {
   const b = { model: t.model }
   if (!noMaxTokens) b.max_tokens = t.maxTokens
-  const sys = t.nativePrompt && tools ? `${SYSTEM}\n\n${NATIVE_PROMPT}` : SYSTEM
+  const sys =
+    t.nativePrompt && tools ? `${SYSTEM}\n\n${t.nativePromptText ?? NATIVE_PROMPT}` : SYSTEM
   b.system = [{ type: 'text', text: sys, cache_control: EPH }]
   b.messages = withCache(messages)
   if (tools) b.tools = tools
@@ -1082,6 +1113,9 @@ async function main() {
     ]
     if (orModels.length) await refreshOpenRouterCatalog(orModels)
   }
+  if (targets.some((t) => t.group === 'v3'))
+    for (const [v, text] of Object.entries(V3_VARIANTS))
+      json({ variante: `v3-${v}`, chars: text.length, texto: text })
   const plan = planCost(targets)
   log(`\nPlano${DRY ? ' (dry-run: preços embutidos; nada é enviado)' : ''}:`)
   for (const row of plan.rows) json(row)
