@@ -31,6 +31,7 @@ export function ModeSelector({
   value,
   onChange,
   globalMode,
+  starLabel = 'Padrão global',
   smartUnavailable,
   label,
   testId
@@ -39,8 +40,10 @@ export function ModeSelector({
   /** null = segue o padrão global (só com `globalMode`). */
   value: ApprovalMode | null
   onChange: (v: ApprovalMode) => void
-  /** Modo global do item (marca a opção com ★). */
+  /** Modo global do item (marca a opção com ★) — no chat que herda a persona, o modo herdado. */
   globalMode?: ApprovalMode
+  /** De onde vem o ★ (tooltip; padrão "Padrão global"). */
+  starLabel?: string
   smartUnavailable?: boolean
   label: string
   testId?: string
@@ -73,7 +76,7 @@ export function ModeSelector({
                 )}
                 {star && (
                   <span className="mt-0.5 block text-subtle">
-                    ★ Padrão global
+                    ★ {starLabel}
                     {globalMode && value == null && selected ? ' (seguindo)' : ''}
                   </span>
                 )}

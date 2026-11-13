@@ -7,7 +7,7 @@
 import type { ChatConfig } from '@shared/types'
 import { gpuEngineShortLabel } from '@shared/gpuVoice'
 import {
-  normalizeVoiceCallConfig,
+  layerVoiceCallConfig,
   type SttSettings,
   type TtsSettings,
   type VoiceCallConfig,
@@ -121,26 +121,21 @@ export function callUnavailableText(
 }
 
 /**
- * "Salvar como persona" de um chat: a voz de fala/transcrição que o chat USA (a dele ou a herdada
- * ao vivo da persona de origem) vai junto — o chat não guarda a da persona (`applyPreset`).
+ * "Salvar como persona" de um chat: a voz que o chat USA (cada campo: o dele ou, null, o herdado ao
+ * vivo da persona de origem — `layerVoiceCallConfig`) vai junto — o chat não guarda a da persona.
  */
 export function withInheritedVoice(
   cfg: Partial<ChatConfig>,
   personaVoice: VoiceCallConfig | null | undefined
 ): Partial<ChatConfig> {
   if (!personaVoice) return cfg
-  const p = normalizeVoiceCallConfig(personaVoice)
-  if (!p.tts && !p.stt) return cfg
-  const v = normalizeVoiceCallConfig(cfg.voice ?? null)
-  const tts = v.tts ?? p.tts
-  const stt = v.stt ?? p.stt
-  return { ...cfg, voice: { ...v, ...(tts ? { tts } : {}), ...(stt ? { stt } : {}) } }
+  return { ...cfg, voice: layerVoiceCallConfig(cfg.voice ?? null, personaVoice) }
 }
 
 /**
- * Config de uma persona para um chat NOVO sem a voz/transcrição dela (`voice.tts`/`voice.stt`): o
- * chat as herda AO VIVO da persona de origem (`presetId`) — trocar a voz da persona muda a dos chats
- * dela. O resto da `voice` (liga/desliga, modelo, prompts…) segue como snapshot.
+ * Config de uma persona sem a voz/transcrição dela (`voice.tts`/`voice.stt`). Desde a herança ao
+ * vivo (protocolo 1.10.0) o Novo chat nem copia a `voice` (cada campo herda a persona ao vivo); fica
+ * para quem ainda monta um chat a partir da config da persona.
  */
 export function withoutVoiceChoice<T extends { voice?: VoiceCallConfig | null }>(cfg: T): T {
   if (!cfg.voice || (!cfg.voice.tts && !cfg.voice.stt)) return cfg

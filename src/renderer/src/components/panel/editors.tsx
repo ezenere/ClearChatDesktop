@@ -61,6 +61,7 @@ import {
   ToggleRow
 } from './fields'
 import { SmartApproveSection } from './SmartApproveSection'
+import { InheritMark } from './inherit'
 import { ChatApprovalSection } from '../approvals/ChatApprovalSection'
 import { memoryConfigOf, memoryWillSend } from '../../lib/memory'
 import { skillsConfigOf } from '../../lib/skills'
@@ -175,7 +176,7 @@ export function ModelSection({
   children?: ReactNode
 }): React.JSX.Element {
   return (
-    <Section title="Modelo" aside={<ModelFieldInfo side="left" />}>
+    <Section title="Modelo" aside={<ModelFieldInfo side="left" />} inherit={['model']}>
       <div>
         <ModelPicker
           value={{ providerId: cfg.providerId, model: cfg.model }}
@@ -199,6 +200,7 @@ export function SystemPromptSection({ cfg, patch }: CfgProps): React.JSX.Element
       id="system-prompt"
       title="System prompt"
       summary={systemPromptSummary(cfg.systemPrompt, defaultPrompt)}
+      inherit={['systemPrompt']}
       aside={<SystemPromptInfo side="left" />}
     >
       <AutoTextarea
@@ -288,6 +290,7 @@ export function ReasoningField({
         <span className="text-xs font-medium text-muted">Raciocínio</span>
         <span className="font-mono text-[10.5px] text-faint">reasoning_effort</span>
         <ParamInfo name="reasoning_effort" openRouter={kind === 'openrouter'} effort={effort} />
+        <InheritMark units={[`params.reasoning_effort`]} className="ml-auto" />
       </div>
       <div
         data-testid="effort-levels"
@@ -358,6 +361,8 @@ export function ParamsSection({
       title={title}
       summary={paramsSummary(cfg.params)}
       help={help}
+      inherit={NUM_PARAMS.map((p) => `params.${p.key}`)}
+      inheritClosed
     >
       {hiddenSome && (
         <p className="-mt-1 text-[11.5px] text-subtle">Os que o modelo não aceita ficam ocultos.</p>
@@ -391,6 +396,7 @@ export function ParamsSection({
                   {p.key}
                 </span>
                 <ParamInfo name={p.key} openRouter={openRouter} />
+                <InheritMark units={[`params.${p.key}`]} />
                 <NumberInput
                   value={
                     on
@@ -435,6 +441,8 @@ export function RequestExtrasSection({
       id="request"
       title="Request"
       summary={requestSummary(cfg, supportsCacheControl(kind))}
+      inherit={['cacheEnabled', 'params.extraBody']}
+      inheritClosed
       // JSON salvo inválido (ex.: vindo de outro dispositivo): abre e marca o cabeçalho
       error={saved && validateJson(saved) ? 'JSON inválido' : null}
     >
@@ -444,10 +452,12 @@ export function RequestExtrasSection({
         checked={cfg.cacheEnabled}
         onChange={(cacheEnabled) => patch({ cacheEnabled })}
         info={<CacheInfo />}
+        inherit={['cacheEnabled']}
       />
       <div>
         <div className="mb-1.5 flex items-center gap-1.5 text-xs text-muted">
           Body extra (JSON) <ExtraBodyInfo />
+          <InheritMark units={['params.extraBody']} className="ml-auto" />
         </div>
         <ExtraBodyEditor
           key={scope}
@@ -504,6 +514,7 @@ export function RootOptions({
         checked={cfg.confineToRoot !== false}
         onChange={(confineToRoot) => patch({ confineToRoot })}
         info={<ConfineInfo />}
+        inherit={['confineToRoot']}
       />
       {caps.bwrap ? (
         <ToggleRow
@@ -512,6 +523,7 @@ export function RootOptions({
           checked={!!cfg.sandboxBash}
           onChange={(sandboxBash) => patch({ sandboxBash })}
           info={<SandboxInfo />}
+          inherit={['sandboxBash']}
         />
       ) : (
         <p className="text-[11.5px] leading-snug text-subtle">
@@ -524,6 +536,7 @@ export function RootOptions({
         help="Raiz, SO, shell e regras no system prompt"
         checked={cfg.envInPrompt}
         onChange={(envInPrompt) => patch({ envInPrompt })}
+        inherit={['envInPrompt']}
         info={
           <EnvInfo
             sessionId={sessionId}
@@ -542,6 +555,7 @@ export function SignatureSection({ cfg, patch }: CfgProps): React.JSX.Element {
       id="signature"
       title="Assinatura do app"
       summary={signatureSummary(cfg.appSignature, cfg.appSignatureCustom)}
+      inherit={['appSignature']}
       aside={<AppSignatureInfo id={cfg.appSignature} custom={cfg.appSignatureCustom} />}
     >
       <AppSignatureField
@@ -569,6 +583,7 @@ export function ContextSettings({
         help="Para endpoints que não informam o tamanho do contexto"
         checked={override}
         onChange={(v) => patch({ contextWindow: v ? (knownWindow ?? 128_000) : null })}
+        inherit={['contextWindow']}
       />
       {override && (
         <div className="flex animate-fade-in items-center gap-2.5 pl-1">
@@ -586,7 +601,10 @@ export function ContextSettings({
         </div>
       )}
       <div className="flex items-center gap-2.5">
-        <span className="min-w-0 flex-1 text-[13px] text-fg/90">Sugerir compactação em</span>
+        <span className="min-w-0 flex-1 text-[13px] text-fg/90">
+          Sugerir compactação em
+          <InheritMark units={['compactThreshold']} className="ml-1.5 -translate-y-px" />
+        </span>
         <NumberInput
           value={pct}
           disabled={false}
@@ -604,11 +622,13 @@ export function ContextSettings({
         help="Sessão principal, ao atingir o limite. Subagentes: sempre."
         checked={cfg.autoCompact}
         onChange={(autoCompact) => patch({ autoCompact })}
+        inherit={['autoCompact']}
       />
       <CollapsibleSection
         id="compact-prompt"
         level="sub"
         title="Prompt de compactação"
+        inherit={['compactPrompt']}
         summary={
           cfg.compactPrompt != null
             ? { text: 'personalizado', changed: true }
@@ -651,6 +671,8 @@ export function ContextSettingsSection({
       section="contexto-janela"
       title="Janela e compactação"
       summary={compactionSummary(props.cfg)}
+      inherit={['contextWindow', 'compactThreshold', 'autoCompact', 'compactPrompt']}
+      inheritClosed
       aside={info ? <ContextWindowInfo /> : undefined}
     >
       <ContextSettings {...props} />
@@ -674,6 +696,8 @@ export function ToolsListSection({ cfg, patch }: CfgProps): React.JSX.Element {
       id="tools-list"
       title="Ferramentas"
       defaultOpen
+      inherit={TOOL_NAMES.map((t) => `enabledTools.${t}`)}
+      inheritClosed
       summary={{
         text: `${count}/${TOOL_NAMES.length} ligadas`,
         changed: count < TOOL_NAMES.length
@@ -701,6 +725,7 @@ export function ToolsListSection({ cfg, patch }: CfgProps): React.JSX.Element {
               >
                 {TOOL_LABELS[t]}
               </span>
+              <InheritMark units={[`enabledTools.${t}`]} />
               <span className="truncate font-mono text-[10.5px] text-faint">{t}</span>
               <ToolDefInfo name={t} nativeTools={cfg.nativeTools} />
             </div>
@@ -721,6 +746,8 @@ export function ToolsPromptSection({ cfg, patch }: CfgProps): React.JSX.Element 
       id="tools-sending"
       title="Envio das tools"
       summary={toolsSendingSummary(cfg)}
+      inherit={['nativeTools', 'toolsInPrompt', 'toolsPromptText']}
+      inheritClosed
     >
       <ToggleRow
         label="Enviar tools nativas"
@@ -728,6 +755,7 @@ export function ToolsPromptSection({ cfg, patch }: CfgProps): React.JSX.Element 
         checked={cfg.nativeTools}
         onChange={(nativeTools) => patch({ nativeTools })}
         info={<NativeToolsInfo />}
+        inherit={['nativeTools']}
       />
       <ToggleRow
         label="Texto das tools no system prompt"
@@ -735,6 +763,7 @@ export function ToolsPromptSection({ cfg, patch }: CfgProps): React.JSX.Element 
         checked={cfg.toolsInPrompt}
         onChange={(toolsInPrompt) => patch({ toolsInPrompt })}
         info={<ToolsInPromptInfo text={toolsText} />}
+        inherit={['toolsInPrompt']}
       />
       {cfg.toolsInPrompt && (
         <div className="animate-fade-in">
@@ -742,6 +771,7 @@ export function ToolsPromptSection({ cfg, patch }: CfgProps): React.JSX.Element 
             {cfg.toolsPromptText == null
               ? 'Texto padrão (gerado das tools habilitadas)'
               : 'Texto personalizado'}
+            <InheritMark units={['toolsPromptText']} className="ml-1.5" />
             {cfg.toolsPromptText != null && (
               <span className="ml-auto">
                 <RestoreButton onClick={() => patch({ toolsPromptText: null })} />
@@ -822,6 +852,7 @@ export function SubagentSection({
     <CollapsibleSection
       id="subagents"
       title="Subagentes"
+      inherit={['subagentSystemPrompt']}
       summary={subagentsSummary(
         cfg,
         mem.subagents && memoryWillSend(mem, cols),
@@ -850,6 +881,7 @@ export function LimitsSection({ cfg, patch }: CfgProps): React.JSX.Element {
       id="limits"
       title="Limites"
       summary={limitsSummary(cfg)}
+      inherit={['maxToolOutputChars']}
       aside={<MaxOutputInfo />}
     >
       <div className="flex items-center gap-2.5">

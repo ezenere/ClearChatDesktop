@@ -19,13 +19,15 @@ import { cn } from '../../lib/format'
 import { useStore } from '../../store'
 import { Switch } from '../ui/controls'
 import { HelpTip } from '../ui/Tooltip'
+import { InheritMark } from './inherit'
 
 export function Section({
   title,
   children,
   aside,
   help,
-  id
+  id,
+  inherit
 }: {
   title: string
   children: ReactNode
@@ -33,6 +35,8 @@ export function Section({
   /** Ajuda estática da seção → (?) ao lado do título. */
   help?: ReactNode
   id?: string
+  /** Unidades da herança da persona (painel do chat): marca "neste chat" + voltar a herdar. */
+  inherit?: readonly string[]
 }): React.JSX.Element {
   return (
     <section
@@ -44,6 +48,7 @@ export function Section({
           {title}
         </h3>
         {help && <HelpTip label={title}>{help}</HelpTip>}
+        {inherit && <InheritMark units={inherit} />}
         {aside && <div className="ml-auto flex items-center">{aside}</div>}
       </div>
       <div className="space-y-3">{children}</div>
@@ -87,6 +92,12 @@ export interface CollapsibleSectionProps {
   defaultOpen?: boolean
   /** `section` = seção do painel; `sub` = disclosure menor dentro de uma seção. */
   level?: 'section' | 'sub'
+  /**
+   * Unidades da herança da persona (painel do chat): marca "neste chat" + voltar a herdar no
+   * cabeçalho. `inheritClosed`: só com a seção fechada (aberta, cada campo tem a sua marca).
+   */
+  inherit?: readonly string[]
+  inheritClosed?: boolean
 }
 
 /**
@@ -106,7 +117,9 @@ export function CollapsibleSection({
   error,
   warning,
   defaultOpen = false,
-  level = 'section'
+  level = 'section',
+  inherit,
+  inheritClosed = false
 }: CollapsibleSectionProps): React.JSX.Element {
   const [saved, setSaved] = useCollapse(id, defaultOpen)
   const focus = useStore((s) => s.configFocus)
@@ -185,6 +198,7 @@ export function CollapsibleSection({
     </SectionErrorContext.Provider>
   )
   const helpEl = help && <HelpTip label={title}>{help}</HelpTip>
+  const inheritEl = inherit && (!inheritClosed || !open) && <InheritMark units={inherit} />
   const buttonProps = {
     type: 'button' as const,
     id: btnId,
@@ -214,6 +228,7 @@ export function CollapsibleSection({
           {helpEl}
           {errorBadge}
           {warnIcon}
+          {inheritEl}
           {summaryEl}
           {aside && <div className="ml-auto flex shrink-0 items-center gap-1.5">{aside}</div>}
         </div>
@@ -246,8 +261,9 @@ export function CollapsibleSection({
             {summaryEl && <span className="ml-auto flex min-w-0 justify-end">{summaryEl}</span>}
           </button>
         </h3>
-        {(helpEl || aside) && (
+        {(helpEl || aside || inheritEl) && (
           <div className="flex shrink-0 items-center gap-1.5">
+            {inheritEl}
             {helpEl}
             {aside}
           </div>
@@ -264,7 +280,8 @@ export function ToggleRow({
   onChange,
   info,
   help,
-  status
+  status,
+  inherit
 }: {
   label: string
   checked: boolean
@@ -274,6 +291,8 @@ export function ToggleRow({
   help?: ReactNode
   /** Linha visível abaixo do rótulo — só estado/aviso (dinâmico), nunca descrição estática. */
   status?: ReactNode
+  /** Unidade(s) da herança da persona (painel do chat): marca "neste chat" + voltar a herdar. */
+  inherit?: readonly string[]
 }): React.JSX.Element {
   return (
     <div className="flex items-start gap-3">
@@ -287,6 +306,11 @@ export function ToggleRow({
             </HelpTip>
           )}
           {info && <span className="ml-1.5 inline-flex -translate-y-px align-middle">{info}</span>}
+          {inherit && (
+            <span className="ml-1.5 inline-flex -translate-y-px align-middle empty:hidden">
+              <InheritMark units={inherit} />
+            </span>
+          )}
         </div>
         {status && <p className="mt-0.5 text-[11.5px] leading-snug text-subtle">{status}</p>}
       </div>

@@ -68,6 +68,7 @@ import type { CfgProps } from '../panel/editors'
 import { CollapsibleSection, RestoreButton, Section, ToggleRow } from '../panel/fields'
 import { useMemoryCollections, useMemoryPreview } from './hooks'
 import { CollectionIcon } from './MemoryIcon'
+import { useInherit } from '../panel/inheritContext'
 
 const NONE = '__none__'
 
@@ -86,6 +87,7 @@ export function MemorySection({
   const set = (next: MemoryConfig): void => patch({ memory: next } as Partial<ChatConfig>)
 
   const preset = isChat && cfg.presetId ? presets.find((p) => p.id === cfg.presetId) : undefined
+  const inh = useInherit()
   const persona = preset?.config.memory ? memoryConfigOf(preset.config) : null
   const willSend = memoryWillSend(mem, cols)
   const { preview, reload, setPreview } = useMemoryPreview(
@@ -115,13 +117,27 @@ export function MemorySection({
           checked={mem.enabled}
           onChange={(enabled) => set({ ...mem, enabled })}
         />
-        {preset && persona && (
+        {preset && inh ? (
+          // herança ao vivo (1.10.0): a memória inteira é uma unidade — herdada ou deste chat
           <PersonaLine
             name={preset.name}
             icon={preset.icon}
-            differs={differsFromPersona(mem, persona)}
-            onRestore={() => set(restoreFromPersona(persona))}
+            differs={inh.isOwn('memory')}
+            ownLabel="Própria deste chat"
+            sameLabel="Herdada da persona (ao vivo)"
+            restoreLabel={`Voltar a herdar da persona “${preset.name}”`}
+            onRestore={() => inh.revert(['memory'])}
           />
+        ) : (
+          preset &&
+          persona && (
+            <PersonaLine
+              name={preset.name}
+              icon={preset.icon}
+              differs={differsFromPersona(mem, persona)}
+              onRestore={() => set(restoreFromPersona(persona))}
+            />
+          )
         )}
         <SendStatus mem={mem} cols={cols} willSend={willSend} />
       </Section>
@@ -220,12 +236,18 @@ function PersonaLine({
   name,
   icon,
   differs,
-  onRestore
+  onRestore,
+  ownLabel = 'Ajustada neste chat',
+  sameLabel = 'Igual à persona',
+  restoreLabel = 'Voltar à memória da persona'
 }: {
   name: string
   icon: string
   differs: boolean
   onRestore: () => void
+  ownLabel?: string
+  sameLabel?: string
+  restoreLabel?: string
 }): React.JSX.Element {
   return (
     <div
@@ -243,19 +265,20 @@ function PersonaLine({
             differs ? 'text-accent-strong' : 'text-muted'
           )}
         >
-          {differs ? 'Ajustada neste chat' : 'Igual à persona'}
+          {differs ? ownLabel : sameLabel}
         </span>
       </span>
       {differs && (
-        <Tip label="Voltar à memória da persona">
+        <Tip label={restoreLabel}>
           <Button
             size="sm"
             variant="ghost"
             icon={<RotateCcw className="size-3" />}
             onClick={onRestore}
+            data-testid="memory-restore"
             className="h-6 px-2 text-[11px]"
           >
-            Restaurar
+            {restoreLabel.startsWith('Voltar a herdar') ? 'Voltar a herdar' : 'Restaurar'}
           </Button>
         </Tip>
       )}

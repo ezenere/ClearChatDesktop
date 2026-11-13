@@ -9,6 +9,7 @@ import type { ChatConfig, ChatParams } from '@shared/types'
 import type { VoiceCallModelConfig } from '@shared/voice'
 import { useStore } from '../../store'
 import { ParamsSection, ReasoningField } from '../panel/editors'
+import { NoInheritProvider } from '../panel/inherit'
 import { ModelPicker } from '../ui/ModelPicker'
 import { HelpTip } from '../ui/Tooltip'
 
@@ -93,7 +94,7 @@ export function VoiceCallModelEditor({
         </p>
       )}
       {value && cfg && (
-        <>
+        <NoInheritProvider>
           {providerName === undefined && (
             <p className="text-[11px] text-danger">
               O provedor deste modelo não está mais configurado.
@@ -114,7 +115,7 @@ export function VoiceCallModelEditor({
             title="Parâmetros da chamada"
             help="Só os parâmetros ligados entram nas requests da chamada (os que o modelo não aceita ficam ocultos). max_tokens só vale se ligado aqui."
           />
-        </>
+        </NoInheritProvider>
       )}
     </div>
   )

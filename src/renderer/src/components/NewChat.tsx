@@ -19,7 +19,6 @@ import { AppSignatureField, AppSignatureInfo } from './AppSignatureField'
 import { api } from '../lib/api'
 import { compactPath, isMac } from '../lib/format'
 import { initialPresetId, newChatBase, presetProviderMissing, resolvePreset } from '../lib/presets'
-import { withoutVoiceChoice } from '../lib/voice/voiceChoice'
 import { useStore } from '../store'
 import { ModelFieldInfo, RootInfo, SystemPromptInfo } from './apiDocs'
 import { NewFolderForm } from './panel/FilesTab'
@@ -69,6 +68,17 @@ function changedFields(form: Form, resolved: ChatConfig, preset: Preset | null):
     out.push('appSignatureCustom')
   if (preset?.config.cwd && form.cwd !== preset.config.cwd) out.push('cwd')
   return out
+}
+
+/** Unidades da herança (@shared/chatInherit) que os campos mudados no formulário tornam próprias. */
+function changedUnits(changed: (keyof Form)[]): string[] {
+  const out = new Set<string>()
+  for (const f of changed) {
+    if (f === 'providerId' || f === 'model') out.add('model')
+    else if (f === 'appSignature' || f === 'appSignatureCustom') out.add('appSignature')
+    else if (f === 'systemPrompt') out.add('systemPrompt')
+  }
+  return [...out]
 }
 
 export function NewChat(): React.JSX.Element {
@@ -131,20 +141,22 @@ export function NewChat(): React.JSX.Element {
   const start = async (): Promise<void> => {
     if (!canStart || !provider) return
     setCreating(true)
-    // cache: o da persona, se ela define e o provedor não mudou; senão segue o provedor
-    const cacheEnabled =
-      preset?.config.cacheEnabled !== undefined && form.providerId === resolved.providerId
-        ? preset.config.cacheEnabled
-        : supportsCacheControl(providerKind(provider))
     await createChat({
-      config: {
-        // a voz/transcrição da persona não entra no snapshot: o chat a herda ao vivo (1.9.0)
-        ...withoutVoiceChoice(withoutCwd(preset?.config)),
-        ...visibleConfig(),
-        cwd: form.cwd,
-        cacheEnabled,
-        ...(preset ? { presetId: preset.id } : {})
-      },
+      config: preset
+        ? {
+            // com persona (protocolo 1.10.0): o chat HERDA ao vivo; próprias = só as unidades
+            // mudadas aqui no formulário (o main grava a cópia completa das herdadas). A voz não
+            // vai: cada campo herda a persona ao vivo (1.9.0)
+            ...visibleConfig(),
+            cwd: form.cwd,
+            presetId: preset.id,
+            overrides: Object.fromEntries(changedUnits(changed).map((u) => [u, true as const]))
+          }
+        : {
+            ...visibleConfig(),
+            cwd: form.cwd,
+            cacheEnabled: supportsCacheControl(providerKind(provider))
+          },
       ...(showStorage ? { storage: chosenStorage } : {})
     })
     setCreating(false)

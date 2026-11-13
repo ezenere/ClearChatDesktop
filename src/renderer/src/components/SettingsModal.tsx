@@ -211,6 +211,13 @@ function DefaultsSection(): React.JSX.Element {
           quando não há persona.
         </HelpTip>
       </div>
+      <p
+        data-testid="defaults-inherit-note"
+        className="-mt-2 text-[11.5px] leading-snug text-subtle"
+      >
+        Personas que não definem um campo usam estes padrões — e os chats delas também, ao vivo:
+        mudar aqui muda esses chats (menos os campos que um chat mudou para si).
+      </p>
       <div>
         <Label info={<ModelFieldInfo />}>Modelo padrão</Label>
         <ModelPicker

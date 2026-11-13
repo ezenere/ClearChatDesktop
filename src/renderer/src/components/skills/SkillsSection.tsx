@@ -41,6 +41,7 @@ export function SkillsSection({
     <Section
       title="Skills"
       id="skills"
+      inherit={['skills']}
       aside={
         <SkillsSendInfo enabled={sc.enabled} support={support} nativeTools={cfg.nativeTools} />
       }

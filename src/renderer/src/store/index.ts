@@ -39,6 +39,7 @@ import { ATTACHMENT_LIMITS } from '@shared/limits'
 import { contentText, formatSize } from '@shared/attachments'
 import { setToolShellInfo } from '@shared/shellInfo'
 import { normalizeApprovalSettings, type ApprovalItemDecision } from '@shared/approvalPolicy'
+import { touchedUnits, withoutUnits } from '@shared/chatInherit'
 import { trackFailure, type SubFailure } from '../lib/subFailures'
 import type { UpdateStatus } from '@shared/updates'
 import type { VoiceMessageMeta } from '@shared/voiceCallMarks'
@@ -319,6 +320,23 @@ interface Actions {
   deleteChat(chatId: string): Promise<void>
   patchConfig(chatId: string, patch: Partial<ChatConfig>): void
   flushConfig(chatId: string): Promise<void>
+  /**
+   * "Voltar a herdar" (herança ao vivo da persona, protocolo 1.10.0): as unidades saem de
+   * `overrides` e passam a seguir a persona de origem. Salva na hora (sem o debounce).
+   */
+  revertUnits(chatId: string, units: readonly string[]): Promise<void>
+  /**
+   * Troca a persona do chat (mantém os campos próprios; os herdados seguem a nova) ou `null` =
+   * nenhuma (congela os valores atuais). `inheritAll`: tudo volta a herdar (ex.: "Salvar como
+   * persona" — a persona nova é igual ao chat).
+   */
+  setChatPersona(
+    chatId: string,
+    presetId: string | null,
+    opts?: { inheritAll?: boolean }
+  ): Promise<void>
+  /** Relê os chats (config efetiva) e as sessões do aberto — persona/padrões/provedores mudaram. */
+  refreshChats(): Promise<void>
   send(
     sessionId: string,
     text: string,
@@ -458,11 +476,35 @@ function upsertMessage(list: StoredMessage[], msg: StoredMessage): StoredMessage
   return next
 }
 
+/**
+ * Config com um patch de edição aplicado na hora (otimista): o valor novo e, num chat que herda a
+ * persona (tem `overrides`), as unidades tocadas marcadas como próprias — como o main grava.
+ */
+function patchedConfig(cfg: ChatConfig, patch: Partial<ChatConfig>): ChatConfig {
+  const next = { ...cfg, ...patch }
+  if (cfg.overrides && typeof cfg.overrides === 'object') {
+    const touched = touchedUnits(cfg, patch)
+    if (touched.length)
+      next.overrides = {
+        ...cfg.overrides,
+        ...Object.fromEntries(touched.map((u) => [u, true as const]))
+      }
+  }
+  return next
+}
+
 /** Reaplica um patch local pendente sobre um chat que chegou do main. */
 function withPending(chat: Chat): Chat {
   const p = pending.get(chat.id)
-  return p ? { ...chat, config: { ...chat.config, ...p.patch } } : chat
+  return p ? { ...chat, config: patchedConfig(chat.config, p.patch) } : chat
 }
+
+/** Settings de "Novos chats" que a herança lê (mudá-las muda os chats que herdam). */
+const INHERITED_SETTINGS: readonly string[] = [
+  'defaultProviderId',
+  'defaultModel',
+  'defaultSystemPrompt'
+]
 
 export const useStore = create<Store>()((set, get) => ({
   booted: false,
@@ -537,6 +579,11 @@ export const useStore = create<Store>()((set, get) => ({
 
   async reloadScopes(scopes) {
     const g = get()
+    // herança ao vivo da persona: persona ou padrões de "Novos chats" mudaram → a config efetiva dos
+    // chats (e o modelo da sessão principal) muda sem o chat ser regravado (provedores: em
+    // refreshProviders)
+    if (!scopes.includes('chats') && (scopes.includes('presets') || scopes.includes('settings')))
+      scopes = [...scopes, 'chats']
     const tasks: Promise<unknown>[] = []
     if (scopes.includes('providers')) tasks.push(g.refreshProviders())
     if (scopes.includes('presets')) tasks.push(g.refreshPresets())
@@ -737,6 +784,8 @@ export const useStore = create<Store>()((set, get) => ({
   async refreshProviders() {
     const providers = await get().run(() => api.providers.list(), 'Erro ao carregar provedores')
     if (providers) set({ providers })
+    // provedor apagado/trocado: o modelo e o cache herdados dos chats podem mudar
+    if (providers) await get().refreshChats()
   },
 
   async refreshPresets() {
@@ -755,6 +804,8 @@ export const useStore = create<Store>()((set, get) => ({
         ? s.presets.map((p) => (p.id === preset.id ? preset : p))
         : [...s.presets, preset]
     }))
+    // os chats que herdam desta persona mudam junto
+    if (id) void get().refreshChats()
     return preset
   },
 
@@ -769,6 +820,8 @@ export const useStore = create<Store>()((set, get) => ({
       settings:
         s.settings.defaultPresetId === id ? { ...s.settings, defaultPresetId: null } : s.settings
     }))
+    // os chats dela foram congelados no main (valores atuais, sem persona)
+    await get().refreshChats()
   },
 
   async duplicatePreset(id) {
@@ -780,6 +833,7 @@ export const useStore = create<Store>()((set, get) => ({
   async setSetting(key, value) {
     set((s) => ({ settings: { ...s.settings, [key]: value } }))
     await get().run(() => api.settings.set(key, value), 'Erro ao salvar configuração')
+    if (INHERITED_SETTINGS.includes(key)) await get().refreshChats()
   },
 
   async setSettings(patch) {
@@ -788,6 +842,7 @@ export const useStore = create<Store>()((set, get) => ({
       () => Promise.all(Object.entries(patch).map(([k, v]) => api.settings.set(k, v))),
       'Erro ao salvar configuração'
     )
+    if (Object.keys(patch).some((k) => INHERITED_SETTINGS.includes(k))) await get().refreshChats()
   },
 
   async checkUpdates() {
@@ -961,8 +1016,42 @@ export const useStore = create<Store>()((set, get) => ({
     const timer = setTimeout(() => void get().flushConfig(chatId), 450)
     pending.set(chatId, { patch: merged, timer })
     set((s) => ({
-      chats: s.chats.map((c) => (c.id === chatId ? { ...c, config: { ...c.config, ...patch } } : c))
+      chats: s.chats.map((c) =>
+        c.id === chatId ? { ...c, config: patchedConfig(c.config, patch) } : c
+      )
     }))
+  },
+
+  async revertUnits(chatId, units) {
+    await get().flushConfig(chatId)
+    const cur = get().chats.find((c) => c.id === chatId)
+    if (!cur || !units.length) return
+    const chat = await get().run(
+      () =>
+        api.chats.update(chatId, {
+          config: { overrides: withoutUnits(cur.config.overrides, units) }
+        }),
+      'Erro ao voltar a herdar da persona'
+    )
+    if (chat) set((s) => ({ chats: s.chats.map((c) => (c.id === chatId ? withPending(chat) : c)) }))
+    await get().refreshChats()
+  },
+
+  async setChatPersona(chatId, presetId, opts) {
+    await get().flushConfig(chatId)
+    const chat = await get().run(
+      () =>
+        api.chats.update(chatId, {
+          config: { presetId: presetId as string, ...(opts?.inheritAll ? { overrides: {} } : {}) }
+        }),
+      'Erro ao trocar a persona do chat'
+    )
+    if (chat) set((s) => ({ chats: s.chats.map((c) => (c.id === chatId ? withPending(chat) : c)) }))
+    await get().refreshChats()
+  },
+
+  async refreshChats() {
+    await get().reloadScopes(['chats'])
   },
 
   async flushConfig(chatId) {

@@ -216,6 +216,7 @@ export function SmartApproveSection({
       section="smart-approve"
       title="Smart-Approve"
       summary={smartApproveSummary(cfg)}
+      inherit={['smartApprove']}
       warning={
         !hasModel && smartItems.length
           ? `Sem modelo: ${joinItems(smartItems)} ${smartItems.length > 1 ? 'pedem' : 'pede'} sua confirmação`

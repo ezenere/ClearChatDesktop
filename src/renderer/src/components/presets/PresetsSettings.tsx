@@ -34,7 +34,7 @@ import { CollapsibleSection, ToggleRow } from '../panel/fields'
 import { baseName, rootSummary } from '../../lib/configSummary'
 import { Button, IconButton, Label } from '../ui/controls'
 import { ModelLabel } from '../ui/ModelLabel'
-import { HelpTip } from '../ui/Tooltip'
+import { HelpTip, Tip } from '../ui/Tooltip'
 import { IconPicker, PresetIcon } from './PresetIcon'
 import { MemorySection } from '../memory/MemorySection'
 import { VoiceCallConfigSection } from '../voice/VoiceCallConfigSection'
@@ -61,6 +61,7 @@ function PresetRow({ preset, onEdit }: { preset: Preset; onEdit: () => void }): 
   const duplicatePreset = useStore((s) => s.duplicatePreset)
   const resolve = useResolver()
   const cfg = resolve(preset)
+  const following = useStore((s) => s.chats.filter((c) => c.config.presetId === preset.id).length)
   return (
     <div
       data-testid="preset-row"
@@ -88,6 +89,12 @@ function PresetRow({ preset, onEdit }: { preset: Preset; onEdit: () => void }): 
             <span className="font-mono text-[11px]">sem modelo</span>
           )}
           <span className="text-faint"> · {preset.description || presetSummary(preset)}</span>
+          {following > 0 && (
+            <span data-testid="preset-following" className="text-faint">
+              {' '}
+              · {following === 1 ? '1 chat segue' : `${following} chats seguem`}
+            </span>
+          )}
         </div>
       </div>
       <div className="flex items-center gap-0.5 opacity-60 transition-opacity group-hover:opacity-100">
@@ -106,9 +113,17 @@ function PresetRow({ preset, onEdit }: { preset: Preset; onEdit: () => void }): 
           <Star className={cn(isDefault && 'fill-accent-strong text-accent-strong')} />
         </IconButton>
         {confirm ? (
-          <Button size="sm" variant="danger" onClick={() => void deletePreset(preset.id)}>
-            Apagar?
-          </Button>
+          <Tip
+            label={
+              following
+                ? `${following === 1 ? 'O chat que segue' : `Os ${following} chats que seguem`} esta persona ficam com os valores atuais, sem persona.`
+                : 'Apagar esta persona'
+            }
+          >
+            <Button size="sm" variant="danger" onClick={() => void deletePreset(preset.id)}>
+              Apagar?
+            </Button>
+          </Tip>
         ) : (
           <IconButton
             label="Apagar"
@@ -236,6 +251,9 @@ export function PresetEditor({
 }): React.JSX.Element {
   const savePreset = useStore((s) => s.savePreset)
   const toast = useStore((s) => s.toast)
+  const following = useStore(
+    (s) => s.chats.filter((c) => !!preset && c.config.presetId === preset.id).length
+  )
   const resolve = useResolver()
   const [name, setName] = useState(preset?.name ?? '')
   const [icon, setIcon] = useState(preset?.icon ?? 'sparkles')
@@ -364,6 +382,8 @@ export function PresetEditor({
           </div>
           <span className="ml-auto truncate text-[11px] text-subtle">
             Campos não alterados seguem “Novos chats”
+            {following > 0 &&
+              ` · ${following === 1 ? '1 chat segue' : `${following} chats seguem`} esta persona ao vivo`}
           </span>
         </div>
         {tab === 'model' ? (

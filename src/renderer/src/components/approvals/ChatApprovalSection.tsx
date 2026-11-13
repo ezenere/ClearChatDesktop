@@ -1,6 +1,7 @@
 // Aba Tools (chat e persona): modo de aprovação por item — as 3 opções, com ★ na opção igual ao
-// padrão global. Sem override = segue o global (a opção ★ aparece selecionada); escolher a opção ★
-// remove o override. As listas são globais (Configurações → Aprovações).
+// valor herdado: no chat que herda a persona ao vivo (1.10.0), o da persona (ou o global, se ela não
+// define o item); senão, o padrão global. Sem override = segue o herdado (a opção ★ aparece
+// selecionada); escolher a opção ★ volta a herdar. As listas são globais (Configurações → Aprovações).
 import { AlertTriangle, Settings2, Star } from 'lucide-react'
 import {
   APPROVAL_ITEM_GROUPS,
@@ -21,6 +22,8 @@ import type { CfgProps } from '../panel/editors'
 import { CollapsibleSection } from '../panel/fields'
 import { HelpTip } from '../ui/Tooltip'
 import { ModeSelector, SMART_NEEDS_MODEL } from './ApprovalControls'
+import { InheritMark } from '../panel/inherit'
+import { useInherit } from '../panel/inheritContext'
 
 export function ChatApprovalSection({
   cfg,
@@ -36,9 +39,22 @@ export function ChatApprovalSection({
   const focusConfig = useStore((s) => s.focusConfig)
   const overrides = normalizeChatModes(cfg.approvalModes)
   const judge = smartApproveActive(cfg.smartApprove)
+  // chat que herda a persona: ★ = o modo herdado (persona → global) e escolher ★ volta a herdar
+  const inh = useInherit()
+  const unit = (item: ApprovalItem): string => `approvalModes.${item}`
+  const inheritedMode = (item: ApprovalItem): ApprovalMode => {
+    const v = inh?.inherited(unit(item)) as ApprovalMode | undefined
+    return effectiveMode({ approvalModes: v ? { [item]: v } : {} }, global, item)
+  }
   // escolher a opção ★ (= global) remove o override; outra opção fixa o modo neste chat
-  const set = (item: ApprovalItem, mode: ApprovalMode): void =>
+  const set = (item: ApprovalItem, mode: ApprovalMode): void => {
+    if (inh && mode === inheritedMode(item)) return inh.revert([unit(item)])
     patch({ approvalModes: withChatMode(overrides, item, mode, global) })
+  }
+  const inheritedAccept = (): boolean => {
+    const v = inh?.inherited('acceptEditsInRoot')
+    return typeof v === 'boolean' ? v : globalAccept
+  }
   const smartNoModel = judge
     ? []
     : APPROVAL_ITEMS.filter((i) => effectiveMode(cfg, global, i) === 'smart')
@@ -54,11 +70,22 @@ export function ChatApprovalSection({
           : null
       }
       aside={<AutoApproveInfo />}
+      inherit={[...APPROVAL_ITEMS.map(unit), 'acceptEditsInRoot']}
+      inheritClosed
       help={
-        <span data-testid="approval-star-hint">
-          <Star className="mb-0.5 inline size-2.5 fill-current text-accent-strong" /> marca o padrão
-          global; escolher a opção com estrela segue o padrão global (muda junto se ele mudar).
-        </span>
+        inh ? (
+          <span data-testid="approval-star-hint">
+            <Star className="mb-0.5 inline size-2.5 fill-current text-accent-strong" /> marca o
+            valor herdado da persona “{inh.personaName}” (ou o padrão global, onde ela não define);
+            escolher a opção com estrela volta a herdar (muda junto se ele mudar).
+          </span>
+        ) : (
+          <span data-testid="approval-star-hint">
+            <Star className="mb-0.5 inline size-2.5 fill-current text-accent-strong" /> marca o
+            padrão global; escolher a opção com estrela segue o padrão global (muda junto se ele
+            mudar).
+          </span>
+        )
       }
     >
       {APPROVAL_ITEM_GROUPS.map((g) => (
@@ -71,6 +98,7 @@ export function ChatApprovalSection({
                 <div className="mb-1 flex items-baseline gap-2">
                   <span className="text-[12.5px] text-fg/90">{ITEM_LABEL[item]}</span>
                   <span className="font-mono text-[10.5px] text-faint">{ITEM_TOOL[item]}</span>
+                  <InheritMark units={[unit(item)]} />
                   {missing && (
                     <span
                       data-testid={`smart-missing-${item}`}
@@ -83,8 +111,15 @@ export function ChatApprovalSection({
                 </div>
                 <ModeSelector
                   item={item}
-                  value={overrides[item] ?? null}
-                  globalMode={global[item]}
+                  value={
+                    inh
+                      ? inh.isOwn(unit(item))
+                        ? effectiveMode(cfg, global, item)
+                        : null
+                      : (overrides[item] ?? null)
+                  }
+                  globalMode={inh ? inheritedMode(item) : global[item]}
+                  starLabel={inh ? `Herdado (${inh.source(unit(item))})` : undefined}
                   smartUnavailable={!judge}
                   onChange={(m) => set(item, m)}
                   label={`Aprovação: ${ITEM_LABEL[item]}`}
@@ -95,11 +130,30 @@ export function ChatApprovalSection({
           })}
         </div>
       ))}
-      <AcceptEditsRow
-        value={typeof cfg.acceptEditsInRoot === 'boolean' ? cfg.acceptEditsInRoot : null}
-        globalValue={globalAccept}
-        onChange={(v) => patch({ acceptEditsInRoot: v === globalAccept ? null : v })}
-      />
+      {inh ? (
+        <AcceptEditsRow
+          value={
+            inh.isOwn('acceptEditsInRoot')
+              ? typeof cfg.acceptEditsInRoot === 'boolean'
+                ? cfg.acceptEditsInRoot
+                : globalAccept
+              : null
+          }
+          globalValue={inheritedAccept()}
+          starLabel={`★ Herdado (${inh.source('acceptEditsInRoot')})`}
+          onChange={(v) =>
+            v === inheritedAccept()
+              ? inh.revert(['acceptEditsInRoot'])
+              : patch({ acceptEditsInRoot: v === globalAccept ? null : v })
+          }
+        />
+      ) : (
+        <AcceptEditsRow
+          value={typeof cfg.acceptEditsInRoot === 'boolean' ? cfg.acceptEditsInRoot : null}
+          globalValue={globalAccept}
+          onChange={(v) => patch({ acceptEditsInRoot: v === globalAccept ? null : v })}
+        />
+      )}
       {!judge && (
         <p data-testid="smart-needs-model" className="text-[11px] leading-snug text-faint">
           Smart-Approve indisponível:{' '}
@@ -135,11 +189,13 @@ export function ChatApprovalSection({
 function AcceptEditsRow({
   value,
   globalValue,
+  starLabel = '★ Padrão global',
   onChange
 }: {
-  /** null = segue o global. */
+  /** null = segue o herdado (global; no chat que herda a persona, o dela). */
   value: boolean | null
   globalValue: boolean
+  starLabel?: string
   onChange: (v: boolean) => void
 }): React.JSX.Element {
   const shown = value ?? globalValue
@@ -153,6 +209,7 @@ function AcceptEditsRow({
           ~/.ssh…) continuam perguntando.
         </HelpTip>
         <span className="font-mono text-[10.5px] text-faint">write_file · edit_file</span>
+        <InheritMark units={['acceptEditsInRoot']} />
       </div>
       <div
         role="radiogroup"
@@ -172,7 +229,7 @@ function AcceptEditsRow({
               aria-checked={selected}
               data-value={v ? 'on' : 'off'}
               data-global={star || undefined}
-              title={star ? '★ Padrão global' : undefined}
+              title={star ? starLabel : undefined}
               onClick={() => onChange(v)}
               className={cn(
                 'flex min-w-0 flex-1 items-center justify-center gap-1 rounded-md px-1.5 py-1 text-[11.5px] transition-colors',
