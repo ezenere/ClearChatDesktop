@@ -55,9 +55,18 @@ export interface AudioCaptureOptions {
   silence?: Partial<SilenceDetectorConfig> | false
 }
 
+/** Amostras do quadro de nível (a chamada separa fala de estalo — `LevelGate.pushSamples`). */
+export interface LevelFrame {
+  /** Amostras float −1..1 do quadro, na taxa do AudioContext. */
+  samples: Float32Array
+  sampleRate: number
+  /** Duração do quadro (ms). */
+  ms: number
+}
+
 export interface CaptureEventMap {
-  /** Nível RMS do quadro (0..1), a ~30 Hz. */
-  level: (level: number) => void
+  /** Nível RMS do quadro (0..1), a ~30 Hz, com as amostras dele. */
+  level: (level: number, frame: LevelFrame) => void
   /** Chunk de PCM16 mono na taxa configurada (padrão 16 kHz). */
   pcm: (chunk: Int16Array) => void
   /** Silêncio contínuo atingiu a duração configurada (uma vez por ocorrência). */
@@ -340,7 +349,11 @@ export class AudioCapture {
     let frame = this.#frames.take(this.#frameSamples)
     while (frame) {
       const rms = frameRms(frame)
-      this.#emit('level', rms)
+      this.#emit('level', rms, {
+        samples: frame,
+        sampleRate: this.#context?.sampleRate ?? this.#pcmOutRate,
+        ms: this.#frameMs
+      })
       if (this.#detector) {
         const silent = this.#detector.push(rms, this.#frameMs)
         if (silent && !this.#silenceNotified) {

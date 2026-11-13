@@ -7,7 +7,11 @@
 //      descartado sem chamar o STT, e o que vai é aparado (silêncio antes/depois, com folga);
 //   2. pós-filtro: o resultado que é só uma alucinação conhecida com pouca voz (ou palavras demais
 //      para a voz que houve) vira texto vazio; a mesma frase grudada no FIM de uma transcrição
-//      maior, sem uma "ilha" de voz própria no fim do áudio, é removida.
+//      maior, sem uma "ilha" de voz própria no fim do áudio, é removida;
+//   3. estalos (teclado, batidas) não são voz: quadro impulsivo e sequência curta não contam (ver
+//      "transientes impulsivos") — digitar nunca soma voz para ir ao STT nem segura uma alucinação;
+//   4. na fala que interrompeu o assistente (barge-in), alucinação conhecida no começo/fim sai
+//      sempre (`stripBargeInHallucinations`, aplicada pela chamada).
 // Consumo: `src/main/voice/session.ts` (todas as vias — parciais, segmentos, especulação e a final;
 // ditado e chamada). Ver SPEC.md → "Áudio → Portão de ativação de fala".
 
@@ -53,6 +57,96 @@ const ISLAND_MERGE_MS = 150
 export const FINAL_ISLAND_GAP_MS = 250
 export const FINAL_ISLAND_MIN_MS = 250
 
+// ---------------- transientes impulsivos (teclado, batidas, cliques) ----------------
+//
+// O nível (RMS) de um quadro não separa fala de um estalo: uma tecla batida perto do microfone tem
+// o RMS de uma fala em voz baixa — digitar durante a chamada abaixava a resposta, virava barge-in e
+// o whisper "transcrevia" o barulho como "Tchau." (2026-11-13). Duas regras baratas e
+// determinísticas, as MESMAS no portão do STT (main/celular) e na detecção da chamada (renderer):
+//   1. quadro IMPULSIVO não é fala: a energia está num estalo curto e o resto do quadro é
+//      silêncio/ruído — energia média dos sub-blocos de `IMPULSE_SUBBLOCK_MS` ≥
+//      `IMPULSE_MEAN_OVER_MEDIAN_DB` acima da mediana (a fala — vogais, consoantes sustentadas —
+//      espalha a energia pelo quadro: ~3–7 dB; uma tecla: 15–30 dB) E 80 % dela em até
+//      `IMPULSE_MAX_SPAN_MS` (o fim de uma vogal no meio do quadro também concentra, mas não cabe);
+//   2. fala é SUSTENTADA: só conta depois de `MIN_SPEECH_RUN_MS` seguidos de quadros com nível de
+//      fala e não impulsivos, com a energia espalhada pela janela e SEM estar morrendo (o último
+//      quadro a no máximo `SPEECH_RUN_MAX_DECAY_DB` abaixo do mais forte — o "toc" grave de uma
+//      tecla ressoa um pouco e some; o começo de uma sílaba sobe e fica); com a fala confirmada,
+//      pausas de até `SPEECH_RUN_HOLD_MS` (entre sílabas) não exigem nova confirmação — um estalo
+//      exige.
+
+/** Sub-bloco (ms) da análise de impulso de um quadro. */
+export const IMPULSE_SUBBLOCK_MS = 2
+/** Energia média ÷ mediana dos sub-blocos (dB) a partir da qual o quadro é um estalo. */
+export const IMPULSE_MEAN_OVER_MEDIAN_DB = 10
+/** …e a energia ainda cabe em até tanto (ms — `IMPULSE_ENERGY_SHARE` dela): um estalo é curto. */
+export const IMPULSE_MAX_SPAN_MS = 6
+export const IMPULSE_ENERGY_SHARE = 0.8
+/** Sequência mínima (ms) de quadros com nível de fala, não impulsivos, para virar fala. */
+export const MIN_SPEECH_RUN_MS = 60
+/** Lacuna (ms) tolerada dentro de uma fala já confirmada sem exigir nova confirmação. */
+export const SPEECH_RUN_HOLD_MS = 150
+/** Queda máxima (dB) do último quadro da janela em relação ao mais forte para confirmar a fala. */
+export const SPEECH_RUN_MAX_DECAY_DB = 12
+
+/** Energia (soma dos quadrados) de cada sub-bloco de `IMPULSE_SUBBLOCK_MS` (o resto fica fora). */
+export function subblockEnergies(samples: ArrayLike<number>, sampleRate: number): Float64Array {
+  const sub = Math.max(1, Math.round((sampleRate * IMPULSE_SUBBLOCK_MS) / 1000))
+  const blocks = Math.floor(samples.length / sub)
+  const out = new Float64Array(Math.max(0, blocks))
+  for (let b = 0, i = 0; b < blocks; b++) {
+    let s = 0
+    for (const end = i + sub; i < end; i++) s += samples[i] * samples[i]
+    out[b] = s
+  }
+  return out
+}
+
+/**
+ * Quão impulsivo é o quadro: energia média ÷ mediana dos sub-blocos, em dB (0 = energia espalhada;
+ * independente da escala das amostras). Menos de 4 sub-blocos ou quadro mudo → 0.
+ */
+export function impulseRatioDb(energies: Float64Array): number {
+  const n = energies.length
+  if (n < 4) return 0
+  let total = 0
+  for (let i = 0; i < n; i++) total += energies[i]
+  const mean = total / n
+  if (!(mean > 0)) return 0
+  const sorted = energies.slice().sort()
+  const median = n % 2 ? sorted[(n - 1) >> 1] : (sorted[n / 2 - 1] + sorted[n / 2]) / 2
+  return 10 * Math.log10(mean / Math.max(median, mean * 1e-6))
+}
+
+/**
+ * Duração (ms) que concentra `IMPULSE_ENERGY_SHARE` da energia do quadro (os sub-blocos mais
+ * fortes, somados até lá): um estalo cabe em poucos ms; o fim de uma vogal que acaba no meio do
+ * quadro, não.
+ */
+export function energySpanMs(energies: Float64Array): number {
+  let total = 0
+  for (let i = 0; i < energies.length; i++) total += energies[i]
+  if (!(total > 0)) return 0
+  const sorted = energies.slice().sort().reverse()
+  let acc = 0
+  let k = 0
+  while (k < sorted.length && acc < total * IMPULSE_ENERGY_SHARE) acc += sorted[k++]
+  return k * IMPULSE_SUBBLOCK_MS
+}
+
+/** As energias dos sub-blocos são de um estalo (concentradas E curtas)? */
+export function isImpulsiveEnergies(energies: Float64Array): boolean {
+  return (
+    impulseRatioDb(energies) >= IMPULSE_MEAN_OVER_MEDIAN_DB &&
+    energySpanMs(energies) <= IMPULSE_MAX_SPAN_MS
+  )
+}
+
+/** O quadro (amostras em qualquer escala — float −1..1 ou PCM16) é um estalo, não fala? */
+export function isImpulsiveFrame(samples: ArrayLike<number>, sampleRate: number): boolean {
+  return isImpulsiveEnergies(subblockEnergies(samples, sampleRate))
+}
+
 /** Resultado da análise de um trecho do buffer (bytes de PCM16). */
 export interface GateAnalysis {
   /** Voz no trecho (ms de quadros acima do limiar). */
@@ -66,15 +160,28 @@ export interface GateAnalysis {
 }
 
 /**
- * Decisão de fala de UM quadro de nível (a regra única — o portão do STT no main e a detecção de
- * fala da chamada no renderer usam a MESMA): nível (dBFS) ≥ `max(ativação, piso + 10 dB)`; o piso
- * desce rápido (silêncio de verdade) e sobe em ~1 s só com os quadros SEM fala. Ruído constante
+ * Decisão de fala de UM quadro de nível (a regra única — o portão do STT no main/celular e a
+ * detecção de fala da chamada no renderer usam a MESMA): nível (dBFS) ≥ `max(ativação, piso +
+ * 10 dB)`, o quadro não é um estalo e a sequência de quadros assim já tem `MIN_SPEECH_RUN_MS` com a
+ * energia espalhada (ver "transientes impulsivos" — com as amostras, `pushSamples`; só com o nível,
+ * `pushRms`/`pushDb` aplicam a sequência mínima e o estalo que o chamador informar); o piso desce
+ * rápido (silêncio de verdade) e sobe em ~1 s só com os quadros abaixo do limiar. Ruído constante
  * abaixo da ativação nunca é fala; ruído acima dela é caso do nível de ativação (Configurações →
  * Áudio). As taxas são por 20 ms e escalam com a duração do quadro (`frameMs`).
  */
 export class LevelGate {
   readonly activationDb: number
   #floorDb: number
+  /** Sequência atual de quadros com nível de fala e não impulsivos (ms / quadros). */
+  #runMs = 0
+  #runFrames = 0
+  /** Os quadros mais recentes da sequência (a janela da confirmação): duração, nível, energias. */
+  #runWindow: { ms: number; db: number; e: Float64Array | null }[] = []
+  /** A sequência atual já é fala. */
+  #confirmed = false
+  /** Tempo desde o último quadro com nível de fala não impulsivo (ms). */
+  #gapMs = 0
+  #backfill = 0
 
   constructor(opts: { activationDb?: number; noiseFloorDb?: number } = {}) {
     this.activationDb = normalizeActivationDb(opts.activationDb)
@@ -94,23 +201,108 @@ export class LevelGate {
     return Math.max(this.activationDb, this.#floorDb + NOISE_MARGIN_DB)
   }
 
-  /** Um quadro de `db` dBFS com `frameMs` de duração: é fala? (e atualiza o piso). */
-  pushDb(db: number, frameMs: number = GATE_FRAME_MS): boolean {
-    const level = Number.isFinite(db) ? db : -120
-    const voiced = level >= this.thresholdDb
-    const k = Math.max(
-      0.05,
-      (Number.isFinite(frameMs) && frameMs > 0 ? frameMs : GATE_FRAME_MS) / GATE_FRAME_MS
-    )
-    const rate = (a: number): number => 1 - Math.pow(1 - a, k)
-    if (level < this.#floorDb) this.#floorDb += rate(0.25) * (level - this.#floorDb)
-    else if (!voiced) this.#floorDb += rate(0.02) * (level - this.#floorDb)
-    return voiced
+  /**
+   * Quadros ANTERIORES ao último `push` que a confirmação da sequência acabou de tornar fala (o
+   * começo da sílaba, ainda não contado) — o portão do STT os marca de volta; 0 nos demais quadros.
+   */
+  get backfillFrames(): number {
+    return this.#backfill
   }
 
-  /** Um quadro de RMS (0..1) — o nível que a captura do renderer emite. */
-  pushRms(rms: number, frameMs: number = GATE_FRAME_MS): boolean {
-    return this.pushDb(rmsToDb(rms), frameMs)
+  /**
+   * Um quadro de `db` dBFS com `frameMs` de duração: é fala? (e atualiza o piso). `impulsive` = o
+   * quadro é um estalo (`isImpulsiveFrame`); `energies` = as energias dos sub-blocos dele
+   * (`subblockEnergies`) — com elas a sequência só confirma com a energia espalhada pela janela
+   * (duas batidas seguidas — descida e subida da tecla — não viram fala).
+   */
+  pushDb(
+    db: number,
+    frameMs: number = GATE_FRAME_MS,
+    impulsive = false,
+    energies?: Float64Array
+  ): boolean {
+    const level = Number.isFinite(db) ? db : -120
+    const dt = Number.isFinite(frameMs) && frameMs > 0 ? frameMs : GATE_FRAME_MS
+    const loud = level >= this.thresholdDb
+    const k = Math.max(0.05, dt / GATE_FRAME_MS)
+    const rate = (a: number): number => 1 - Math.pow(1 - a, k)
+    if (level < this.#floorDb) this.#floorDb += rate(0.25) * (level - this.#floorDb)
+    else if (!loud) this.#floorDb += rate(0.02) * (level - this.#floorDb)
+    this.#backfill = 0
+    if (loud && !impulsive) {
+      this.#gapMs = 0
+      this.#runMs += dt
+      this.#runFrames++
+      if (this.#confirmed) return true
+      this.#runWindow.push({ ms: dt, db: level, e: energies?.length ? energies : null })
+      // a janela: os quadros mais recentes que cobrem a sequência mínima
+      let ms = 0
+      for (let i = this.#runWindow.length - 1; i >= 0; i--) {
+        ms += this.#runWindow[i].ms
+        if (ms >= MIN_SPEECH_RUN_MS - 1e-6) {
+          this.#runWindow = this.#runWindow.slice(i)
+          break
+        }
+      }
+      if (this.#runMs < MIN_SPEECH_RUN_MS - 1e-6 || !this.#sustained()) return false
+      this.#confirmed = true
+      this.#backfill = this.#runFrames - 1
+      this.#runWindow = []
+      return true
+    }
+    // estalo ou quadro abaixo do limiar: não é fala; a sequência recomeça (as caudas de duas teclas
+    // nunca se somam). A fala confirmada aguenta uma pausa curta, mas não um estalo: depois dele a
+    // voz precisa se confirmar de novo (digitar logo depois de falar não vira "fala")
+    this.#gapMs += dt
+    this.#runMs = 0
+    this.#runFrames = 0
+    this.#runWindow = []
+    if (this.#confirmed && (impulsive || this.#gapMs > SPEECH_RUN_HOLD_MS)) this.#confirmed = false
+    return false
+  }
+
+  /**
+   * A janela da sequência é som sustentado: não está morrendo (último quadro perto do mais forte)
+   * e, com as energias dos sub-blocos, a energia está espalhada por ela.
+   */
+  #sustained(): boolean {
+    const w = this.#runWindow
+    if (!w.length) return true
+    let max = -Infinity
+    for (const x of w) max = Math.max(max, x.db)
+    if (w[w.length - 1].db < max - SPEECH_RUN_MAX_DECAY_DB) return false
+    if (w.some((x) => !x.e)) return true
+    const all = new Float64Array(w.reduce((a, x) => a + x.e!.length, 0))
+    let o = 0
+    for (const x of w) {
+      all.set(x.e!, o)
+      o += x.e!.length
+    }
+    return impulseRatioDb(all) < IMPULSE_MEAN_OVER_MEDIAN_DB
+  }
+
+  /** Um quadro de RMS (0..1) — o nível que a captura emite (`impulsive` quando conhecido). */
+  pushRms(rms: number, frameMs: number = GATE_FRAME_MS, impulsive = false): boolean {
+    return this.pushDb(rmsToDb(rms), frameMs, impulsive)
+  }
+
+  /**
+   * Um quadro de AMOSTRAS (float −1..1; PCM16 com `scale` 32768): nível, estalo e a energia da
+   * sequência — a regra completa (portão do STT; a chamada do renderer, com o quadro da captura).
+   */
+  pushSamples(
+    samples: ArrayLike<number>,
+    sampleRate: number,
+    opts: { frameMs?: number; scale?: number } = {}
+  ): boolean {
+    const n = samples.length
+    let sum = 0
+    for (let i = 0; i < n; i++) sum += samples[i] * samples[i]
+    const scale = opts.scale && opts.scale > 0 ? opts.scale : 1
+    const rms = n ? Math.sqrt(sum / n) / scale : 0
+    const energies = subblockEnergies(samples, sampleRate)
+    const frameMs = opts.frameMs ?? (n * 1000) / (sampleRate > 0 ? sampleRate : 16_000)
+    return this.pushDb(rmsToDb(rms), frameMs, isImpulsiveEnergies(energies), energies)
   }
 }
 
@@ -176,23 +368,23 @@ export class SpeechGate {
     const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength)
     let off = 0
     for (; off + fb <= buf.length; off += fb) {
-      let sum = 0
-      for (let j = off; j < off + fb; j += 2) {
-        const s = dv.getInt16(j, true) / 32768
-        sum += s * s
-      }
-      this.#frame(rmsToDb(Math.sqrt(sum / (fb / 2))))
+      const samples = new Float32Array(fb / 2)
+      for (let j = off, k = 0; j < off + fb; j += 2, k++) samples[k] = dv.getInt16(j, true) / 32768
+      this.#frame(samples)
     }
     this.#residual = buf.slice(off)
   }
 
-  #frame(db: number): void {
-    const voiced = this.#level.pushDb(db, GATE_FRAME_MS)
+  #frame(samples: Float32Array): void {
+    const voiced = this.#level.pushSamples(samples, this.sampleRate, { frameMs: GATE_FRAME_MS })
     if (this.#frames >= this.#flags.length) {
       const bigger = new Uint8Array(this.#flags.length * 2)
       bigger.set(this.#flags)
       this.#flags = bigger
     }
+    // a sequência acabou de se confirmar como fala: o começo dela (ainda não contado) também é
+    for (let b = this.#level.backfillFrames, i = this.#frames - 1; b > 0 && i >= 0; b--, i--)
+      this.#flags[i] = 1
     this.#flags[this.#frames++] = voiced ? 1 : 0
   }
 
@@ -331,4 +523,26 @@ export function filterSilenceHallucination(
     if (lastNorm && HALLUCINATION_SET.has(lastNorm)) return parts.slice(0, -1).join(' ').trim()
   }
   return raw
+}
+
+/**
+ * Fala que INTERROMPEU o assistente (barge-in): o usuário falou por cima de uma frase tocando — uma
+ * alucinação conhecida ali nunca é real (pedido do usuário, 2026-11-13: "se essa frase surgir quando
+ * ele interrompe, não é real"; o eco da resposta, a respiração e a digitação viram "Tchau." no
+ * whisper). Sai a frase inteira que é só uma alucinação conhecida, no começo ou no fim (repetidas
+ * inclusive — "Tchau. Tchau."); sobrou nada → ''. Texto real passa intacto; um "tchau" dito fora de
+ * um barge-in não passa por aqui (continua podendo encerrar a chamada).
+ */
+export function stripBargeInHallucinations(text: string): string {
+  const parts = String(text ?? '')
+    .trim()
+    .split(/(?<=[.!?…])\s+/)
+    .filter((p) => p.trim())
+  const fake = (p: string): boolean => {
+    const t = norm(p)
+    return !t || HALLUCINATION_SET.has(t)
+  }
+  while (parts.length && fake(parts[parts.length - 1])) parts.pop()
+  while (parts.length && fake(parts[0])) parts.shift()
+  return parts.join(' ').trim()
 }

@@ -31,7 +31,7 @@ import { DEFAULT_BARGE_IN, DEFAULT_TURN_TIMING, type TurnTiming } from '@shared/
 import { DUCK_FADE_MS, PlaybackDuck, VoicedSpan, type BargeInReason } from '@shared/voicePolicy'
 import { AdaptiveTurnGate, classifyUtteranceEnd, type UtteranceEnd } from '@shared/voiceTurn'
 import { LevelGate } from '@shared/speechGate'
-import { AudioCapture } from '../audio/capture'
+import { AudioCapture, type LevelFrame } from '../audio/capture'
 import { api, errorMessage } from '../api'
 import { useStore } from '../../store'
 import { captureErrorText, MIC_FALLBACK_NOTICE } from './dictation'
@@ -335,9 +335,10 @@ export function useVoiceCall(): void {
       }
     })()
     // fala detectada pela MESMA regra do portão do STT (`LevelGate`: nível de ativação do
-    // microfone + piso de ruído adaptativo): os quadros viram 1 (fala) / 0 (não) antes do gate de
-    // turno, do tempo com voz e do ducking — ruído de sala abaixo da ativação nunca abaixa a resposta
-    // nem abre um turno. O nível chega com as settings (antes de a captura abrir).
+    // microfone + piso de ruído adaptativo + estalos/sequência mínima): os quadros viram 1 (fala) /
+    // 0 (não) antes do gate de turno, do tempo com voz e do ducking — ruído de sala abaixo da
+    // ativação e digitação nunca abaixam a resposta nem abrem um turno. O nível chega com as
+    // settings (antes de a captura abrir).
     let level = new LevelGate()
     const VOICED = 1
     const SPEECH = 0.5
@@ -461,9 +462,14 @@ export function useVoiceCall(): void {
       if (gate.setVerdict(seq, end) === 'end') closeUtterance()
     }
 
-    const onLevel = (raw: number): void => {
+    const onLevel = (raw: number, frame?: LevelFrame): void => {
       setLevel(raw)
-      const rms = level.pushRms(raw, FRAME_MS) ? VOICED : 0
+      // com as amostras do quadro a regra é a completa do portão: estalo (tecla, batida) e
+      // sequência curta nunca são fala — digitar não abaixa a resposta nem abre um turno
+      const voiced = frame?.samples.length
+        ? level.pushSamples(frame.samples, frame.sampleRate, { frameMs: frame.ms })
+        : level.pushRms(raw, FRAME_MS)
+      const rms = voiced ? VOICED : 0
       const ev = gate.push(rms, FRAME_MS)
       // tempo com voz da fala: zera no início dela e mede só enquanto ela está aberta (o silêncio
       // do fim fica de fora — o span termina no último quadro com voz)

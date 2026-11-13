@@ -77,6 +77,7 @@ import {
   type KeepAliveContext
 } from '@shared/voicePolicy'
 import { isBackchannelText } from '@shared/voiceTurn'
+import { stripBargeInHallucinations } from '@shared/speechGate'
 import { isOnlyAudioTags, stripAudioTags } from '@shared/audioTags'
 import { heardPrefix } from '@shared/heardText'
 import { ttsSupportsAudioTags } from '@shared/voiceCatalog'
@@ -409,6 +410,12 @@ export class VoiceCallManager {
   /** Última transcrição final ainda não usada num turno (vira o `meta.voice` da fala). */
   #lastTranscript: VoiceCallTranscript | null = null
   /**
+   * A fala cuja transcrição chega no próximo `turn` INTERROMPEU a resposta (barge-in, ou fala na
+   * pausa entre frases já ouvidas): alucinação conhecida no começo/fim dela sai
+   * (`stripBargeInHallucinations`).
+   */
+  #interruptingSpeech = false
+  /**
    * Falas transcritas acumuladas para o próximo envio (fila/turno continuado unem várias).
    * `voicedMs` = tempo com VOZ (renderer; sem silêncio antes/depois nem a espera do fim de turno)
    * — null enquanto nenhuma fala trouxe a medida.
@@ -475,6 +482,7 @@ export class VoiceCallManager {
     this.#sessionId = sessionId
     this.#chatId = info.chatId
     this.#muted = false
+    this.#interruptingSpeech = false
     this.#error = null
     this.#endedReason = null
     this.#preparing = null
@@ -526,6 +534,7 @@ export class VoiceCallManager {
     this.#sessionId = null
     this.#chatId = null
     this.#muted = false
+    this.#interruptingSpeech = false
     this.#error = null
     this.#preparing = null
     this.#turn = null
@@ -585,6 +594,8 @@ export class VoiceCallManager {
   mute(muted: boolean): VoiceCallState {
     if (!this.#sessionId) return this.state()
     this.#muted = !!muted
+    // mudo descarta a fala em curso (o renderer não manda o turno dela)
+    if (this.#muted) this.#interruptingSpeech = false
     this.#emitState()
     return this.state()
   }
@@ -620,6 +631,7 @@ export class VoiceCallManager {
     } else if (played.length && (unheard || this.#machine.responseInFlight)) {
       // parte da resposta ouvida, o resto não: barge-in (para o turno, trunca ao falado)
       this.#interruptAnswer(played)
+      this.#interruptingSpeech = true
     }
     this.#machine.speechBegan()
     this.#emitTimeline({ ts: this.#now(), kind: 'speech-start' })
@@ -645,6 +657,23 @@ export class VoiceCallManager {
     if (!this.#sessionId) return this.state()
     this.#error = null
     let t = typeof text === 'string' ? text.trim() : ''
+    // fala que interrompeu o assistente: "Tchau."/"Obrigado." ali é alucinação do STT (eco,
+    // respiração, digitação), nunca o usuário — sai antes de virar turno (um "tchau" fora de um
+    // barge-in segue valendo e pode encerrar a chamada)
+    if (this.#interruptingSpeech) {
+      this.#interruptingSpeech = false
+      const real = stripBargeInHallucinations(t)
+      if (real !== t)
+        this.#emitTimeline({
+          ts: this.#now(),
+          kind: 'decision',
+          class: 'STT',
+          played: false,
+          reason: 'barge-in-hallucination',
+          text: t.slice(0, EVAL_TAIL_MAX_CHARS)
+        })
+      t = real
+    }
     // a fala com texto entra no `meta.voice` do próximo envio (duração/modelo da transcrição)
     const tr = this.#lastTranscript
     this.#lastTranscript = null
@@ -749,6 +778,7 @@ export class VoiceCallManager {
       ? input!.playedIds.filter((id) => this.#uttKey.has(id))
       : [...this.#uttKey.keys()]
     this.#playbackActive = false
+    this.#interruptingSpeech = true // a transcrição desta fala chega no próximo `turn`
     this.#resetFiller(true) // quem falou é o usuário: sem filler no meio da fala dele
     this.#resetToolPhrase(true)
     this.#resetDelay(true, 'barge-in')
