@@ -480,9 +480,10 @@ export function voiceFilledFromPersona(
 // ---------------- ciclo de vida ----------------
 
 /**
- * Diferença numa unidade que a migração NÃO marca como própria: uma tool de um tipo de aparelho em
- * que o chat nunca rodou (§4.3.6 — ex.: chat criado no celular, sem as tools do computador, passa a
- * herdá-las; chat antigo do desktop, sem as do celular, idem).
+ * Unidade que não pode ser própria "por causa do aparelho": `enabledTools.<t>` de uma tool de um tipo
+ * de aparelho em que o chat nunca rodou (§4.3.6). A migração não a marca (ex.: chat criado no celular,
+ * sem as tools do computador, passa a herdá-las; chat antigo do desktop, sem as do celular, idem) e a
+ * limpeza única a tira de `overrides`.
  */
 function deviceDifference(unit: string, ranOn: ChatRanOn): boolean {
   if (!unit.startsWith('enabledTools.')) return false
@@ -528,6 +529,27 @@ export function migrateChatOverrides(
   const out: InheritConfig = { ...clone(record), overrides: ov }
   if (record.voice) out.voice = voiceInheritingPersona(record.voice, persona.voice)
   return out
+}
+
+/**
+ * Limpeza única (§4.3.6, uma vez por dispositivo depois de um pull completo): builds de teste de
+ * 1.10.0 marcaram tools como próprias por causa do aparelho — as unidades `enabledTools.<t>` de tools
+ * de um tipo de aparelho em que o chat nunca rodou (mesmo critério da migração, `ranOn`) saem de
+ * `overrides`, como num "voltar a herdar" (a cópia recebe o valor efetivo da persona). Sem a herança
+ * ativa aqui (sem persona/persona ausente), só as marcas saem. null = nada a limpar.
+ */
+export function cleanDeviceOverrides(
+  record: InheritConfig,
+  persona: PresetConfig | null | undefined,
+  env: InheritEnv,
+  ranOn: ChatRanOn
+): InheritConfig | null {
+  const ov = normalizeOverrides(record.overrides)
+  if (!ov) return null
+  const units = Object.keys(ov).filter((u) => deviceDifference(u, ranOn))
+  if (!units.length) return null
+  if (inheritanceActive(record, persona)) return revertToInherit(record, units, persona, env)
+  return { ...clone(record), overrides: withoutUnits(record.overrides, units) }
 }
 
 /**

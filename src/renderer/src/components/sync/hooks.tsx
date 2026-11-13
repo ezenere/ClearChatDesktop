@@ -2,7 +2,7 @@
 import { CircleAlert, FolderOpen, Lock, Wrench, Zap } from 'lucide-react'
 import { useCallback, useState } from 'react'
 import type { Chat } from '@shared/types'
-import type { ChatHostInfo } from '@shared/sync'
+import { takeoverWarnsLocalTools, type ChatHostInfo } from '@shared/sync'
 import { api, errorMessage } from '../../lib/api'
 import { compactPath } from '../../lib/format'
 import { useStore } from '../../store'
@@ -57,9 +57,12 @@ export function useTakeover(chat: Chat): {
     [chat.id]
   )
 
+  // §8.9: o aviso forte só num chat com ferramentas locais que já rodou num computador (hostCwd)
+  const localWarn = !!info && takeoverWarnsLocalTools(info.usesLocalTools, info.hostCwd)
+
   const start = (m: 'next_turn' | 'force'): void => {
     if (!info) return
-    const needsDialog = info.usesLocalTools || info.pinned || info.needsCwd
+    const needsDialog = localWarn || info.pinned || info.needsCwd
     if (!needsDialog) {
       void run(async () => {
         await api.sync.takeover(chat.id, { mode: m })
@@ -105,7 +108,7 @@ export function useTakeover(chat: Chat): {
           className="space-y-3 text-[12.5px] leading-relaxed text-muted"
           data-testid="takeover-dialog"
         >
-          {info.usesLocalTools && (
+          {localWarn && (
             <div className="flex items-start gap-2.5 rounded-xl border border-warning/35 bg-warning/[0.08] px-3 py-2.5 text-warning">
               <Wrench className="mt-0.5 size-4 shrink-0" />
               <p>

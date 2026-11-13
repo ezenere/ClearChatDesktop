@@ -11,6 +11,7 @@ import {
   allUnits,
   applyChatConfigPatch,
   applyChatEdit,
+  cleanDeviceOverrides,
   effectiveChatConfig,
   freezeChat,
   inheritedUnitValue,
@@ -50,7 +51,7 @@ import {
 } from '../src/shared/deviceTools.ts'
 import { normalizeToolList } from '../src/shared/types.ts'
 import { migrateConfigTools } from '../src/shared/toolRename.ts'
-import { usesLocalTools } from '../src/shared/sync.ts'
+import { LOCAL_TOOLS, takeoverWarnsLocalTools, usesLocalTools } from '../src/shared/sync.ts'
 import type { ChatConfig } from '../src/shared/types.ts'
 
 const OR = { id: 'or', baseUrl: 'https://openrouter.ai/api/v1', kind: 'openrouter' as const }
@@ -685,4 +686,57 @@ test('patch: trocar a persona de um chat não migrado usa o tipo de aparelho em 
   )
   assert.deepEqual(sw.overrides, {})
   assert.ok(sw.enabledTools.includes('shell'), 'segue a nova persona (todas)')
+})
+
+test('limpeza única: tira as marcas de tools de um tipo de aparelho em que o chat nunca rodou', () => {
+  const p = persona({ systemPrompt: 'P' })
+  // chat de um build de teste do celular: as do computador desligadas e a localização como próprias
+  let rec = chatOf(p)
+  rec = applyChatEdit(
+    rec,
+    {
+      enabledTools: rec.enabledTools.filter((t) => toolDevice(t) !== 'computer'),
+      systemPrompt: 'meu'
+    },
+    p,
+    env()
+  )
+  rec = { ...rec, overrides: { ...rec.overrides, 'enabledTools.get_location': true } }
+  assert.equal(Object.keys(rec.overrides!).length, 12 + 2)
+  // rodou só no celular (sem hostCwd): as do computador saem (voltam a herdar), a do celular fica
+  const cel = cleanDeviceOverrides(rec, p, env(), PHONE)!
+  assert.deepEqual(Object.keys(cel.overrides!).sort(), [
+    'enabledTools.get_location',
+    'systemPrompt'
+  ])
+  assert.ok(effectiveChatConfig(cel, p, env()).enabledTools.includes('shell'), 'herda de novo')
+  assert.ok(cel.enabledTools.includes('shell'), 'a cópia recebe o valor herdado')
+  assert.equal(cel.systemPrompt, 'meu')
+  // de novo: nada a limpar
+  assert.equal(cleanDeviceOverrides(cel, p, env(), PHONE), null)
+  // rodou num computador: as do computador ficam; a do celular sai
+  const pc = cleanDeviceOverrides(rec, p, env(), PC)!
+  assert.ok(!isOwn(pc, 'enabledTools.get_location') && isOwn(pc, 'enabledTools.shell'))
+  // rodou nos dois: nada sai
+  assert.equal(cleanDeviceOverrides(rec, p, env(), { computer: true, phone: true }), null)
+  // sem persona aqui: só as marcas saem (valores próprios ficam)
+  const frozen = { ...rec, presetId: undefined }
+  const f = cleanDeviceOverrides(frozen, null, env(), PHONE)!
+  assert.ok(!isOwn(f, 'enabledTools.shell'))
+  assert.ok(!f.enabledTools.includes('shell'), 'sem persona o valor do chat fica')
+  // tools sem tipo de aparelho e desconhecidas não são tocadas
+  const other = {
+    ...rec,
+    overrides: { 'enabledTools.web_search': true, 'enabledTools.mcp_x': true }
+  }
+  assert.equal(cleanDeviceOverrides(other as InheritConfig, p, env(), PHONE), null)
+})
+
+test('§8.9: ferramentas locais = as só do computador (present_file inclusive); aviso forte só com hostCwd', () => {
+  assert.deepEqual([...LOCAL_TOOLS], [...COMPUTER_TOOL_NAMES])
+  assert.equal(usesLocalTools({ enabledTools: ['present_file'] }), true)
+  assert.equal(usesLocalTools({ enabledTools: ['web_search', 'get_location'] }), false)
+  assert.equal(takeoverWarnsLocalTools(true, { deviceId: 'pc', path: '/p' }), true)
+  assert.equal(takeoverWarnsLocalTools(true, null), false, 'nunca rodou num computador: livre')
+  assert.equal(takeoverWarnsLocalTools(false, { deviceId: 'pc', path: '/p' }), false)
 })

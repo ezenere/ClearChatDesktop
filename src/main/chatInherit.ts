@@ -7,6 +7,7 @@ import { homedir } from 'os'
 import { normalizeAppSignatureId } from '@shared/appSignatures'
 import { APPROVAL_MODES_SETTING, migrateLegacyApprovals } from '@shared/approvalPolicy'
 import {
+  cleanDeviceOverrides,
   effectiveChatConfig,
   freezeChat,
   hasOverrides,
@@ -168,6 +169,44 @@ export function migrateChatInheritance(conn: Conn): string[] {
     for (const r of rows) {
       const rec = chatRecordFrom(conn, r.config_json)
       const next = migrateChatOverrides(
+        rec,
+        presetConfigOf(conn, rec.presetId),
+        env,
+        chatRanOnHere(conn, r.id)
+      )
+      if (!next) continue
+      writeConfig(conn, r.id, next)
+      out.push(r.id)
+    }
+  })()
+  return out
+}
+
+/** Setting LOCAL (fora das sincronizadas) que marca a limpeza única das tools por aparelho como feita. */
+export const DEVICE_OVERRIDES_CLEANUP_SETTING = 'migration.deviceToolOverrides'
+
+/**
+ * Limpeza única (§4.3.6): tira de `overrides` de cada chat as unidades `enabledTools.<t>` de tools de
+ * um tipo de aparelho em que o chat nunca rodou (`chatRanOnHere`, o critério da migração) — marcas
+ * gravadas por builds de teste de 1.10.0 por causa do aparelho. Grava o registro (o trigger do sync o
+ * marca para envio). Quem chama garante o "uma vez por dispositivo" (`DEVICE_OVERRIDES_CLEANUP_SETTING`).
+ * Retorna os ids alterados.
+ */
+export function cleanupDeviceOverrides(conn: Conn): string[] {
+  const rows = conn
+    .prepare(
+      `SELECT id, config_json FROM chats
+       WHERE json_valid(config_json) AND json_type(config_json, '$.overrides') = 'object'
+         AND config_json LIKE '%enabledTools.%'`
+    )
+    .all() as { id: string; config_json: string }[]
+  if (!rows.length) return []
+  const env = inheritEnvOf(conn)
+  const out: string[] = []
+  conn.transaction(() => {
+    for (const r of rows) {
+      const rec = chatRecordFrom(conn, r.config_json)
+      const next = cleanDeviceOverrides(
         rec,
         presetConfigOf(conn, rec.presetId),
         env,

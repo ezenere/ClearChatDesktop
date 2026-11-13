@@ -2,7 +2,11 @@
 // primeiro login, divergência, anexos (blobs) e skills. O host de execução, comandos remotos e o
 // streaming ao vivo ficam em host.ts. Sem Electron: dependências injetadas (SyncDeps) — o app liga
 // em sync/index.ts; os testes usam banco temporário + servidor falso (e2e/fakes/syncServer.ts).
-import { migrateChatInheritance } from '../chatInherit'
+import {
+  cleanupDeviceOverrides,
+  DEVICE_OVERRIDES_CLEANUP_SETTING,
+  migrateChatInheritance
+} from '../chatInherit'
 import type Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
@@ -616,6 +620,30 @@ export class SyncEngine {
       this.emit({ type: 'sync-data-changed', scopes: ['chats'] })
     } catch (e) {
       this.log('herança da persona: migração falhou', errMsg(e))
+    }
+  }
+
+  /**
+   * Limpeza única (§4.3.6): uma vez por dispositivo, depois de um pull completo, tira de `overrides`
+   * as tools de um tipo de aparelho em que o chat nunca rodou (marcas de builds de teste de 1.10.0)
+   * e envia os chats alterados. A marca de feito é uma setting LOCAL (sobrevive ao logout: rodar de
+   * novo apagaria escolhas feitas depois pelo usuário).
+   */
+  cleanupDeviceOverridesOnce(): void {
+    try {
+      const done = this.conn
+        .prepare('SELECT 1 FROM settings WHERE key = ?')
+        .get(DEVICE_OVERRIDES_CLEANUP_SETTING)
+      if (done) return
+      const ids = cleanupDeviceOverrides(this.conn)
+      this.conn
+        .prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO NOTHING')
+        .run(DEVICE_OVERRIDES_CLEANUP_SETTING, JSON.stringify(Date.now()))
+      if (!ids.length) return
+      this.log('tools por aparelho: marcas limpas', ids.length)
+      this.emit({ type: 'sync-data-changed', scopes: ['chats'] })
+    } catch (e) {
+      this.log('tools por aparelho: limpeza falhou', errMsg(e))
     }
   }
 
@@ -1361,6 +1389,8 @@ export class SyncEngine {
       // herança ao vivo (1.10.0, §4.3.6): chats antigos migram depois de um pull completo (persona
       // e padrões em dia); a gravação marca o chat e ele sobe neste mesmo ciclo
       this.migrateInheritance()
+      // limpeza única das tools marcadas por causa do aparelho (§4.3.6), uma vez por dispositivo
+      this.cleanupDeviceOverridesOnce()
       await this.pushAll()
       await this.refetchPending()
       this.error = null
@@ -1684,6 +1714,22 @@ export class SyncEngine {
     acc.events.push(...r.events)
     for (const s of r.scopes) acc.scopes.add(s)
     acc.redirty.push(...r.redirty)
+  }
+
+  /** Merge do primeiro login: `hostCwd` = { este dispositivo, raiz local } no chat local enviado. */
+  private setMergeHostCwd(chatId: string): void {
+    try {
+      if (this.chatRow(chatId).host_cwd || !this.deviceId) return
+      const r = this.conn.prepare('SELECT config_json FROM chats WHERE id = ?').get(chatId) as
+        { config_json: string } | undefined
+      const cwd = r ? (JSON.parse(r.config_json) as Plain).cwd : null
+      if (typeof cwd !== 'string' || !cwd) return
+      this.setChatRow(chatId, {
+        host_cwd: JSON.stringify({ deviceId: this.deviceId, path: cwd })
+      })
+    } catch {
+      /* config ilegível: vai sem hostCwd */
+    }
   }
 
   /** hostCwd do chat (informativo) para o plaintext. */
@@ -3041,6 +3087,9 @@ export class SyncEngine {
             if (l0?.scope && this.live.isLive(l0.scope)) continue
           }
           if (!rec) {
+            // §4.3.6/§12: o computador é o host dos chats locais que envia no merge — grava o
+            // `hostCwd` (sem ele o chat contaria como do celular na migração/limpeza das tools)
+            if (type === 'chat') this.setMergeHostCwd(id)
             const l = buildLocal(this.conn, type, id)
             this.markDirty(type, id, l?.scope ?? null)
           } else if (!rec.deleted && priority === 'local') {

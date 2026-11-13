@@ -409,7 +409,14 @@ dela — e um campo mudado no chat vira **próprio** (`ChatConfig.overrides: { [
   — sem login/não enviado — ou só ao vivo hospedado aqui); num **celular** = registro sincronizado sem
   `hostCwd`. Ex.: chat antigo do desktop com o shell desligado → `enabledTools.shell` própria, as do
   celular herdam; chat criado no celular sem as do computador → elas herdam (ele continua rodando no
-  celular sem elas). UI: grupo **"Só no celular"** esmaecido no fim de Ferramentas (painel do chat,
+  celular sem elas). O **merge do primeiro login** grava `hostCwd` (este dispositivo + a raiz local) nos chats
+  locais que envia (`setMergeHostCwd` — o computador é o host deles; sem isso contariam como do celular).
+  **Limpeza única** (`cleanupDeviceOverrides`/`cleanDeviceOverrides`; engine `cleanupDeviceOverridesOnce`,
+  depois da migração no ciclo do pull completo; setting LOCAL `migration.deviceToolOverrides`, que sobrevive ao
+  logout): tira de `overrides` as `enabledTools.<t>` de tools de um tipo de aparelho em que o chat nunca rodou
+  (mesmo critério; como um "voltar a herdar") — marcas de builds de teste de 1.10.0 — e envia os chats.
+  `usesLocalTools` (§8.9, sobre a config efetiva) conta as tools "só no computador" inteiras (`LOCAL_TOOLS` =
+  `COMPUTER_TOOL_NAMES`, `present_file` inclusive). UI: grupo **"Só no celular"** esmaecido no fim de Ferramentas (painel do chat,
   editor de personas) e das "Tools próprias na chamada" (`panel/PhoneToolsGroup.tsx`), com a nota "Não
   vão ao modelo quando o chat roda neste computador. Ligadas, valem quando ele rodar no celular.",
   alternáveis, com "neste chat ↺" como as outras; o resumo da seção mostra "· celular k/2" quando alguma
@@ -2158,7 +2165,9 @@ Contrato do protocolo: `docs/SYNC_PROTOCOL.md` (compartilhado com o servidor). A
   deste dispositivo, sem conexão = nuvem cortada, host offline = ícone apagado dentro do cartão "Executar neste
   dispositivo"; cadeado pequeno se fixado. Tooltip "Executando em <dispositivo>"/"<host> offline"/"Aguardando
   <host>"; clique → popover (`host-popover`) com o nome, a raiz no host e as ações: assumir ("Executar neste
-  dispositivo", com a confirmação de ferramentas locais/host fixado/raiz), forçar, cancelar a troca, fixar/desafixar.
+  dispositivo", com a confirmação de ferramentas locais/host fixado/raiz — o aviso de ferramentas locais só num
+  chat que já rodou num computador, com `hostCwd` (`takeoverWarnsLocalTools`, §8.9); sem `hostCwd` a troca é
+  livre), forçar, cancelar a troca, fixar/desafixar.
   Sem sync (sem conta, bloqueado) não aparece. Faixa/cartão acima do composer ("enviando…", host offline, "o
   dispositivo remoto caiu"); painel de divergência
   (duas versões + aviso de descarte); "Sincronizar" por skill e "Skills na nuvem"; indicador na barra lateral.

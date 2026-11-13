@@ -9,7 +9,10 @@
 //   - chat legado (gravado por um app < 1.10.0, sem overrides) migra depois do pull completo, de
 //     forma determinística;
 //   - conflito: troca de persona em A × campo sobrescrito em B ao mesmo tempo (overrides por
-//     unidade + a cópia de A não sobrescreve o valor próprio de B).
+//     unidade + a cópia de A não sobrescreve o valor próprio de B);
+//   - tools de um tipo de aparelho: o merge do primeiro login grava `hostCwd` nos chats que o
+//     computador envia; a limpeza única (uma vez por dispositivo, depois do pull completo) tira as
+//     marcas de tools de um tipo de aparelho em que o chat nunca rodou e envia os chats.
 // Rodar: npm run test:unit
 import { test, before, after } from 'node:test'
 import assert from 'node:assert/strict'
@@ -21,7 +24,9 @@ import { ensureSearchIndex } from '../src/main/searchIndex'
 import { withApply } from '../src/main/sync/schema'
 import { SyncEngine } from '../src/main/sync/engine'
 import {
+  chatRanOnHere,
   chatRecordFrom,
+  DEVICE_OVERRIDES_CLEANUP_SETTING,
   effectiveFromJson,
   freezeChatsOfPreset,
   inheritEnvOf,
@@ -213,15 +218,19 @@ function editChat(conn: Database.Database, id: string, patch: object): void {
   )
   const next = applyChatConfigPatch(rec, patch, {
     env: inheritEnvOf(conn),
-    persona: (pid) => presetConfigOf(conn, pid)
+    persona: (pid) => presetConfigOf(conn, pid),
+    ranOn: chatRanOnHere(conn, id)
   })
   conn.prepare('UPDATE chats SET config_json = ? WHERE id = ?').run(JSON.stringify(next), id)
 }
 const serverRec = (d: Dev, type: string, id: string): any =>
   srv.records(d.eng.userId!).find((r) => r.type === type && r.id === id)
+/** Plaintext da revisão do servidor que o dispositivo conhece (a base). */
+const serverPlain = (d: Dev, type: string, id: string): any =>
+  (d.eng as any).basePlain(d.eng.record(type, id))
 
 /** Os dois dispositivos com o mesmo provedor, padrão de "Novos chats" e a persona P. */
-async function pair(): Promise<{ A: Dev; B: Dev }> {
+async function pair(): Promise<{ A: Dev; B: Dev; email: string }> {
   const email = await newAccount()
   const A = device('A')
   const B = device('B')
@@ -234,7 +243,7 @@ async function pair(): Promise<{ A: Dev; B: Dev }> {
   await login(B, email)
   await synced(A, B)
   assert.ok(presetConfigOf(B.conn, 'P'), 'B recebeu a persona')
-  return { A, B }
+  return { A, B, email }
 }
 
 // ---------------- testes ----------------
@@ -398,4 +407,94 @@ test('conflito: troca de persona em A × campo sobrescrito em B — overrides po
     assert.equal(eff.systemPrompt, 'próprio de B', `${d.name}: o próprio venceu a cópia`)
     assert.equal(eff.contextWindow, 7000, `${d.name}: o resto segue Q`)
   }
+})
+
+test('merge do primeiro login: o computador grava hostCwd nos chats locais que envia (§4.3.6, §12)', async () => {
+  const email = await newAccount()
+  const A = device('A')
+  addProvider(A.conn, 'or')
+  addPreset(A.conn, 'P', 'Revisor', { systemPrompt: 'v1' })
+  // chat criado antes do login (sem sync): o computador é o host dele
+  const chatId = addInheritingChat(A.conn, 'P')
+  await login(A, email)
+  await synced(A)
+  const sent = (A.eng as any).basePlain(A.eng.record('chat', chatId))
+  assert.deepEqual(sent.hostCwd, { deviceId: A.eng.deviceId, path: '/home/teste' })
+  // um segundo computador vê o chat como "rodou num computador"
+  const B = device('B')
+  await login(B, email)
+  await synced(A, B)
+  assert.deepEqual(chatRanOnHere(B.conn, chatId), { computer: true, phone: false })
+})
+
+test('limpeza única das tools marcadas por causa do aparelho: uma vez por dispositivo, depois do pull completo', async () => {
+  const { A, B, email } = await pair()
+  // A e B já fizeram a limpeza (no primeiro pull); A grava chats como um build de teste de 1.10.0
+  assert.ok(
+    A.conn.prepare('SELECT 1 FROM settings WHERE key = ?').get(DEVICE_OVERRIDES_CLEANUP_SETTING),
+    'A marcou a limpeza como feita'
+  )
+  // só o registro `chat` (sem conteúdo: ninguém vira host) com as marcas por causa do aparelho
+  const noisy = (hostCwd: object | null): string => {
+    const id = randomUUID()
+    const cfg = newInheritingChatConfig(
+      { cwd: '', presetId: 'P', overrides: {} },
+      presetConfigOf(A.conn, 'P')!,
+      inheritEnvOf(A.conn)
+    )
+    const next = {
+      ...cfg,
+      enabledTools: cfg.enabledTools.filter(
+        (t: string) => !['shell', 'read_file', 'get_location'].includes(t)
+      ),
+      overrides: {
+        'enabledTools.shell': true,
+        'enabledTools.read_file': true,
+        'enabledTools.get_location': true,
+        systemPrompt: true
+      }
+    }
+    if (hostCwd) A.eng.setChatRow(id, { host_cwd: JSON.stringify(hostCwd) })
+    A.conn
+      .prepare(
+        'INSERT INTO chats (id, title, config_json, main_session_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)'
+      )
+      .run(id, 'Chat', JSON.stringify(next), randomUUID(), 1, 1)
+    return id
+  }
+  const celChat = noisy(null) // sem hostCwd: "rodou no celular"
+  const pcChat = noisy({ deviceId: 'pc', path: '/home/x' })
+  await synced(A, B)
+  assert.equal(serverPlain(A, 'chat', celChat).hostCwd, undefined, 'chat do celular sem hostCwd')
+  assert.ok(serverPlain(A, 'chat', pcChat).hostCwd, 'chat do computador com hostCwd')
+  // B já tinha limpado: não mexe nos chats novos (uma vez por dispositivo)
+  assert.equal(Object.keys(rawConfig(B.conn, celChat).overrides).length, 4)
+  // um dispositivo novo (C) limpa depois do pull completo e envia
+  const C = device('C')
+  await login(C, email)
+  await synced(C, A, B)
+  for (const d of [A, B, C]) {
+    assert.deepEqual(
+      Object.keys(rawConfig(d.conn, celChat).overrides).sort(),
+      ['enabledTools.get_location', 'systemPrompt'],
+      `${d.name}: no chat do celular, as do computador voltaram a herdar`
+    )
+    assert.deepEqual(
+      Object.keys(rawConfig(d.conn, pcChat).overrides).sort(),
+      ['enabledTools.read_file', 'enabledTools.shell', 'systemPrompt'],
+      `${d.name}: no chat do computador, a do celular voltou a herdar`
+    )
+    assert.ok(effective(d.conn, celChat).enabledTools.includes('shell'))
+    assert.ok(effective(d.conn, pcChat).enabledTools.includes('get_location'))
+  }
+  // uma escolha explícita depois da limpeza não é desfeita num pull seguinte
+  editChat(C.conn, celChat, {
+    enabledTools: effective(C.conn, celChat).enabledTools.filter((t: string) => t !== 'list_dir')
+  })
+  await synced(C, A)
+  await C.eng.syncNow()
+  assert.ok(
+    rawConfig(C.conn, celChat).overrides['enabledTools.list_dir'],
+    'escolha do usuário fica'
+  )
 })

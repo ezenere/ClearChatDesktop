@@ -1,5 +1,6 @@
 // Tipos do sync compartilhados entre main e renderer (IPC `sync:*` e eventos). O protocolo em si
 // está em docs/SYNC_PROTOCOL.md; o cliente roda no main (src/main/sync/).
+import { COMPUTER_TOOL_NAMES } from './deviceTools'
 import type { Session, StoredMessage } from './types'
 
 /** Servidor oficial (padrão). Qualquer instância self-host funciona igual (§20). */
@@ -243,20 +244,12 @@ export interface TakeoverOptions {
   confirmPinned?: boolean
 }
 
-/** O chat usa ferramentas locais (§8.9)? */
-export const LOCAL_TOOLS: readonly string[] = [
-  'list_dir',
-  'read_file',
-  'search_files',
-  'find_files',
-  'write_file',
-  'edit_file',
-  'shell',
-  'process_start',
-  'process_logs',
-  'process_list',
-  'process_stop'
-]
+/**
+ * Ferramentas locais (§8.9) = as tools "só no computador" da §4.3.6 (`present_file` inclusive, desde
+ * 1.10.0). `usesLocalTools` recebe a config EFETIVA do chat (herança ao vivo da persona).
+ */
+export const LOCAL_TOOLS: readonly string[] = COMPUTER_TOOL_NAMES
+/** O chat usa ferramentas locais (§8.9)? — sobre a config efetiva, com a voz em camadas. */
 export function usesLocalTools(config: {
   enabledTools?: unknown
   skills?: unknown
@@ -271,4 +264,13 @@ export function usesLocalTools(config: {
   return (
     tools.some((t) => LOCAL_TOOLS.includes(t === 'bash' ? 'shell' : t)) || skills.enabled === true
   )
+}
+
+/**
+ * Aviso forte ao assumir/trocar o host (§8.9, desde 1.10.0): só num chat com ferramentas locais QUE
+ * JÁ RODOU NUM COMPUTADOR (registro com `hostCwd`). Sem `hostCwd` elas nunca rodaram e a troca é
+ * livre — o padrão de tools inclui as do computador, então quase todo chat as tem na lista.
+ */
+export function takeoverWarnsLocalTools(usesLocal: boolean, hostCwd: unknown): boolean {
+  return usesLocal && hostCwd != null && hostCwd !== ''
 }
