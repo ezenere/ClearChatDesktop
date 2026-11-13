@@ -6,7 +6,7 @@
 // compactação — das tools pedidas) e um prompt fixo curto no fim do system prompt. Sem nenhuma
 // compacta, nem uma nem outro. Isso é a VERSÃO LOCAL; desde 1.12.0, onde o provedor tem busca nativa
 // (@shared/toolSearch), as mesmas tools vão completas e adiadas (`defer_loading`), sem `tool_search`
-// e sem prompt fixo — `planTools(…, mode)`.
+// e com o prompt fixo NATIVO (outro texto: procure as adiadas com a busca) — `planTools(…, mode)`.
 //
 // Transparência ("nada oculto vai ao modelo"): o prompt fixo, a definição da `tool_search` e a
 // descrição curta de cada tool são textos do app, não editáveis, mostrados na UI (aba Tools).
@@ -27,7 +27,7 @@ import {
 } from './tools'
 import { PHONE_TOOLS, PHONE_TOOL_SHORT, orderedTools } from './deviceTools'
 import { TOOL_ALIASES, type ChatConfig, type ToolName, type ToolSearchMode } from './types'
-import { isNativeMode, searchToolEntry } from './toolSearch'
+import { isNativeMode, nativeToolSearchPrompt, searchToolEntry } from './toolSearch'
 
 // ---------------- textos do app (visíveis na UI, não editáveis) ----------------
 
@@ -222,7 +222,7 @@ export interface ToolsPlan {
   compacted: ToolName[]
   /** Nomes das que vão adiadas (`defer_loading`; só nos modos nativos). */
   deferred: ToolName[]
-  /** Prompt fixo para o fim do system prompt (null = nenhuma compacta / modo nativo). */
+  /** Prompt fixo para o fim do system prompt: o da versão local ou o nativo (null = nada a dizer). */
   prompt: string | null
   /** Entrada de busca do servidor (último item de `tools`; só nos modos nativos). */
   searchEntry: Record<string, unknown> | null
@@ -233,8 +233,8 @@ export interface ToolsPlan {
  * ordem do app; `end_call` inclusive). Determinístico (mesma entrada → mesmos bytes: prefixo de
  * cache estável). Uma `tool_search` que viesse em `full` é ignorada (nunca escolhível).
  * `mode` (padrão 'local'): na versão local as fora de `toolsFull` vão compactas + `tool_search` +
- * prompt; nos nativos as mesmas vão completas e ADIADAS, sem `tool_search` nem prompt; em 'off'
- * nada é compactado.
+ * prompt; nos nativos as mesmas vão completas e ADIADAS, sem `tool_search`, com o prompt fixo
+ * nativo; em 'off' nada é compactado.
  */
 export function planTools(
   full: readonly ToolDefinition[],
@@ -253,7 +253,7 @@ export function planTools(
       full: defs,
       compacted: [],
       deferred,
-      prompt: null,
+      prompt: nativeToolSearchPrompt(deferred, mode),
       searchEntry: searchToolEntry(mode)
     }
   }

@@ -64,10 +64,10 @@ export function SystemPromptInfo({
         Ordem do conteúdo: este texto → <C>\n\n</C> + bloco <C>{'<environment>'}</C> (se ativo) →{' '}
         <C>\n\n</C> + índice e instruções da memória (se ativa; só na principal) → <C>\n\n</C> +
         prompt de apoio das skills (se ligado) → <C>\n\n</C> + texto das tools (se ativo) →{' '}
-        <C>\n\n</C> + prompt fixo das tools compactadas (só se alguma tool vai compacta). Com token
-        caching, o conteúdo vai como{' '}
-        <C>{'[{ type: "text", text, cache_control: { type: "ephemeral" } }]'}</C>. Se tudo ficar
-        vazio, nenhuma mensagem system é enviada.
+        <C>\n\n</C> + prompt fixo das tools compactadas (só se alguma tool vai compacta; na busca
+        nativa, o prompt fixo nativo, só se alguma vai adiada). Com token caching, o conteúdo vai
+        como <C>{'[{ type: "text", text, cache_control: { type: "ephemeral" } }]'}</C>. Se tudo
+        ficar vazio, nenhuma mensagem system é enviada.
       </p>
     </ApiInfo>
   )
@@ -235,7 +235,9 @@ function NativeToolDefInfo({
   cfg?: CompactCfg
   view: ToolSearchModeView
 }): React.JSX.Element {
-  const deferred = sendsCompact(name, cfg)
+  // o estado DESTA request (uma adiada já usada no histórico sem a busca vai carregada)
+  const forced = view.forceLoaded.includes(name)
+  const deferred = view.items[name] ? view.deferred.includes(name) : sendsCompact(name, cfg)
   const item = view.items[name] ?? messagesApiTool(currentToolDefinition(name), deferred)
   const who = view.mode === 'native-anthropic' ? 'da Anthropic' : 'do OpenRouter'
   return (
@@ -252,8 +254,11 @@ function NativeToolDefInfo({
           &quot;carregada&quot; para ele vê-la desde o início.
         </p>
       ) : (
-        <p data-testid="tool-def-mode" data-mode="loaded">
-          <b className="text-fg">Vai carregada</b> desde o início (sem <C>defer_loading</C>).
+        <p data-testid="tool-def-mode" data-mode={forced ? 'force-loaded' : 'loaded'}>
+          <b className="text-fg">Vai carregada</b> desde o início (sem <C>defer_loading</C>)
+          {forced
+            ? ' nesta request: já foi usada no histórico enviado sem a busca que a encontrou junto.'
+            : '.'}
           {item.cache_control ? (
             <>
               {' '}
@@ -292,7 +297,7 @@ export function NativeToolsInfo(): React.JSX.Element {
  * `<>` de "Enviar tools compactadas": o que vai, exatamente, no modo efetivo do chat (1.12.0).
  * Versão local (1.11.0): o prompt fixo e a definição da `tool_search` (textos do app, não
  * editáveis). Busca nativa: a entrada de busca do servidor como vai (descrição do provedor) — sem
- * prompt do app e sem `tool_search`.
+ * `tool_search`, com o prompt fixo nativo (texto do app).
  */
 export function CompactToolsInfo({
   view
@@ -314,8 +319,9 @@ export function CompactToolsInfo({
           Cada tool que não está marcada &quot;carregada&quot; vai com a definição completa e{' '}
           <C>defer_loading: true</C>; as marcadas (e <C>end_call</C>) vão carregadas, e a última
           carregada leva o ponto de cache. A entrada de busca abaixo vai por último.{' '}
-          {SEARCH_ENTRY_NOTE[view.mode]} Não há <C>tool_search</C> do app nem instrução no system
-          prompt.
+          {SEARCH_ENTRY_NOTE[view.mode]} Não há <C>tool_search</C> do app. Havendo alguma adiada,
+          vai este prompt fixo nativo no fim do system prompt (precedido de <C>\n\n</C>; texto do
+          app que nomeia a busca e lista as tools adiadas desta request, exatamente como vai):
           {view.mode === 'native-openrouter' && (
             <>
               {' '}
@@ -325,6 +331,14 @@ export function CompactToolsInfo({
           )}{' '}
           O <C>{'</>'}</C> de cada tool mostra o item exato.
         </p>
+        {view.prompt && (
+          <pre
+            data-testid="compact-tools-native-prompt"
+            className="rounded-lg border border-border bg-bg/80 p-2.5 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-fg/90"
+          >
+            {view.prompt}
+          </pre>
+        )}
       </ApiInfo>
     )
   }

@@ -136,7 +136,9 @@ import {
   buildRequest,
   maskRequest,
   modelInfoFor,
+  nativeDeferral,
   resolveToolMode,
+  sentHistory,
   setProviderNamesSource,
   setSiblingsSource,
   setToolSearchCapsSource,
@@ -147,6 +149,7 @@ import type { BuildOptions, BuiltRequest } from './request'
 import {
   isNativeMode,
   isNativeRejection,
+  nativeToolSearchPrompt,
   nativeTurnFrom,
   toolSearchView,
   type ToolSearchModeResult,
@@ -3837,7 +3840,25 @@ export function toolSearchModeFor(input: {
     ? resolveToolMode(chat, sref, history, provider)
     : { mode: 'local', api: 'chat', reason: 'sem provedor/modelo escolhido' }
   const plan = toolsPlan(chat, sref, history, undefined, r.mode)
-  return toolSearchView(r, plan, kind, config.cacheEnabled)
+  if (!provider || !isNativeMode(plan.mode))
+    return toolSearchView(r, plan, kind, config.cacheEnabled)
+  // nos nativos, as adiadas EFETIVAS (sem as carregadas pelo histórico) e o prompt exato da request
+  const nd = nativeDeferral(
+    plan,
+    sentHistory(history, kind, true, main ? noReplayIds.get(main.id) : undefined),
+    { providerId: provider.id, model }
+  )
+  return toolSearchView(
+    r,
+    {
+      ...plan,
+      deferred: nd.deferred,
+      forceLoaded: nd.forceLoaded,
+      prompt: nativeToolSearchPrompt(nd.deferred, plan.mode)
+    },
+    kind,
+    config.cacheEnabled
+  )
 }
 
 export function runningSessions(): string[] {

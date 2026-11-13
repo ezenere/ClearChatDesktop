@@ -73,12 +73,16 @@ function trunc(v, max = 160, depth = 0) {
 const EPH = { type: 'ephemeral' }
 const SYSTEM = 'Você é um assistente. Responda em português, em uma frase curta.'
 /**
- * Prompt fixo nativo do app (protocolo 1.12.0: vai no fim do system prompt com ≥ 1 tool adiada), com
- * as categorias das tools adiadas deste teste (list_dir, shell, web_search, datetime) — o mesmo texto
- * que o app gera (@shared/toolSearch → nativeToolSearchPrompt).
+ * Prompt fixo nativo do app (protocolo 1.12.0: vai no fim do system prompt com ≥ 1 tool adiada) —
+ * o texto final (variante B da 3ª rodada: nomeia a busca do modo + os nomes das adiadas deste teste,
+ * na ordem do app), o mesmo que o app gera (@shared/toolSearch → nativeToolSearchPrompt).
  */
-const NATIVE_PROMPT =
-  'Algumas ferramentas deste chat estão adiadas (arquivos, terminal, web, data e hora): procure-as com a busca de ferramentas antes de dizer que não tem uma.'
+const NATIVE_PROMPT = {
+  anthropic:
+    'Algumas ferramentas deste chat estão adiadas e só aparecem depois de buscadas: use tool_search_tool_regex antes de dizer que não tem uma ferramenta. Adiadas: list_dir, shell, web_search, datetime.',
+  openrouter:
+    'Algumas ferramentas deste chat estão adiadas e só aparecem depois de buscadas: use a busca de ferramentas (openrouter:tool_search) antes de dizer que não tem uma ferramenta. Adiadas: list_dir, shell, web_search, datetime.'
+}
 /** Pergunta sem a dica "procure a ferramenta" (2ª rodada: mede o efeito do prompt nativo). */
 const PLAIN_PROMPT = 'Que horas são agora?'
 
@@ -347,7 +351,9 @@ function body(t, { messages, tools, noMaxTokens = false }) {
   const b = { model: t.model }
   if (!noMaxTokens) b.max_tokens = t.maxTokens
   const sys =
-    t.nativePrompt && tools ? `${SYSTEM}\n\n${t.nativePromptText ?? NATIVE_PROMPT}` : SYSTEM
+    t.nativePrompt && tools
+      ? `${SYSTEM}\n\n${t.nativePromptText ?? NATIVE_PROMPT[t.provider]}`
+      : SYSTEM
   b.system = [{ type: 'text', text: sys, cache_control: EPH }]
   b.messages = withCache(messages)
   if (tools) b.tools = tools

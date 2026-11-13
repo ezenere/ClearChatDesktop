@@ -326,7 +326,8 @@ async function doStream(
 /**
  * Custo de uma geração do OpenRouter pelo `GET {baseUrl}/generation?id=` (grátis) — para a Messages
  * API, cujo stream pode não trazer `usage.cost`. A geração demora um pouco a aparecer (404 no
- * começo): tenta de novo nos intervalos dados. null = não deu (sem custo; nunca lança).
+ * começo, ou `total_cost: 0` com 0 tokens enquanto não fecha): tenta de novo nos intervalos dados.
+ * null = não deu (sem custo; nunca lança).
  */
 export async function fetchGenerationCost(
   baseUrl: string,
@@ -343,8 +344,11 @@ export async function fetchGenerationCost(
       const res = await f(url, { headers, signal: AbortSignal.timeout(15_000) })
       if (res.status === 404) continue
       if (!res.ok) return null
-      const j = (await res.json()) as { data?: { total_cost?: unknown } }
-      const c = j?.data?.total_cost
+      const d = ((await res.json()) as { data?: Record<string, unknown> })?.data ?? {}
+      const c = d.total_cost
+      // geração ainda não fechada: o OpenRouter devolve total_cost 0 com 0 tokens (visto no smoke)
+      const tokens = Number(d.tokens_prompt ?? 0) + Number(d.tokens_completion ?? 0)
+      if (c === 0 && !tokens) continue
       return typeof c === 'number' && Number.isFinite(c) ? c : null
     } catch {
       return null

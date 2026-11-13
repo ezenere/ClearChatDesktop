@@ -631,7 +631,12 @@ async function main(): Promise<void> {
       const tip = await openApi(rowEl)
       assert(tip.includes('"type": "tool_search_tool_regex_20251119"'), 'entrada de busca no </>')
       assert(tip.includes('"name": "tool_search_tool_regex"'), tip)
-      assert(!tip.includes(COMPACT_TOOLS_PROMPT), 'sem prompt fixo')
+      assert(!tip.includes(COMPACT_TOOLS_PROMPT), 'sem o prompt fixo da versão local')
+      // prompt fixo nativo (1.12.0): visível no </> e exatamente o fim do system prompt enviado
+      const nativePrompt = (
+        await page.getByTestId('compact-tools-native-prompt').innerText()
+      ).trim()
+      assert(nativePrompt.startsWith('Algumas ferramentas deste chat estão adiadas'), nativePrompt)
       await shot('toolsearch-00-native-anthropic-entrada-busca')
       await page.mouse.move(5, 5)
       await page.keyboard.press('Escape')
@@ -639,6 +644,14 @@ async function main(): Promise<void> {
       assert(t2.includes('"defer_loading": true'), 'item com defer_loading')
       assert(t2.includes('"input_schema"') && t2.includes('"command"'), 'definição completa')
       assert(t2.includes('Vai adiada'), 'explica o modo')
+      // datetime foi usada no turno da versão local (sem busca nativa junto): carregada nesta
+      // request e fora da lista do prompt fixo nativo
+      assert(!nativePrompt.includes('datetime'), 'datetime fora da lista de adiadas')
+      await page.mouse.move(5, 5)
+      await page.keyboard.press('Escape')
+      const t3 = await openApi(row('datetime'))
+      assert(!t3.includes('"defer_loading"') && t3.includes('Vai carregada'), t3)
+      assert(t3.includes('já foi usada no histórico'), 'explica a carga forçada')
       await shot('toolsearch-01-native-anthropic-api')
       const req = await preview()
       assert(req.url.endsWith('/anthropic/v1/messages'), req.url)
@@ -646,6 +659,8 @@ async function main(): Promise<void> {
       assert(tools.at(-1).type === 'tool_search_tool_regex_20251119', 'busca por último')
       assert(tools.find((t: any) => t.name === 'shell').defer_loading === true, 'shell adiada')
       assert(!JSON.stringify(req.body.system ?? '').includes(COMPACT_TOOLS_PROMPT), 'sem prompt')
+      const sysText = req.body.system.map((b: any) => b.text).join('')
+      assert(sysText.endsWith(`\n\n${nativePrompt}`), 'prompt fixo nativo no fim do system')
       await page.mouse.move(5, 5)
       await page.keyboard.press('Escape')
     }

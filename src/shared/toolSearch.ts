@@ -130,7 +130,6 @@ export const CC_ONLY_EXTRA_KEYS: readonly string[] = [
 /** Mídia no histórico que vai na request (depois da fronteira de compactação). */
 export interface SentMedia {
   audio?: boolean
-  pdf?: boolean
 }
 
 function safeJsonObject(s: string | undefined): Record<string, unknown> | null {
@@ -145,19 +144,16 @@ function safeJsonObject(s: string | undefined): Record<string, unknown> | null {
 
 /**
  * Por que o chat não pode ir pela Messages API do OpenRouter (pt-BR; [] = pode): áudio na entrada
- * (a Messages API não tem bloco de áudio), PDF num modelo sem leitura nativa (o file-parser vale na
- * Chat Completions), parâmetros e chaves de `extraBody` que só a Chat Completions tem.
+ * (a Messages API não tem bloco de áudio), parâmetros e chaves de `extraBody` que só a Chat
+ * Completions tem. PDF não bloqueia: o OpenRouter converte para modelos sem leitura nativa também
+ * na Messages API (verificado no smoke — openai/gpt-5.1-codex-mini leu o PDF).
  */
 export function messagesBlockers(i: {
   cfg: Pick<ChatConfig, 'params'>
-  info?: Pick<ModelInfo, 'inputModalities'> | null
   sent?: SentMedia | null
 }): string[] {
   const out: string[] = []
   if (i.sent?.audio) out.push('o chat tem áudio na entrada')
-  const mods = i.info?.inputModalities
-  if (i.sent?.pdf && mods && !mods.includes('file'))
-    out.push('o chat tem PDF e o modelo não lê PDF nativamente')
   const params = (i.cfg.params ?? {}) as Record<string, unknown>
   const ccParams = CC_ONLY_PARAMS.filter((k) => params[k] != null)
   if (ccParams.length) out.push(`parâmetros só da Chat Completions: ${ccParams.join(', ')}`)
@@ -168,24 +164,15 @@ export function messagesBlockers(i: {
 }
 
 /**
- * Áudio/PDF nas mensagens que vão na request (quem chama passa o histórico ativo — da fronteira de
+ * Áudio nas mensagens que vão na request (quem chama passa o histórico ativo — da fronteira de
  * compactação em diante, sem as mensagens só de exibição).
  */
 export function sentMediaOf(messages: readonly ApiMessage[]): SentMedia {
   const out: SentMedia = {}
   for (const m of messages) {
     const c = (m as { content?: unknown }).content
-    if (!Array.isArray(c)) continue
-    for (const p of c as ContentPart[]) {
-      if (p.type === 'input_audio') out.audio = true
-      else if (
-        p.type === 'file' &&
-        (p._attachment?.kind === 'pdf' ||
-          /\.pdf$/i.test(p.file.filename) ||
-          p.file.file_data.startsWith('data:application/pdf'))
-      )
-        out.pdf = true
-    }
+    if (Array.isArray(c) && (c as ContentPart[]).some((p) => p.type === 'input_audio'))
+      out.audio = true
   }
   return out
 }
@@ -346,7 +333,7 @@ export function resolveToolSearchMode(i: ToolSearchModeInput): ToolSearchModeRes
   if (i.kind === 'openrouter') {
     if (!official(OPENROUTER_OFFICIAL_HOST))
       return local(`endpoint do tipo OpenRouter que não é o oficial (${host ?? i.baseUrl})`)
-    const blockers = messagesBlockers({ cfg, info: i.info, sent: i.sent })
+    const blockers = messagesBlockers({ cfg, sent: i.sent })
     if (blockers.length)
       return local(`o chat precisa da Chat Completions do OpenRouter: ${blockers.join('; ')}`)
     const eps = i.info?.endpoints
@@ -356,6 +343,30 @@ export function resolveToolSearchMode(i: ToolSearchModeInput): ToolSearchModeRes
     return { mode: 'native-openrouter', api: 'messages' }
   }
   return local('provedor OpenAI-compatible genérico, sem busca nativa de tools')
+}
+
+// ---------------- prompt fixo nativo ----------------
+
+/** Como o prompt fixo nativo nomeia a busca do servidor, por modo. */
+export const NATIVE_SEARCH_TOOL_REF: Record<NativeToolSearchMode, string> = {
+  'native-anthropic': 'tool_search_tool_regex',
+  'native-openrouter': 'a busca de ferramentas (openrouter:tool_search)'
+}
+
+/**
+ * Prompt fixo nativo (protocolo 1.12.0, §4.3.6): vai no fim do system prompt (linha em branco antes)
+ * nos modos de busca nativa com ≥ 1 tool adiada. Texto do app, não editável, mostrado na aba Tools.
+ * Nomeia a busca do servidor e lista os NOMES das tools adiadas da request, na ordem do app
+ * (determinístico: prefixo de cache estável). Escolhido no smoke (3ª rodada, claude-haiku-4-5 sem
+ * raciocínio): sem a busca nomeada o modelo dizia que não tinha a ferramenta; com os nomes ele
+ * busca pelo nome exato ("datetime", "list_dir"). null = nenhuma adiada.
+ */
+export function nativeToolSearchPrompt(
+  deferred: readonly string[],
+  mode: NativeToolSearchMode = 'native-anthropic'
+): string | null {
+  if (!deferred.length) return null
+  return `Algumas ferramentas deste chat estão adiadas e só aparecem depois de buscadas: use ${NATIVE_SEARCH_TOOL_REF[mode]} antes de dizer que não tem uma ferramenta. Adiadas: ${deferred.join(', ')}.`
 }
 
 // ---------------- itens do array tools (formato da Messages API) ----------------
@@ -550,11 +561,23 @@ function openRouterResultNames(b: Record<string, unknown>): string[] {
     const fn = def?.function as Record<string, unknown> | undefined
     add(def?.name ?? fn?.name ?? x?.tool_id ?? x?.name)
   }
+  for (const n of Array.isArray(c?.tool_names) ? (c!.tool_names as unknown[]) : []) add(n)
   for (const r of Array.isArray(c?.tool_references)
     ? (c!.tool_references as Record<string, unknown>[])
     : [])
     add(r?.tool_name)
   return out
+}
+
+/**
+ * Pré-busca que o OpenRouter injeta no começo da resposta (id `orpresearch…`, input vazio: só o
+ * índice do catálogo) — não é uma busca do modelo (fica fora do chip; o bloco é reenviado igual).
+ */
+export function isRouterPreSearch(b: Record<string, unknown>): boolean {
+  if (b.type !== 'server_tool_use') return false
+  if (typeof b.id === 'string' && b.id.startsWith('orpresearch')) return true
+  const input = b.input as Record<string, unknown> | undefined
+  return b.name === 'openrouter:tool_search' && (!input || !Object.keys(input).length)
 }
 
 /**
@@ -670,7 +693,7 @@ export function nativeSearches(native: NativeTurn | null | undefined): NativeSea
   const blocks = native.content.filter((b) => !!b && typeof b === 'object')
   const out: NativeSearch[] = []
   for (const b of blocks) {
-    if (b.type !== 'server_tool_use') continue
+    if (b.type !== 'server_tool_use' || isRouterPreSearch(b)) continue
     const input = (b.input ?? {}) as Record<string, unknown>
     const q = input.pattern ?? input.query ?? input.regex
     const res = blocks.find(
@@ -725,9 +748,9 @@ export function toolSearchMetaLabel(t: { mode: string; fallbackFrom?: string }):
 export function toolSearchStatus(mode: ToolSearchMode, deferred: number): string {
   const n = `${deferred} tool${deferred === 1 ? '' : 's'}`
   if (mode === 'native-anthropic')
-    return `${n} vão completas e adiadas (defer_loading); o modelo as encontra com a busca do servidor da Anthropic (tool_search_tool_regex). Sem instrução extra no system prompt.`
+    return `${n} vão completas e adiadas (defer_loading); o modelo as encontra com a busca do servidor da Anthropic (tool_search_tool_regex), avisado por uma instrução curta no fim do system prompt.`
   if (mode === 'native-openrouter')
-    return `${n} vão completas e adiadas (defer_loading); o modelo as encontra com openrouter:tool_search. Enquanto houver tools adiadas, este chat usa a Messages API do OpenRouter (/messages). Sem instrução extra no system prompt.`
+    return `${n} vão completas e adiadas (defer_loading); o modelo as encontra com openrouter:tool_search, avisado por uma instrução curta no fim do system prompt. Enquanto houver tools adiadas, este chat usa a Messages API do OpenRouter (/messages).`
   if (mode === 'local')
     return `${n} vão compactas (+ tool_search e uma instrução curta no fim do system prompt)`
   return 'Todas as ligadas vão completas'
@@ -735,10 +758,8 @@ export function toolSearchStatus(mode: ToolSearchMode, deferred: number): string
 
 /** Quem escreveu a descrição da entrada de busca (para o </>). */
 export const SEARCH_ENTRY_NOTE: Record<NativeToolSearchMode, string> = {
-  'native-anthropic':
-    'A descrição dessa ferramenta é da Anthropic (não do app); o app não acrescenta prompt.',
-  'native-openrouter':
-    'A descrição dessa ferramenta é do OpenRouter (não do app); o app não acrescenta prompt.'
+  'native-anthropic': 'A descrição dessa ferramenta é da Anthropic (não do app).',
+  'native-openrouter': 'A descrição dessa ferramenta é do OpenRouter (não do app).'
 }
 
 // ---------------- visão para a UI (aba Tools) ----------------
@@ -755,15 +776,19 @@ export interface ToolSearchModeView {
   reason?: string
   /** Falha lembrada (versão local por causa dela). */
   failure?: ToolSearchFailure
-  /** Adiadas (modos nativos) e compactas (versão local). */
+  /** Adiadas de fato (modos nativos) e compactas (versão local). */
   deferred: string[]
   compacted: string[]
+  /** Nativos: fora de `toolsFull`, mas carregadas por já terem sido usadas sem a busca no histórico. */
+  forceLoaded: string[]
   /** Tipo do provedor (para a forma dos itens). */
   kind: ProviderKind
   /** Nativos: o item EXATO de `tools[]` de cada tool da request (flags e cache inclusive). */
   items: Record<string, Record<string, unknown>>
   /** Nativos: a entrada de busca do servidor, como vai (último item de `tools`). */
   searchEntry: Record<string, unknown> | null
+  /** Texto do app no fim do system prompt (prompt fixo nativo ou o da versão local); null = nenhum. */
+  prompt: string | null
 }
 
 /** Monta a visão a partir do modo resolvido e do plano das tools daquele modo. */
@@ -775,6 +800,8 @@ export function toolSearchView(
     deferred: readonly string[]
     compacted: readonly string[]
     searchEntry: Record<string, unknown> | null
+    prompt: string | null
+    forceLoaded?: readonly string[]
   },
   kind: ProviderKind,
   cache: boolean
@@ -795,8 +822,10 @@ export function toolSearchView(
     ...(plan.mode === 'local' && r.failure ? { failure: r.failure } : {}),
     deferred: [...plan.deferred],
     compacted: [...plan.compacted],
+    forceLoaded: [...(plan.forceLoaded ?? [])],
     kind,
     items,
-    searchEntry: plan.searchEntry
+    searchEntry: plan.searchEntry,
+    prompt: plan.prompt
   }
 }
