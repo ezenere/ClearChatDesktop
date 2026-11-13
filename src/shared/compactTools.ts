@@ -1,11 +1,14 @@
 // Tools compactadas (protocolo 1.11.0, SYNC_PROTOCOL.md §4.3.6 — "Tools compactadas e `datetime`"):
 // para economizar contexto, cada tool enviada ao modelo que não está em `toolsFull` vai COMPACTA —
 // só o nome e uma descrição curta do app (1 a 20 palavras) com um esquema de parâmetros vazio que
-// aceita qualquer objeto. Havendo pelo menos uma compacta, a request ganha a `search_tool` (sempre
-// completa: devolve a definição completa — exatamente como iria sem compactação — das tools pedidas)
-// e um prompt fixo curto no fim do system prompt. Sem nenhuma compacta, nem uma nem outro.
+// aceita qualquer objeto. Havendo pelo menos uma compacta, a request ganha a `tool_search` (antes
+// `search_tool`; sempre completa: devolve a definição completa — exatamente como iria sem
+// compactação — das tools pedidas) e um prompt fixo curto no fim do system prompt. Sem nenhuma
+// compacta, nem uma nem outro. Isso é a VERSÃO LOCAL; desde 1.12.0, onde o provedor tem busca nativa
+// (@shared/toolSearch), as mesmas tools vão completas e adiadas (`defer_loading`), sem `tool_search`
+// e sem prompt fixo — `planTools(…, mode)`.
 //
-// Transparência ("nada oculto vai ao modelo"): o prompt fixo, a definição da `search_tool` e a
+// Transparência ("nada oculto vai ao modelo"): o prompt fixo, a definição da `tool_search` e a
 // descrição curta de cada tool são textos do app, não editáveis, mostrados na UI (aba Tools).
 //
 // Puro (sem Node/Electron/DOM): o desktop (request, execução, UI) e o mobile (vendora este arquivo)
@@ -23,15 +26,16 @@ import {
   type ToolDefinition
 } from './tools'
 import { PHONE_TOOLS, PHONE_TOOL_SHORT, orderedTools } from './deviceTools'
-import { TOOL_ALIASES, type ChatConfig, type ToolName } from './types'
+import { TOOL_ALIASES, type ChatConfig, type ToolName, type ToolSearchMode } from './types'
+import { isNativeMode, searchToolEntry } from './toolSearch'
 
 // ---------------- textos do app (visíveis na UI, não editáveis) ----------------
 
 /**
  * Descrição curta de cada tool (o que vai no lugar da definição completa quando ela vai compacta):
  * 1 a 20 palavras, pt-BR, sem detalhes de uso — só o bastante para o modelo saber quando ler a
- * definição com `search_tool`. As do celular ficam em @shared/deviceTools (PHONE_TOOL_SHORT).
- * `end_call` e `search_tool` nunca vão compactas (sem descrição curta).
+ * definição com `tool_search`. As do celular ficam em @shared/deviceTools (PHONE_TOOL_SHORT).
+ * `end_call` e `tool_search` nunca vão compactas (sem descrição curta).
  */
 export const TOOL_SHORT_DESCRIPTIONS: Record<string, string> = {
   list_dir: 'Lista arquivos e pastas de um diretório, com o tamanho dos arquivos.',
@@ -81,20 +85,24 @@ export const TOOL_SHORT_DESCRIPTIONS: Record<string, string> = {
 
 /** Prompt fixo acrescentado ao fim do system prompt (linha em branco antes) havendo tool compacta. */
 export const COMPACT_TOOLS_PROMPT =
-  'Algumas ferramentas foram enviadas compactadas: só o nome e uma descrição curta, sem os parâmetros. Antes de usar uma ferramenta compactada pela primeira vez, leia a definição completa dela com search_tool (dá para pedir várias de uma vez).'
+  'Algumas ferramentas foram enviadas compactadas: só o nome e uma descrição curta, sem os parâmetros. Antes de usar uma ferramenta compactada pela primeira vez, leia a definição completa dela com tool_search (dá para pedir várias de uma vez).'
 
 /** Uma linha (UI) sobre o que a compactação faz. */
 export const COMPACT_TOOLS_HELP =
-  'Economiza contexto: cada tool vai só com o nome e uma descrição curta, e o modelo lê a definição completa com search_tool quando precisar.'
+  'Economiza contexto: cada tool vai só com o nome e uma descrição curta, e o modelo lê a definição completa com tool_search quando precisar.'
 
-/** Definição da `search_tool` (sempre completa). */
-export const SEARCH_TOOL_DEFINITION: ToolDefinition = TOOL_DEFINITIONS.search_tool
+/** Uma linha (UI) sobre o que a compactação faz onde há busca nativa do provedor. */
+export const NATIVE_TOOL_SEARCH_HELP =
+  'Economiza contexto: cada tool vai completa, mas adiada (defer_loading) — o modelo só a vê depois de encontrá-la com a busca do provedor.'
+
+/** Definição da `tool_search` (sempre completa). */
+export const SEARCH_TOOL_DEFINITION: ToolDefinition = TOOL_DEFINITIONS.tool_search
 
 /** Esquema de parâmetros de uma tool compacta: vazio, aceita qualquer objeto (todos os provedores). */
 export const COMPACT_PARAMETERS: JsonSchema = { type: 'object', properties: {} }
 
 /**
- * Tools que podem ir compactas (todas menos `end_call` e `search_tool`), na ordem das unidades
+ * Tools que podem ir compactas (todas menos `end_call` e `tool_search`), na ordem das unidades
  * `toolsFull.<tool>`: as de `enabledTools` (as do celular inclusive), memória e skills.
  */
 export const COMPACTABLE_TOOL_NAMES: readonly ToolName[] = [
@@ -111,7 +119,7 @@ export const wordCount = (s: string): number => s.split(/\s+/).filter(Boolean).l
 
 type CompactConfig = Pick<ChatConfig, 'toolsCompact' | 'toolsFull'>
 
-/** Nome antigo → atual (`bash` → `shell`); só as chaves próprias do mapa (nada do protótipo). */
+/** Nome antigo → atual (`bash` → `shell`, `search_tool` → `tool_search`); só as chaves próprias. */
 const aliased = (n: string): string =>
   Object.prototype.hasOwnProperty.call(TOOL_ALIASES, n) ? TOOL_ALIASES[n] : n
 
@@ -119,13 +127,13 @@ const aliased = (n: string): string =>
 export const compactToolsOn = (cfg: Partial<CompactConfig> | null | undefined): boolean =>
   cfg?.toolsCompact !== false
 
-/** A tool pode ir compacta? (`end_call` e `search_tool` vão sempre completas.) */
+/** A tool pode ir compacta/adiada? (`end_call` e `tool_search` vão sempre completas.) */
 export const isCompactable = (name: string): boolean =>
-  name !== END_CALL_TOOL && name !== SEARCH_TOOL
+  name !== END_CALL_TOOL && aliased(name) !== SEARCH_TOOL
 
 /**
  * `toolsFull` lido de qualquer valor: só textos, nomes antigos mapeados, sem duplicatas, sem as que
- * nunca vão compactas (`search_tool` — leitores a ignoram lá —, `end_call`); ordem do app, as
+ * nunca vão compactas (`tool_search`/`search_tool` — leitores as ignoram lá —, `end_call`); ordem do app, as
  * desconhecidas (de outra versão/aparelho) no fim, na ordem em que vieram. Ausente = [].
  */
 export function normalizeToolsFull(v: unknown): ToolName[] {
@@ -198,40 +206,72 @@ export function sentToolDefinition(
   return sendsCompact(def.function.name, cfg) ? compactToolDefinition(def) : def
 }
 
-/** O que vai na request: definições (na ordem), quais foram compactadas e o prompt fixo. */
+/** O que vai na request: definições (na ordem), quais foram compactadas/adiadas e o prompt fixo. */
 export interface ToolsPlan {
-  /** Itens do array `tools` (ou do texto das tools), na ordem; `search_tool` por último. */
+  /** Modo de envio (@shared/toolSearch): local (1.11.0), nativo (adiadas) ou off. */
+  mode: ToolSearchMode
+  /**
+   * Itens do array `tools` (ou do texto das tools), na ordem. Local: compactas + `tool_search` por
+   * último; nativo: as completas (a flag `defer_loading` e a entrada de busca do servidor são
+   * postas pelo adaptador da Messages API — `nativeToolsArray`); off: as completas.
+   */
   definitions: ToolDefinition[]
-  /** Definições completas das tools enviadas (sem a `search_tool`), na mesma ordem. */
+  /** Definições completas das tools enviadas (sem a `tool_search`), na mesma ordem. */
   full: ToolDefinition[]
-  /** Nomes das que foram compactas. */
+  /** Nomes das que foram compactas (só na versão local). */
   compacted: ToolName[]
-  /** Prompt fixo para o fim do system prompt (null = nenhuma compacta). */
+  /** Nomes das que vão adiadas (`defer_loading`; só nos modos nativos). */
+  deferred: ToolName[]
+  /** Prompt fixo para o fim do system prompt (null = nenhuma compacta / modo nativo). */
   prompt: string | null
+  /** Entrada de busca do servidor (último item de `tools`; só nos modos nativos). */
+  searchEntry: Record<string, unknown> | null
 }
 
 /**
  * Plano das tools de uma request. `full` = as definições completas como iriam sem compactação (na
  * ordem do app; `end_call` inclusive). Determinístico (mesma entrada → mesmos bytes: prefixo de
- * cache estável). Uma `search_tool` que viesse em `full` é ignorada (nunca escolhível).
+ * cache estável). Uma `tool_search` que viesse em `full` é ignorada (nunca escolhível).
+ * `mode` (padrão 'local'): na versão local as fora de `toolsFull` vão compactas + `tool_search` +
+ * prompt; nos nativos as mesmas vão completas e ADIADAS, sem `tool_search` nem prompt; em 'off'
+ * nada é compactado.
  */
 export function planTools(
   full: readonly ToolDefinition[],
-  cfg: Partial<CompactConfig> | null | undefined
+  cfg: Partial<CompactConfig> | null | undefined,
+  mode: ToolSearchMode = 'local'
 ): ToolsPlan {
-  const defs = full.filter((d) => d.function.name !== SEARCH_TOOL)
+  const defs = full.filter((d) => aliased(d.function.name) !== SEARCH_TOOL)
+  const none = { compacted: [], deferred: [], prompt: null, searchEntry: null }
+  if (mode === 'off') return { mode, definitions: defs, full: defs, ...none }
+  if (isNativeMode(mode)) {
+    const deferred = defs.map((d) => d.function.name).filter((n) => sendsCompact(n, cfg))
+    if (!deferred.length) return { mode: 'off', definitions: defs, full: defs, ...none }
+    return {
+      mode,
+      definitions: defs,
+      full: defs,
+      compacted: [],
+      deferred,
+      prompt: null,
+      searchEntry: searchToolEntry(mode)
+    }
+  }
   const compacted: ToolName[] = []
   const definitions = defs.map((d) => {
     if (!sendsCompact(d.function.name, cfg)) return d
     compacted.push(d.function.name)
     return compactToolDefinition(d)
   })
-  if (!compacted.length) return { definitions, full: defs, compacted, prompt: null }
+  if (!compacted.length) return { mode: 'off', definitions, full: defs, ...none }
   return {
+    mode: 'local',
     definitions: [...definitions, SEARCH_TOOL_DEFINITION],
     full: defs,
     compacted,
-    prompt: COMPACT_TOOLS_PROMPT
+    deferred: [],
+    prompt: COMPACT_TOOLS_PROMPT,
+    searchEntry: null
   }
 }
 
@@ -252,7 +292,7 @@ export interface CompactToolResult {
 export const definitionJson = (def: ToolDefinition): string => JSON.stringify(def.function)
 
 /**
- * Executa a `search_tool`: `{ names: string[] }` → a definição completa (descrição e esquema,
+ * Executa a `tool_search` (versão local): `{ names: string[] }` → a definição completa (descrição e esquema,
  * exatamente como iriam sem compactação) de cada tool pedida entre as enviadas (`full` do plano),
  * como um array JSON de `{name, description, parameters}`. Nome desconhecido → erro com a lista
  * das disponíveis (as encontradas vêm junto).

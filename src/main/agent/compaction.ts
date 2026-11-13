@@ -15,8 +15,10 @@ import type {
   Provider,
   Session,
   StoredMessage,
-  ToolCall
+  ToolCall,
+  ToolSearchMode
 } from '@shared/types'
+import { isNativeMode } from '@shared/toolSearch'
 import {
   availableTools,
   buildRequest,
@@ -131,14 +133,25 @@ export function compactionHistory(
   return [...keepFirst, ...tail] // tool órfão no início do corte é descartado por sanitizeHistory
 }
 
-/** Request de resumo: request normal da sessão + prompt de compactação como último `role: user`. */
+/**
+ * Request de resumo: request normal da sessão + prompt de compactação como último `role: user`.
+ * `toolChoiceNone` (o modelo insistiu em chamar tools): `tool_choice: none` — que conflita com a
+ * busca nativa de tools (1.12.0) — então a repetição vai sem adiar nada (modo 'off': todas
+ * completas, sem a busca do servidor, sem reenvio de blocos nativos).
+ */
 export function buildCompactionRequest(
   chat: Chat,
   session: Pick<Session, 'id' | 'depth' | 'model'>,
   history: StoredMessage[],
   provider: Provider,
   prompt: string,
-  opts: { mode: CompactionMode; window: number | null; toolChoiceNone?: boolean },
+  opts: {
+    mode: CompactionMode
+    window: number | null
+    toolChoiceNone?: boolean
+    /** Modo das tools forçado (a busca nativa foi recusada nesta compactação → 'local'). */
+    toolMode?: ToolSearchMode
+  },
   env?: EnvInfo
 ): BuiltRequest {
   const hist = compactionHistory(history, opts.mode, opts.window)
@@ -151,7 +164,11 @@ export function buildCompactionRequest(
     meta: { synthetic: true },
     createdAt: 0
   }
-  const req = buildRequest(chat, session, [...hist, promptMsg], provider, env)
+  let req = buildRequest(chat, session, [...hist, promptMsg], provider, env, {
+    ...(opts.toolMode ? { modeOverride: opts.toolMode } : {})
+  })
+  if (opts.toolChoiceNone && req.toolSearch && isNativeMode(req.toolSearch.mode))
+    req = buildRequest(chat, session, [...hist, promptMsg], provider, env, { modeOverride: 'off' })
   // Só se o modelo insistir em chamar tools em vez de resumir (muda o cache de mensagens).
   if (opts.toolChoiceNone && req.body.tools)
     req.body.tool_choice = req.kind === 'anthropic' ? { type: 'none' } : 'none'
@@ -170,14 +187,19 @@ export function cleanSummary(text: string): string {
     .trim()
 }
 
-/** Faixa resumida + estimativa do contexto logo após a compactação (system + tools + fronteira). */
+/**
+ * Faixa resumida + estimativa do contexto logo após a compactação (system + tools + fronteira).
+ * `toolMode` = modo das tools da sessão (@shared/toolSearch): nos nativos só as carregadas e a
+ * entrada de busca contam (as adiadas não estão no contexto).
+ */
 export function compactionMeta(
   chat: Chat,
   session: Pick<Session, 'depth'>,
   history: StoredMessage[],
   summary: string,
   summaryTokens: number | undefined,
-  env?: EnvInfo
+  env?: EnvInfo,
+  toolMode: ToolSearchMode = 'local'
 ): {
   text: string
   summaryOf: { fromSeq: number; toSeq: number }
@@ -195,10 +217,13 @@ export function compactionMeta(
     summary,
     tools.includes('read_history') ? { fromSeq: firstSeq, toSeq: summaryOf.toSeq } : undefined
   )
-  const sys = systemContent(chat, session, env, history)
+  const sys = systemContent(chat, session, env, history, toolMode)
+  const plan = toolsPlan(chat, session, history, undefined, toolMode)
+  const inContext = plan.definitions.filter((d) => !plan.deferred.includes(d.function.name))
   const toolsChars =
     chat.config.nativeTools && tools.length
-      ? JSON.stringify(toolsPlan(chat, session, history).definitions).length
+      ? JSON.stringify(inContext).length +
+        (plan.searchEntry ? JSON.stringify(plan.searchEntry).length : 0)
       : 0
   const pendingChars = pending.reduce((n, m) => n + JSON.stringify(m.message.content).length, 0)
   const overhead = Math.ceil(

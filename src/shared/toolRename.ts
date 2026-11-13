@@ -1,6 +1,13 @@
 // Renomeação de tools (ex.: `bash` → `shell`): transformações puras usadas pela migração do banco
 // (src/main/db.ts) e como alias de leitura de configs (repo / personas / chats.update).
-import { TOOL_ALIASES, normalizeToolList, type ChatConfig, type ToolName } from './types'
+// Só os renomes de STORED_TOOL_RENAMES: `search_tool` → `tool_search` (1.12.0) nunca regrava nada
+// (alias de leitura em TOOL_ALIASES + troca na cópia enviada).
+import {
+  STORED_TOOL_RENAMES as TOOL_ALIASES,
+  normalizeToolList,
+  type ChatConfig,
+  type ToolName
+} from './types'
 
 const rename = (n: unknown): unknown => (typeof n === 'string' ? (TOOL_ALIASES[n] ?? n) : n)
 

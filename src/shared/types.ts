@@ -35,6 +35,11 @@ export interface ModelInfo {
    * `capabilities.effort`). Ausente = a API não informa (ver @shared/modelParams → effortSpec).
    */
   reasoning?: ModelReasoningInfo
+  /**
+   * OpenRouter: caminhos de API que servem o modelo (`endpoints` do /models — ex.:
+   * `/api/v1/messages`). Ausente = desconhecido. Cache local, não sincroniza (@shared/toolSearch).
+   */
+  endpoints?: string[]
 }
 
 /** Níveis de esforço conhecidos (ordem crescente). */
@@ -118,8 +123,9 @@ export type ToolName =
   | 'skill_read'
   // chamada de voz: só nos turnos da chamada (SPEC → Chamada de voz → end_call), nunca por enabledTools
   | 'end_call'
-  // tools compactadas (protocolo 1.11.0, @shared/compactTools): automática, nunca escolhível
-  | 'search_tool'
+  // tools compactadas (protocolo 1.11.0, @shared/compactTools): automática da versão local, nunca
+  // escolhível. Desde 1.12.0 `tool_search` (antes `search_tool` — alias de leitura em TOOL_ALIASES)
+  | 'tool_search'
 
 /**
  * Tools cujo padrão global é PERGUNTAR (modo `lists`; ver approvalPolicy.ts) — os itens Comandos,
@@ -167,8 +173,18 @@ export interface ApprovalSettings {
   smart: SmartApproveDefaults
 }
 
+/**
+ * Renomes que a migração única do banco aplica (`src/main/migrateTools.ts` → @shared/toolRename):
+ * só `bash` → `shell`. O renome `search_tool` → `tool_search` (1.12.0) NÃO entra aqui: o histórico
+ * nunca é regravado (é só alias de leitura + troca na cópia enviada).
+ */
+export const STORED_TOOL_RENAMES: Record<string, ToolName> = { bash: 'shell' }
+
 /** Nomes antigos de tools → atuais (alias de leitura: configs/históricos antigos, modelos). */
-export const TOOL_ALIASES: Record<string, ToolName> = { bash: 'shell' }
+export const TOOL_ALIASES: Record<string, ToolName> = {
+  ...STORED_TOOL_RENAMES,
+  search_tool: 'tool_search'
+}
 
 /** Lista de ToolName com aliases antigos mapeados (sem duplicatas, ordem preservada). */
 export function normalizeToolList(list: unknown): ToolName[] | undefined {
@@ -196,8 +212,9 @@ export interface ChatConfig {
   toolsPromptText: string | null
   /**
    * "Enviar tools compactadas" (protocolo 1.11.0, @shared/compactTools): cada tool fora de
-   * `toolsFull` vai só com o nome + a descrição curta do app (esquema vazio) e a `search_tool`
-   * devolve a definição completa. Ausente = true (padrão do app).
+   * `toolsFull` vai só com o nome + a descrição curta do app (esquema vazio) e a `tool_search`
+   * devolve a definição completa — ou, desde 1.12.0, onde há busca nativa do provedor, vai completa
+   * e adiada (`defer_loading`, @shared/toolSearch). Ausente = true (padrão do app).
    */
   toolsCompact?: boolean
   /** Com a compactação, estas vão completas (as de `enabledTools`, memória e skills). Ausente = []. */
@@ -605,12 +622,46 @@ export interface ToolCall {
 export type ApiMessage =
   | { role: 'system'; content: string | ContentPart[] }
   | { role: 'user'; content: string | ContentPart[] }
-  | { role: 'assistant'; content: string | null; tool_calls?: ToolCall[]; reasoning?: string }
+  | {
+      role: 'assistant'
+      content: string | null
+      tool_calls?: ToolCall[]
+      reasoning?: string
+      /** desde 1.12.0 — blocos nativos do provedor (busca nativa de tools); SYNC §4.3.8. */
+      native?: NativeTurn
+    }
   /**
    * content em parts só no read_file de imagem/PDF: `[{type:'text', text:'[imagem: …]'}, <part por
    * referência>]` (ver SPEC.md → "Tools" / read_file). Os demais resultados continuam string.
    */
   | { role: 'tool'; tool_call_id: string; content: string | ContentPart[] }
+
+/**
+ * Blocos nativos de uma resposta (protocolo 1.12.0, SYNC_PROTOCOL.md §4.3.8): o `content` da
+ * resposta do provedor, na ordem e sem alteração, SEM os blocos `thinking`/`redacted_thinking`.
+ * Gravado só quando a resposta (num modo de busca nativa) trouxe blocos de ferramenta do servidor;
+ * reenviado só ao mesmo provedor/API/modelo e se ainda bate com `content`/`tool_calls`
+ * (@shared/toolSearch). Blocos de tipo desconhecido ficam como vieram (opacos).
+ */
+export interface NativeTurn {
+  v: 1
+  /** Formato dos blocos (só a Messages API por ora — Anthropic nativa e OpenRouter /messages). */
+  api: 'anthropic-messages'
+  /** Provedor (registro `provider` sincronizado) que gerou a resposta. */
+  providerId: string
+  /** Tipo do provedor na hora (informativo). */
+  kind: 'anthropic' | 'openrouter'
+  /** Modelo exatamente como enviado. */
+  model: string
+  content: Record<string, unknown>[]
+}
+
+/**
+ * Modo de envio das tools de uma request (protocolo 1.12.0, @shared/toolSearch): busca nativa da
+ * Anthropic, busca nativa do OpenRouter (Messages API), versão local do app (1.11.0) ou sem
+ * compactação. Derivado a cada request — nunca gravado na config.
+ */
+export type ToolSearchMode = 'native-anthropic' | 'native-openrouter' | 'local' | 'off'
 
 export interface Usage {
   promptTokens: number
@@ -647,6 +698,15 @@ export interface MessageMeta {
     | 'voice-call'
   /** Resposta do assistente cortada pelo usuário. */
   interrupted?: boolean
+  /**
+   * Resposta do assistente (desde 1.12.0, só exibição): o modo de envio das tools em que ela foi
+   * gerada e, numa queda para a versão local, de qual modo nativo veio (§4.3.8).
+   */
+  toolSearch?: {
+    mode: 'native-anthropic' | 'native-openrouter' | 'local'
+    fallbackFrom?: 'native-anthropic' | 'native-openrouter'
+    reason?: string
+  }
   usage?: Usage
   model?: string
   durationMs?: number

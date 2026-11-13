@@ -1204,11 +1204,11 @@ test('runner: índice na request, memory_write do agente persiste (aprovação "
     textOf(first.messages[0].content),
     /<memory>[\s\S]*## Perfil[\s\S]*### Padrão — escrita\n\(vazia\)/
   )
-  // tools compactadas (padrão, 1.11.0): as de memória vão compactas + a search_tool no fim; o
+  // tools compactadas (padrão, 1.11.0): as de memória vão compactas + a tool_search no fim; o
   // memory_write do agente (argumentos válidos) roda normalmente sem ler a definição antes
   assert.deepEqual(
     first.tools.map((t: any) => t.function.name),
-    [...MEMORY_TOOL_NAMES, 'search_tool']
+    [...MEMORY_TOOL_NAMES, 'tool_search']
   )
   assert.deepEqual(first.tools[0].function.parameters, { type: 'object', properties: {} })
   const saved = memory.listMemories({ query: 'palmeiras' })

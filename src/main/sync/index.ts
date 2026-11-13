@@ -1,6 +1,7 @@
 // Liga o motor do sync (engine.ts / host.ts, sem Electron) ao app: safeStorage, janela do captcha,
 // runner, skills, handlers IPC `sync:*` e o "portão" das ações do agente (host local × controle
 // remoto). Ver docs/SYNC_PROTOCOL.md.
+import { withoutStaleNative } from '@shared/toolSearch'
 import { app, BrowserWindow, powerMonitor, safeStorage, session, shell } from 'electron'
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs'
 import { hostname } from 'os'
@@ -195,7 +196,8 @@ function runnerAdapter(): RunnerAdapter {
     editBranch: (id, message) => runner.editBranch(id, message),
     selectBranch: (id) => runner.selectBranch(id),
     editMessage(id, message) {
-      const m = messagesRepo.update(id, message)
+      // `native` (1.12.0) que não bate mais com o texto editado sai (§4.3.8)
+      const m = messagesRepo.update(id, withoutStaleNative(message))
       emit({ type: 'message-updated', message: m })
       return m
     },

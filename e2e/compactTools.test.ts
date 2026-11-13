@@ -1,7 +1,8 @@
 // Testes unitários das tools compactadas e da tool `datetime` (protocolo 1.11.0, SYNC_PROTOCOL.md
 // §4.3.6 — "Tools compactadas e `datetime`"), só a lógica pura de @shared (o mobile vendora):
-// descrições curtas (1 a 20 palavras, todas as tools), plano da request (compactas + search_tool +
-// prompt fixo só com alguma compacta; end_call sempre completa; determinístico), a search_tool
+// descrições curtas (1 a 20 palavras, todas as tools), plano da request (compactas + tool_search —
+// antes search_tool — + prompt fixo só com alguma compacta; end_call sempre completa;
+// determinístico; nos modos de busca nativa, 1.12.0: completas e adiadas), a tool_search
 // devolvendo exatamente a definição que iria sem compactação (inclusive as ajustadas ao provedor),
 // validação de argumentos com a definição completa no erro, o formatador strftime (nomes em pt-BR,
 // fusos, erros) e as unidades de herança `toolsCompact` / `toolsFull.<tool>`.
@@ -85,15 +86,18 @@ test('descrição curta: TODAS as tools compactáveis (core, datetime, memória,
     assert.ok(n >= 1 && n <= 20, `${t}: ${n} palavras ("${d}")`)
     assert.ok(d.length < (TOOL_DEFINITIONS[t]?.function.description.length ?? Infinity), t)
   }
-  // nada a mais: nem end_call nem search_tool (sempre completas)
+  // nada a mais: nem end_call nem tool_search (sempre completas)
   assert.deepEqual(Object.keys(TOOL_SHORT_DESCRIPTIONS).sort(), [...new Set(all)].sort())
   assert.equal(TOOL_SHORT_DESCRIPTIONS[END_CALL_TOOL], undefined)
   assert.equal(TOOL_SHORT_DESCRIPTIONS[SEARCH_TOOL], undefined)
   assert.equal(PHONE_TOOL_SHORT.get_location, TOOL_SHORT_DESCRIPTIONS.get_location)
-  // search_tool e datetime: rótulos e definições do app; search_tool não é escolhível
+  // tool_search e datetime: rótulos e definições do app; tool_search não é escolhível
+  assert.equal(SEARCH_TOOL, 'tool_search', 'renomeada em 1.12.0')
   assert.equal(TOOL_LABELS.datetime, 'Data e hora')
+  assert.equal(TOOL_LABELS.tool_search, 'Ler definição de tool')
   assert.ok(!TOOL_NAMES.includes(SEARCH_TOOL) && !APP_TOOL_NAMES.includes(SEARCH_TOOL))
-  assert.deepEqual(SEARCH_TOOL_DEFINITION, TOOL_DEFINITIONS.search_tool)
+  assert.deepEqual(SEARCH_TOOL_DEFINITION, TOOL_DEFINITIONS.tool_search)
+  assert.equal(SEARCH_TOOL_DEFINITION.function.name, 'tool_search')
   assert.deepEqual(SEARCH_TOOL_DEFINITION.function.parameters.required, ['names'])
   // tool sem descrição do app (de outra versão): 1ª frase, até 20 palavras
   assert.equal(shortToolDescription('mcp_x', 'Faz X. Depois Y.'), 'Faz X.')
@@ -106,14 +110,17 @@ test('descrição curta: TODAS as tools compactáveis (core, datetime, memória,
 const fullDefs = (names: string[]): ToolDefinition[] =>
   names.map((n) => toolDefinitionFor(n as never, ['OR', 'Local']))
 
-test('plano: compactação ligada (padrão) → compactas + search_tool no fim + prompt fixo', () => {
+test('plano: compactação ligada (padrão) → compactas + tool_search no fim + prompt fixo', () => {
   const full = fullDefs(['read_file', 'shell', 'delegate_task', 'memory_search', 'list_skills'])
   const plan = planTools(full, {})
   assert.equal(compactToolsOn({}), true, 'ausente = ligada')
   assert.deepEqual(
     plan.definitions.map((d) => d.function.name),
-    ['read_file', 'shell', 'delegate_task', 'memory_search', 'list_skills', 'search_tool']
+    ['read_file', 'shell', 'delegate_task', 'memory_search', 'list_skills', 'tool_search']
   )
+  assert.equal(plan.mode, 'local')
+  assert.deepEqual(plan.deferred, [])
+  assert.equal(plan.searchEntry, null)
   assert.deepEqual(plan.compacted, [
     'read_file',
     'shell',
@@ -130,7 +137,8 @@ test('plano: compactação ligada (padrão) → compactas + search_tool no fim +
     )
     assert.equal(d.function.description, TOOL_SHORT_DESCRIPTIONS[d.function.name])
   }
-  assert.deepEqual(plan.definitions.at(-1), SEARCH_TOOL_DEFINITION, 'search_tool sempre completa')
+  assert.deepEqual(plan.definitions.at(-1), SEARCH_TOOL_DEFINITION, 'tool_search sempre completa')
+  assert.match(COMPACT_TOOLS_PROMPT, /com tool_search \(/, 'o prompt fixo nomeia a tool nova')
   assert.equal(plan.prompt, COMPACT_TOOLS_PROMPT)
   assert.deepEqual(plan.full, full, 'as completas, como iriam sem compactação')
   // prompt fixo no FIM do system prompt (linha em branco antes)
@@ -140,9 +148,10 @@ test('plano: compactação ligada (padrão) → compactas + search_tool no fim +
   assert.equal(JSON.stringify(planTools(full, {})), JSON.stringify(plan))
 })
 
-test('plano: sem nenhuma compacta (desligada ou todas em toolsFull) → sem search_tool e sem prompt', () => {
+test('plano: sem nenhuma compacta (desligada ou todas em toolsFull) → sem tool_search e sem prompt', () => {
   const full = fullDefs(['read_file', 'shell'])
   const off = planTools(full, { toolsCompact: false, toolsFull: [] })
+  assert.equal(off.mode, 'off')
   assert.deepEqual(off.definitions, full)
   assert.deepEqual(off.compacted, [])
   assert.equal(off.prompt, null)
@@ -158,31 +167,44 @@ test('plano: sem nenhuma compacta (desligada ou todas em toolsFull) → sem sear
     full[1],
     'shell vai completa (descrição do shell detectado)'
   )
-  assert.equal(mixed.definitions.at(-1)!.function.name, 'search_tool')
+  assert.equal(mixed.definitions.at(-1)!.function.name, 'tool_search')
   // toolsFull não muda nada com a compactação desligada
   assert.equal(sendsCompact('shell', { toolsCompact: false, toolsFull: [] }), false)
 })
 
-test('plano: end_call sempre completa; search_tool nunca vem de enabledTools/toolsFull', () => {
+test('plano: end_call sempre completa; tool_search (ou search_tool) nunca vem de enabledTools/toolsFull', () => {
   const full = [...fullDefs(['shell']), TOOL_DEFINITIONS.end_call]
   const p = planTools(full, {})
   assert.deepEqual(p.compacted, ['shell'])
   assert.deepEqual(p.definitions[1], TOOL_DEFINITIONS.end_call)
   assert.equal(sendsCompact('end_call', {}), false)
-  // só end_call (nada compactável) → nem search_tool nem prompt
+  // só end_call (nada compactável) → nem tool_search nem prompt
   const onlyEnd = planTools([TOOL_DEFINITIONS.end_call], {})
   assert.deepEqual(onlyEnd.definitions, [TOOL_DEFINITIONS.end_call])
   assert.equal(onlyEnd.prompt, null)
-  // uma search_tool que viesse como "habilitada" é ignorada (não duplica)
-  const dup = planTools([...fullDefs(['shell']), SEARCH_TOOL_DEFINITION], {})
+  // uma tool_search (ou a antiga search_tool) que viesse como "habilitada" é ignorada (não duplica)
+  const legacy = {
+    ...SEARCH_TOOL_DEFINITION,
+    function: { ...SEARCH_TOOL_DEFINITION.function, name: 'search_tool' }
+  } as ToolDefinition
+  const dup = planTools([...fullDefs(['shell']), SEARCH_TOOL_DEFINITION, legacy], {})
   assert.deepEqual(
     dup.definitions.map((d) => d.function.name),
-    ['shell', 'search_tool']
+    ['shell', 'tool_search']
   )
-  assert.ok(!dup.full.some((d) => d.function.name === 'search_tool'))
-  // toolsFull: lida sem search_tool/end_call, nomes antigos mapeados, desconhecidas no fim
+  assert.ok(!dup.full.some((d) => /search_tool|tool_search/.test(d.function.name)))
+  // toolsFull: lida sem tool_search/search_tool/end_call, nomes antigos mapeados, desconhecidas no fim
   assert.deepEqual(
-    normalizeToolsFull(['search_tool', 'bash', 'end_call', 'mcp_x', 'memory_read', 'list_dir', 3]),
+    normalizeToolsFull([
+      'search_tool',
+      'tool_search',
+      'bash',
+      'end_call',
+      'mcp_x',
+      'memory_read',
+      'list_dir',
+      3
+    ]),
     ['list_dir', 'shell', 'memory_read', 'mcp_x']
   )
   assert.deepEqual(normalizeToolsFull(undefined), [])
@@ -199,11 +221,11 @@ test('definição enviada por tool (o <> da UI) e o texto gerado das tools segue
   assert.deepEqual(sentToolDefinition(d, { toolsCompact: false }), d)
   assert.deepEqual(sentToolDefinition(d, { toolsFull: ['read_file'] }), d)
   assert.deepEqual(sentToolDefinition(d, {}), compactToolDefinition(d))
-  // texto das tools no system prompt (gerado): compactas com a descrição curta, search_tool completa
+  // texto das tools no system prompt (gerado): compactas com a descrição curta, tool_search completa
   const plan = planTools(fullDefs(['read_file', 'shell']), { toolsFull: ['shell'] })
   const native = defaultToolsPrompt(plan.definitions, true)
   assert.ok(native.includes(`- read_file: ${TOOL_SHORT_DESCRIPTIONS.read_file}`))
-  assert.ok(native.includes(`- search_tool: ${SEARCH_TOOL_DEFINITION.function.description}`))
+  assert.ok(native.includes(`- tool_search: ${SEARCH_TOOL_DEFINITION.function.description}`))
   assert.ok(native.includes(`- shell: ${TOOL_DEFINITIONS.shell.function.description}`))
   const text = defaultToolsPrompt(plan.definitions, false)
   assert.ok(text.includes('## read_file\n' + TOOL_SHORT_DESCRIPTIONS.read_file))

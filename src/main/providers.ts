@@ -49,6 +49,11 @@ export function mapModel(m: Record<string, unknown>): ModelInfo | null {
   // OpenRouter: níveis de reasoning_effort aceitos (supported_efforts / default_effort / mandatory)
   const reasoning = openRouterReasoning(m.reasoning)
   if (reasoning) info.reasoning = reasoning
+  // OpenRouter: caminhos de API que servem o modelo (busca nativa de tools pela Messages API, 1.12.0)
+  if (Array.isArray(m.endpoints)) {
+    const eps = (m.endpoints as unknown[]).filter((x): x is string => typeof x === 'string')
+    if (eps.length) info.endpoints = eps
+  }
   return info
 }
 

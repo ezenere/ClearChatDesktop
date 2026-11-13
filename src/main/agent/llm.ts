@@ -1,5 +1,6 @@
 // Cliente SSE streaming: POST {baseUrl}/chat/completions (OpenAI-compatible) ou, com
-// BuiltRequest.kind === 'anthropic', POST {baseUrl}/messages (SSE nativo — adapters/anthropic.ts).
+// BuiltRequest.kind === 'anthropic' / api === 'messages' (Messages API do OpenRouter, busca nativa
+// de tools), POST {baseUrl}/messages (SSE nativo — adapters/anthropic.ts).
 import type { StreamDraft, Usage } from '@shared/types'
 import type { BuiltRequest } from './request'
 import { applyAnthropicEvent, applyAnthropicMessage } from './adapters/anthropic'
@@ -24,6 +25,14 @@ export interface StreamAccumulator {
   reasoningStartedAt?: number
   /** 1º delta de conteúdo/tool call depois do raciocínio. */
   reasoningEndedAt?: number
+  /**
+   * Messages API: os blocos da resposta na ordem, como o provedor mandou (os deltas completam;
+   * `input` de tool_use/server_tool_use já parseado) — vira `native` quando há blocos do servidor
+   * (@shared/toolSearch → nativeTurnFrom).
+   */
+  blocks?: Record<string, unknown>[]
+  /** OpenRouter: header `X-Generation-Id` (custo pelo GET /generation quando o stream não traz). */
+  generationId?: string
 }
 
 export const newAccumulator = (): StreamAccumulator => ({
@@ -248,8 +257,10 @@ async function doStream(
   }
 
   const ctype = res.headers.get('content-type') ?? ''
+  const gen = res.headers.get('x-generation-id')
+  if (gen) acc.generationId = gen
   if (!res.body) throw new Error('Resposta sem corpo.')
-  const anthropic = req.kind === 'anthropic'
+  const anthropic = req.kind === 'anthropic' || req.api === 'messages'
   const apply = anthropic ? applyAnthropicEvent : applyChunk
   if (ctype.includes('application/json')) {
     // Provider ignorou stream:true — resposta completa em JSON.
@@ -310,6 +321,36 @@ async function doStream(
     sig.removeEventListener('abort', onAbort)
     if (done) void reader.cancel().catch(() => {})
   }
+}
+
+/**
+ * Custo de uma geração do OpenRouter pelo `GET {baseUrl}/generation?id=` (grátis) — para a Messages
+ * API, cujo stream pode não trazer `usage.cost`. A geração demora um pouco a aparecer (404 no
+ * começo): tenta de novo nos intervalos dados. null = não deu (sem custo; nunca lança).
+ */
+export async function fetchGenerationCost(
+  baseUrl: string,
+  headers: Record<string, string>,
+  id: string,
+  opts: { waits?: number[]; fetchImpl?: typeof fetch; signal?: AbortSignal } = {}
+): Promise<number | null> {
+  const f = opts.fetchImpl ?? fetch
+  const url = `${baseUrl.replace(/\/+$/, '')}/generation?id=${encodeURIComponent(id)}`
+  for (const wait of opts.waits ?? [800, 1600, 3200, 6400]) {
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait))
+    if (opts.signal?.aborted) return null
+    try {
+      const res = await f(url, { headers, signal: AbortSignal.timeout(15_000) })
+      if (res.status === 404) continue
+      if (!res.ok) return null
+      const j = (await res.json()) as { data?: { total_cost?: unknown } }
+      const c = j?.data?.total_cost
+      return typeof c === 'number' && Number.isFinite(c) ? c : null
+    } catch {
+      return null
+    }
+  }
+  return null
 }
 
 /** Emissor com throttle (~40ms) para drafts / saída parcial. */

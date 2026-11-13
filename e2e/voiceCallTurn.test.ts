@@ -688,8 +688,8 @@ test('overrides do modo voz: voice.model/voice.tools/voicePrompt só nas request
   assert.equal(req.body.temperature, 0.1, 'params da chamada substituem os do chat')
   assert.deepEqual(
     (req.body.tools ?? []).map((t: any) => t.function.name),
-    ['shell', 'end_call', 'search_tool'],
-    'só as tools liberadas na chamada (+ end_call, que é da chamada; + search_tool: compactas, 1.11.0)'
+    ['shell', 'end_call', 'tool_search'],
+    'só as tools liberadas na chamada (+ end_call, que é da chamada; + tool_search: compactas, 1.11.0)'
   )
   // tools compactadas na chamada: shell compacta, end_call SEMPRE completa (a despedida está nela)
   const [shellDef, endCallDef] = req.body.tools

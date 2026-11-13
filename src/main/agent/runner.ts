@@ -17,7 +17,8 @@ import type {
   SmartApproveRecord,
   StoredMessage,
   ToolCall,
-  ToolName
+  ToolName,
+  ToolSearchMode
 } from '@shared/types'
 import { TOOL_ALIASES } from '@shared/types'
 import {
@@ -119,7 +120,9 @@ import { contentText, isAppPart } from '@shared/attachments'
 import { isChatProvider, providerKind } from '@shared/providerKinds'
 import {
   accToDraft,
+  fetchGenerationCost,
   finalizeToolCalls,
+  LlmHttpError,
   markReasoning,
   newAccumulator,
   reasoningDuration,
@@ -134,10 +137,14 @@ import {
   modelInfoFor,
   setProviderNamesSource,
   setSiblingsSource,
+  setToolSearchCapsSource,
   toolsPlan,
   voiceCallContextFor
 } from './request'
-import type { BuiltRequest } from './request'
+import type { BuildOptions, BuiltRequest } from './request'
+import { isNativeMode, isNativeRejection, nativeTurnFrom } from '@shared/toolSearch'
+import { getToolSearchCaps, markToolSearchFailure } from '../toolSearchCaps'
+import { adapterFor } from './adapters'
 import { connectionErrorText, isConnectionFailure, retryAppClosedText } from '@shared/network'
 import {
   callWithNetworkRetry,
@@ -276,6 +283,8 @@ type CompactionResult =
   { kind: 'ok' } | { kind: 'skipped' } | { kind: 'aborted' } | { kind: 'error'; error: string }
 
 interface RunState {
+  /** Respostas seguidas com `stop_reason: pause_turn` (busca do servidor pausada) — máx. 3. */
+  pauseTurns?: number
   sessionId: string
   chatId: string
   depth: number
@@ -694,6 +703,19 @@ function finish(st: RunState, status: SessionStatus): void {
 /** Provedor da sessão: principal = o do chat (atual); subsessão = o fixado ao criá-la. */
 // definições de tools com `provider` ajustado aos provedores configurados (request/preview/estimativa)
 setProviderNamesSource(() => chatProviders().map((p) => p.name))
+// busca nativa de tools (1.12.0): falhas lembradas deste dispositivo (setting local toolSearchCaps)
+setToolSearchCapsSource(getToolSearchCaps)
+
+/**
+ * Modo das tools da última request bem-sucedida de cada sessão (@shared/toolSearch): a execução
+ * das tools segue o MESMO modo (na versão local a `tool_search` existe e uma compacta com
+ * argumentos inválidos ganha a definição; nos nativos, não). Só memória (o próximo passo resolve).
+ */
+const toolModes = new Map<string, ToolSearchMode>()
+/** Mensagens cujo `native` o provedor recusou nesta sessão (não são mais reenviadas). Só memória. */
+const noReplayIds = new Map<string, Set<string>>()
+/** Máximo de `pause_turn` seguidos (a busca do servidor pausou o turno) antes de encerrar. */
+const MAX_PAUSE_TURNS = 3
 // subagente com irmãos recebe check_subagents + message_subagent (ver availableTools)
 setSiblingsSource(({ id, parentSessionId }) =>
   sessionsRepo.children(parentSessionId).some((s) => s.id !== id)
@@ -767,17 +789,22 @@ async function runCompaction(st: RunState, signal: AbortSignal): Promise<Compact
     let acc = newAccumulator()
     let toolChoiceNone = false
     let emptyRetries = 0
+    /** Busca nativa recusada nesta compactação → as próximas tentativas vão na versão local. */
+    let toolMode: ToolSearchMode | undefined
+    let usedMode: ToolSearchMode = 'local'
     for (let i = 0; i < COMPACTION_MODES.length;) {
-      let req
+      let req: BuiltRequest
       try {
         req = buildCompactionRequest(chat, session, history, provider, prompt, {
           mode: COMPACTION_MODES[i],
           window,
-          toolChoiceNone
+          toolChoiceNone,
+          ...(toolMode ? { toolMode } : {})
         })
       } catch (e) {
         return { kind: 'error', error: errMsg(e) }
       }
+      usedMode = req.toolSearch?.mode ?? 'local'
       acc = newAccumulator()
       const cur = acc
       const tick = throttle(
@@ -791,6 +818,15 @@ async function runCompaction(st: RunState, signal: AbortSignal): Promise<Compact
         tick.cancel()
         if (signal.aborted) return { kind: 'aborted' }
         const error = errMsg(e)
+        if (
+          !toolMode &&
+          isNativeMode(usedMode) &&
+          e instanceof LlmHttpError &&
+          isNativeRejection(e.status, e.message)
+        ) {
+          toolMode = 'local'
+          continue
+        }
         if (isContextLengthError(error) && i < COMPACTION_MODES.length - 1) {
           i++
           continue
@@ -825,7 +861,15 @@ async function runCompaction(st: RunState, signal: AbortSignal): Promise<Compact
     }
     if (signal.aborted) return { kind: 'aborted' }
     const summary = cleanSummary(acc.content)
-    const m = compactionMeta(chat, session, history, summary, acc.usage?.completionTokens)
+    const m = compactionMeta(
+      chat,
+      session,
+      history,
+      summary,
+      acc.usage?.completionTokens,
+      undefined,
+      usedMode
+    )
     const meta: MessageMeta = {
       synthetic: true,
       kind: 'compaction',
@@ -1023,6 +1067,34 @@ async function runLoop(st: RunState): Promise<LoopOutcome> {
 }
 
 /** `{ reasoningMs }` da resposta (vazio sem raciocínio medido). */
+/**
+ * Custo de uma resposta da Messages API do OpenRouter cujo stream não trouxe `usage.cost`: GET
+ * /generation (grátis) em segundo plano e atualiza o meta da mensagem (nunca lança).
+ */
+async function fillGenerationCost(
+  provider: Provider,
+  messageId: string,
+  genId: string
+): Promise<void> {
+  try {
+    const cost = await fetchGenerationCost(
+      provider.baseUrl,
+      adapterFor(providerKind(provider)).getHeaders(provider),
+      genId
+    )
+    if (cost == null || shuttingDown) return
+    const m = messagesRepo.get(messageId)
+    if (!m?.meta.usage || m.meta.usage.cost != null) return
+    const updated = messagesRepo.update(m.id, m.message, {
+      ...m.meta,
+      usage: { ...m.meta.usage, cost }
+    })
+    emit({ type: 'message-updated', message: updated })
+  } catch (e) {
+    console.error('[clearchat] custo pelo /generation', e)
+  }
+}
+
 function withReasoningMs(acc: StreamAccumulator): Pick<MessageMeta, 'reasoningMs'> {
   const ms = reasoningDuration(acc, Date.now())
   return ms != null ? { reasoningMs: ms } : {}
@@ -1063,12 +1135,22 @@ async function step(st: RunState, signal: AbortSignal): Promise<StepResult> {
   const history = messagesRepo.path(session.id)
   // memória: o índice vai congelado por sessão (snapshot no 1º request; ver memory/service.ts)
   if (session.depth === 0) ensureSnapshot(chat, session)
+  // busca nativa de tools (1.12.0): mensagens cujo `native` o provedor já recusou nesta sessão
+  const noReplay = (): BuildOptions =>
+    noReplayIds.has(session.id) ? { noReplay: noReplayIds.get(session.id) } : {}
+  const build = (o: BuildOptions = {}): BuiltRequest =>
+    buildRequest(reqChat, reqSession, messagesRepo.path(session.id), provider, undefined, {
+      ...noReplay(),
+      ...o
+    })
   let req: BuiltRequest
   try {
-    req = buildRequest(reqChat, reqSession, history, provider)
+    req = buildRequest(reqChat, reqSession, history, provider, undefined, noReplay())
   } catch (e) {
     return { kind: 'error', error: errMsg(e) }
   }
+  /** Queda da busca nativa nesta chamada (o modo nativo recusado e por quê). */
+  let fallback = null as { from: 'native-anthropic' | 'native-openrouter'; reason: string } | null
 
   dbg('step', session.id.slice(0, 8), 'model', reqSession.model, 'msgs', history.length)
   let acc = newAccumulator()
@@ -1080,20 +1162,77 @@ async function step(st: RunState, signal: AbortSignal): Promise<StepResult> {
   let first = true
   // Falha de REDE → card "Tentar de novo / Cancelar" (sessão 'awaiting_retry'); o parcial é
   // descartado e a chamada refeita do zero (request reconstruída do histórico, que não mudou).
+  const stream = async (): Promise<void> => {
+    // relógio do raciocínio (meta.reasoningMs e o "Pensando… N s" do rascunho)
+    await streamChat(req, signal, acc, () => {
+      markReasoning(acc, Date.now())
+      draft.call()
+    })
+  }
+  /** Refaz a chamada com outra request (o parcial é descartado — nada foi persistido). */
+  const redo = async (next: BuiltRequest): Promise<void> => {
+    draft.cancel()
+    emit({ type: 'draft', sessionId: session.id, draft: null })
+    req = next
+    acc = newAccumulator()
+    t0 = Date.now()
+    await stream()
+  }
   const r = await callWithNetworkRetry({
     signal,
     attempt: async () => {
       if (!first) {
-        req = buildRequest(reqChat, reqSession, messagesRepo.path(session.id), provider)
+        req = build(fallback ? { modeOverride: 'local' } : {})
         acc = newAccumulator()
         t0 = Date.now()
       }
       first = false
-      // relógio do raciocínio (meta.reasoningMs e o "Pensando… N s" do rascunho)
-      await streamChat(req, signal, acc, () => {
-        markReasoning(acc, Date.now())
-        draft.call()
-      })
+      try {
+        await stream()
+      } catch (e) {
+        // Busca nativa recusada pelo provedor (1.12.0, §4.3.6 "Queda"): uma repetição sem o
+        // reenvio dos blocos nativos (se houve) e, se ainda recusar, UMA na versão local. A falha
+        // só é lembrada (24 h, local) se a versão local der certo; erro que também acontece na
+        // local é do pedido, não da busca nativa.
+        const ts = req.toolSearch
+        if (
+          signal.aborted ||
+          !ts ||
+          !isNativeMode(ts.mode) ||
+          !(e instanceof LlmHttpError) ||
+          !isNativeRejection(e.status, e.message)
+        )
+          throw e
+        const nativeMode = ts.mode
+        let nativeErr: LlmHttpError = e
+        if (ts.replayed > 0) {
+          try {
+            await redo(build({ replay: false }))
+            // o reenvio era o problema: esses blocos não vão mais nesta sessão
+            const ids = noReplayIds.get(session.id) ?? new Set<string>()
+            for (const m of messagesRepo.path(session.id))
+              if (m.message.role === 'assistant' && m.message.native) ids.add(m.id)
+            noReplayIds.set(session.id, ids)
+            return
+          } catch (e2) {
+            if (
+              signal.aborted ||
+              !(e2 instanceof LlmHttpError) ||
+              !isNativeRejection(e2.status, e2.message)
+            )
+              throw e2
+            nativeErr = e2
+          }
+        }
+        await redo(build({ modeOverride: 'local' }))
+        const short = nativeErr.message.replace(/^Erro HTTP /, 'HTTP ').slice(0, 200)
+        fallback = { from: nativeMode, reason: `a busca nativa foi recusada: ${short}` }
+        try {
+          markToolSearchFailure(provider.id, reqSession.model, nativeMode, short)
+        } catch (err) {
+          console.error('[clearchat] toolSearchCaps', err)
+        }
+      }
     },
     isNetwork: isConnectionFailure,
     onDiscard: () => {
@@ -1149,11 +1288,20 @@ async function step(st: RunState, signal: AbortSignal): Promise<StepResult> {
     type: 'function',
     function: { name: t.name, arguments: t.arguments }
   }))
+  // busca nativa (1.12.0, §4.3.8): os blocos da resposta (sem pensamento) só quando vieram blocos
+  // de ferramenta do servidor — reenviados no próximo request ao mesmo provedor/modelo
+  const ts = req.toolSearch
+  const kind = providerKind(provider)
+  const native =
+    ts && isNativeMode(ts.mode) && (kind === 'anthropic' || kind === 'openrouter')
+      ? nativeTurnFrom(acc.blocks, { providerId: provider.id, kind, model: reqSession.model })
+      : null
   const assistant: ApiMessage = {
     role: 'assistant',
     content: acc.content ? acc.content : calls.length ? null : '',
     ...(calls.length ? { tool_calls: calls } : {}),
-    ...(acc.reasoning.trim() ? { reasoning: acc.reasoning } : {})
+    ...(acc.reasoning.trim() ? { reasoning: acc.reasoning } : {}),
+    ...(native ? { native } : {})
   }
   const meta: MessageMeta = {
     model: acc.model ?? reqSession.model,
@@ -1161,8 +1309,31 @@ async function step(st: RunState, signal: AbortSignal): Promise<StepResult> {
     ...withReasoningMs(acc)
   }
   if (acc.usage) meta.usage = acc.usage
+  if (ts && ts.mode !== 'off') {
+    meta.toolSearch = fallback
+      ? { mode: 'local', fallbackFrom: fallback.from, reason: fallback.reason }
+      : { mode: ts.mode, ...(ts.reason ? { reason: ts.reason } : {}) }
+  }
+  if (ts) toolModes.set(session.id, ts.mode)
   Object.assign(meta, voiceReplyMeta(chat, session, acc.content))
-  append(session.id, assistant, meta)
+  const saved = append(session.id, assistant, meta)
+  // Messages API do OpenRouter sem `usage.cost` no stream: o custo vem do GET /generation (grátis)
+  if (
+    req.api === 'messages' &&
+    kind === 'openrouter' &&
+    acc.generationId &&
+    meta.usage &&
+    meta.usage.cost == null
+  )
+    void fillGenerationCost(provider, saved.id, acc.generationId)
+
+  // busca do servidor pausada (`pause_turn`): pede de novo, sem mensagem nova do usuário — o
+  // provedor retoma do `server_tool_use` no fim do turno (máx. MAX_PAUSE_TURNS seguidos)
+  if (acc.finishReason === 'pause_turn' && !calls.length) {
+    st.pauseTurns = (st.pauseTurns ?? 0) + 1
+    if (st.pauseTurns <= MAX_PAUSE_TURNS) return { kind: 'continue' }
+  }
+  st.pauseTurns = 0
 
   // ---- tools nativas ----
   if (calls.length) {
@@ -1553,7 +1724,10 @@ async function executeTool(
   // com argumentos inválidos recebe o erro com a definição completa dela
   // (sem o histórico: compacta ou não só depende da config; a search_tool o lê para listar
   // exatamente as enviadas)
-  const plan = toolsPlan(gateChat, session)
+  // busca nativa (1.12.0): o modo da última request da sessão — nos nativos não há tool_search
+  // (uma chamada a ela vinda do histórico → "não está disponível") nem tools compactas
+  const toolMode = toolModes.get(session.id) ?? 'local'
+  const plan = toolsPlan(gateChat, session, undefined, undefined, toolMode)
   if (name === SEARCH_TOOL && plan.compacted.length) {
     let sargs: Record<string, unknown>
     try {
@@ -1561,7 +1735,7 @@ async function executeTool(
     } catch (e) {
       return done({ content: `Erro: ${errMsg(e)}`, status: 'error' })
     }
-    const sent = toolsPlan(gateChat, session, messagesRepo.path(session.id))
+    const sent = toolsPlan(gateChat, session, messagesRepo.path(session.id), undefined, toolMode)
     return done(runSearchTool(sargs, sent.full))
   }
   if (!availableTools(gateChat, session).includes(name)) {
@@ -3605,7 +3779,14 @@ export function previewRequest(sessionId: string): RequestPreview {
   if (!chat) throw new Error('Chat não encontrado.')
   const provider = providerFor(chat, session)
   if (!provider) throw new Error('Nenhum provider configurado para este chat.')
-  const req = buildRequest(chat, session, messagesRepo.path(sessionId), provider)
+  const req = buildRequest(
+    chat,
+    session,
+    messagesRepo.path(sessionId),
+    provider,
+    undefined,
+    noReplayIds.has(sessionId) ? { noReplay: noReplayIds.get(sessionId) } : {}
+  )
   const masked = maskRequest(req, provider.apiKey)
   // anexos: o base64 aparece encurtado (a request real leva o arquivo inteiro)
   const { body, truncated } = truncateBodyForPreview(masked.body)

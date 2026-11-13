@@ -41,6 +41,7 @@ import { TOOL_LABELS } from '@shared/tools'
 import { toolLabel } from '@shared/deviceTools'
 import { approxTokens } from '@shared/limits'
 import type { ApprovalRequest, MessageMeta, Session, StoredMessage, ToolName } from '@shared/types'
+import { TOOL_ALIASES } from '@shared/types'
 import { cn, formatTokens, prettyJson } from '../../lib/format'
 import { useStore, type ToolRun } from '../../store'
 import { MessageInfo, TaskInfo } from '../apiDocs'
@@ -92,7 +93,7 @@ const ICONS: Partial<Record<ToolName, LucideIcon>> = {
   message_subagent: MessageSquareText,
   ask_user: MessageCircleQuestion,
   datetime: Clock,
-  search_tool: BookOpenText
+  tool_search: BookOpenText
 }
 
 const shortId = (id: string): string => (id.length > 12 ? `${id.slice(0, 8)}…` : id)
@@ -151,7 +152,8 @@ function summary(name: string, args: Record<string, unknown> | null): string {
       return pick('title') || pick('task')
     case 'datetime':
       return pick('format')
-    case 'search_tool':
+    case 'tool_search':
+    case 'search_tool': // nome até 1.11.0 (chamadas antigas no histórico)
       return Array.isArray(args.names)
         ? args.names.filter((n) => typeof n === 'string').join(', ')
         : pick('names')
@@ -377,7 +379,8 @@ export function ToolCard({
   const hosted = subApprovals ?? (subApproval ? [subApproval] : [])
   const openChat = useStore((s) => s.openChat)
   const args = parseArgs(call.arguments)
-  const name = call.name as ToolName
+  // nomes antigos (`search_tool` → `tool_search`, 1.12.0) com o rótulo/ícone do atual
+  const name = (TOOL_ALIASES[call.name] === 'tool_search' ? 'tool_search' : call.name) as ToolName
   const question = useStore((s) =>
     name === 'ask_user' ? s.questions.find((q) => q.toolCallId === call.id) : undefined
   )

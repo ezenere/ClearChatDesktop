@@ -306,8 +306,10 @@ test('persistência: message_json só com referência; GC enxerga a referência 
 
 test('OpenRouter / OpenAI: role tool vira texto e a imagem vai numa user logo após o bloco de tools', async () => {
   const { hist } = await history()
+  // Chat Completions (no OpenRouter, a compactação ligada iria pela Messages API — busca nativa)
+  const cc = (): Chat => chat({ toolsCompact: false })
   for (const p of [OR, OAI]) {
-    const req = buildRequest(chat(), { depth: 0, model: 'm' }, hist, p, env)
+    const req = buildRequest(cc(), { depth: 0, model: 'm' }, hist, p, env)
     const msgs = (req.body as any).messages
     // system, user, assistant, tool c1, tool c2, user (mídia), assistant
     assert.deepEqual(
@@ -326,7 +328,7 @@ test('OpenRouter / OpenAI: role tool vira texto e a imagem vai numa user logo ap
     assert.equal(u[0]._attachment, undefined)
     assert.equal(u[1].text, '[arquivos retornados por read_file: tela.png]')
     // determinístico (cache de prefixo)
-    const again = buildRequest(chat(), { depth: 0, model: 'm' }, hist, p, env)
+    const again = buildRequest(cc(), { depth: 0, model: 'm' }, hist, p, env)
     assert.equal(JSON.stringify(again.body), JSON.stringify(req.body))
   }
   // histórico persistido intacto

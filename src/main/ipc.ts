@@ -1,5 +1,6 @@
 // Registro dos handlers IPC (ipcMain.handle) — um para cada canal em `IPC` (src/shared/ipc.ts).
 // Handlers recebem os argumentos posicionais na mesma ordem da API do preload.
+import { withoutStaleNative } from '@shared/toolSearch'
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import {
   ALL_CHANNELS,
@@ -819,7 +820,8 @@ export function registerIpc(): void {
 
     // ---- messages ----
     [IPC.messages.update]: (id: string, message: ApiMessage) => {
-      const msg = validateMessage(message)
+      // resposta editada: `native` (blocos do provedor, 1.12.0) que não bate mais sai (§4.3.8)
+      const msg = withoutStaleNative(validateMessage(message))
       // mensagem digitada da principal: editar = nova versão (agent.editBranch), nunca no lugar
       const cur = messagesRepo.get(id)
       const owner = cur && sessionsRepo.get(cur.sessionId)

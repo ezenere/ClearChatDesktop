@@ -929,8 +929,11 @@ test('chamada de uma persona intocada: a request tem EXATAMENTE o system prompt 
     }
   ] as any
   const env = { os: 'Linux', shell: 'bash' }
-  const system = (c: any): unknown =>
-    (buildRequest(c, { depth: 0, model: 'm' }, hist, provider as any, env).body as any).messages[0]
+  // OpenRouter com a compactação (padrão): Messages API (busca nativa, 1.12.0) → `system` no topo
+  const system = (c: any): unknown => {
+    const b = buildRequest(c, { depth: 0, model: 'm' }, hist, provider as any, env).body as any
+    return b.system ? { role: 'system', content: b.system } : b.messages[0]
+  }
   /** O texto do system prompt da request, sem o bloco de ambiente que o app sempre põe no fim. */
   const sysText = (c: any): string => {
     const m = system(c) as any

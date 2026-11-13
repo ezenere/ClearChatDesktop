@@ -1,11 +1,13 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-// Tools compactadas e `datetime` no main (protocolo 1.11.0, §4.3.6): (A) a request montada
-// (buildRequest, função pura) para OpenRouter/OpenAI-compatible e Anthropic nativa, o texto gerado
-// das tools no system prompt, subagentes e o histórico com chamadas de tools que não vão mais
-// (compactação desligada depois de usar a search_tool); (B) o runner real com um provedor FALSO
-// local (nada de rede/key real): a search_tool devolve a definição completa das enviadas, uma tool
-// compacta com argumentos inválidos recebe o erro com a definição completa, com argumentos válidos
-// roda normalmente, `datetime` roda sem aprovação, e sem compactação a search_tool não existe.
+// Tools compactadas e `datetime` no main (protocolo 1.11.0, §4.3.6) — a VERSÃO LOCAL (a busca
+// nativa de 1.12.0 tem testes próprios em toolSearch.test.ts): (A) a request montada (buildRequest,
+// função pura) para um OpenAI-compatible genérico e a Anthropic nativa num modelo sem a busca
+// nativa, o texto gerado das tools no system prompt, subagentes e o histórico com chamadas de tools
+// que não vão mais (compactação desligada depois de usar a `search_tool` — o nome antigo vai como
+// `tool_search` só na cópia); (B) o runner real com um provedor FALSO local (nada de rede/key
+// real): a tool_search (e o nome antigo search_tool) devolve a definição completa das enviadas, uma
+// tool compacta com argumentos inválidos recebe o erro com a definição completa, com argumentos
+// válidos roda normalmente, `datetime` roda sem aprovação, e sem compactação a tool_search não existe.
 // Rodar: npm run test:unit
 import { after, before, test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -37,6 +39,16 @@ const OR: Provider = {
   id: 'p1',
   name: 'OR',
   baseUrl: 'https://openrouter.ai/api/v1',
+  apiKey: 'k',
+  headers: {},
+  createdAt: 0
+}
+/** OpenAI-compatible genérico: sem busca nativa → a versão local (1.11.0). */
+const GEN: Provider = {
+  id: 'p1',
+  name: 'Genérico',
+  kind: 'openai',
+  baseUrl: 'https://llm.example.com/v1',
   apiKey: 'k',
   headers: {},
   createdAt: 0
@@ -74,12 +86,20 @@ const sm = (message: ApiMessage): StoredMessage => ({
 })
 const s0 = { depth: 0 as const, model: 'm' }
 
-test('OpenRouter: compactas (nome + descrição curta + esquema vazio), search_tool completa no fim, prompt no fim do system', () => {
-  const req = buildRequest(mkChat(), s0, [sm({ role: 'user', content: 'oi' })], OR, env)
+test('genérico (versão local): compactas (nome + descrição curta + esquema vazio), tool_search completa no fim, prompt no fim do system', () => {
+  const req = buildRequest(
+    mkChat({ cacheEnabled: true }),
+    s0,
+    [sm({ role: 'user', content: 'oi' })],
+    GEN,
+    env
+  )
   const b = req.body as any
+  assert.equal(req.toolSearch?.mode, 'local')
+  assert.match(req.notes?.[0] ?? '', /Versão local do app — provedor OpenAI-compatible genérico/)
   assert.deepEqual(
     b.tools.map((t: any) => t.function.name),
-    ['read_file', 'shell', 'datetime', 'search_tool']
+    ['read_file', 'shell', 'datetime', 'tool_search']
   )
   for (const t of b.tools.slice(0, 3)) {
     assert.equal(t.type, 'function')
@@ -91,12 +111,18 @@ test('OpenRouter: compactas (nome + descrição curta + esquema vazio), search_t
   assert.equal(b.messages[0].content[0].text, `SYS\n\n${COMPACT_TOOLS_PROMPT}`)
   assert.equal(b.messages[0].content[0].cache_control.type, 'ephemeral')
   // determinístico (prefixo de cache): mesma entrada → mesmos bytes
-  const again = buildRequest(mkChat(), s0, [sm({ role: 'user', content: 'oi' })], OR, env)
+  const again = buildRequest(
+    mkChat({ cacheEnabled: true }),
+    s0,
+    [sm({ role: 'user', content: 'oi' })],
+    GEN,
+    env
+  )
   assert.equal(JSON.stringify(again.body.tools), JSON.stringify(b.tools))
   // uma marcada "vai completa": a definição completa (a mesma de toolDefinitionFor)
-  const mixed = buildRequest(mkChat({ toolsFull: ['shell'] }), s0, [], OR, env).body as any
+  const mixed = buildRequest(mkChat({ toolsFull: ['shell'] }), s0, [], GEN, env).body as any
   assert.deepEqual(mixed.tools[1], toolDefinitionFor('shell', []))
-  // desligada: completas, sem search_tool e sem prompt
+  // desligada: completas, sem tool_search e sem prompt (OpenRouter: Chat Completions de sempre)
   const off = buildRequest(mkChat({ toolsCompact: false }), s0, [], OR, env).body as any
   assert.deepEqual(
     off.tools.map((t: any) => t.function.name),
@@ -112,14 +138,14 @@ test('OpenRouter: compactas (nome + descrição curta + esquema vazio), search_t
     OR,
     env
   ).body as any
-  assert.ok(!all.tools.some((t: any) => t.function.name === 'search_tool'))
+  assert.ok(!all.tools.some((t: any) => t.function.name === 'tool_search'))
   assert.ok(!textOf(all.messages[0].content).includes(COMPACT_TOOLS_PROMPT))
 })
 
-test('Anthropic nativa: compactas com input_schema vazio, search_tool completa, prompt no fim do system', () => {
+test('Anthropic nativa num modelo sem busca nativa (versão local): compactas com input_schema vazio, tool_search completa, prompt no fim do system', () => {
   const b = buildRequest(
     mkChat({ providerId: 'pa', cacheEnabled: false }),
-    { depth: 0, model: 'claude-x' },
+    { depth: 0, model: 'claude-opus-4-1' },
     [sm({ role: 'user', content: 'oi' })],
     ANTH,
     env
@@ -130,7 +156,7 @@ test('Anthropic nativa: compactas com input_schema vazio, search_tool completa, 
     input_schema: { type: 'object', properties: {} }
   })
   assert.deepEqual(b.tools.at(-1), {
-    name: 'search_tool',
+    name: 'tool_search',
     description: SEARCH_TOOL_DEFINITION.function.description,
     input_schema: SEARCH_TOOL_DEFINITION.function.parameters
   })
@@ -138,12 +164,13 @@ test('Anthropic nativa: compactas com input_schema vazio, search_tool completa, 
 })
 
 test('texto das tools no system prompt: o gerado segue a compactação; um texto do usuário vai como está', () => {
-  // nativas + texto gerado: lista as compactas com a descrição curta e a search_tool; prompt fixo no fim
+  // nativas + texto gerado: lista as compactas com a descrição curta e a tool_search; prompt fixo
+  // no fim (texto gerado → sempre a versão local, mesmo no OpenRouter)
   const both = buildRequest(mkChat({ toolsInPrompt: true, cacheEnabled: false }), s0, [], OR, env)
     .body as any
   const sys = both.messages[0].content as string
   assert.ok(sys.includes(`- read_file: ${TOOL_SHORT_DESCRIPTIONS.read_file}`))
-  assert.ok(sys.includes(`- search_tool: ${SEARCH_TOOL_DEFINITION.function.description}`))
+  assert.ok(sys.includes(`- tool_search: ${SEARCH_TOOL_DEFINITION.function.description}`))
   assert.ok(sys.endsWith(`</tools>\n\n${COMPACT_TOOLS_PROMPT}`))
   // modo texto (sem tools nativas): esquema vazio nas compactas, search_tool com o esquema dela
   const txt = buildRequest(
@@ -156,7 +183,7 @@ test('texto das tools no system prompt: o gerado segue a compactação; um texto
   assert.equal(txt.tools, undefined)
   const t = txt.messages[0].content as string
   assert.ok(t.includes('## read_file\n' + TOOL_SHORT_DESCRIPTIONS.read_file))
-  assert.ok(t.includes('## search_tool\n'))
+  assert.ok(t.includes('## tool_search\n'))
   assert.ok(t.endsWith(COMPACT_TOOLS_PROMPT))
   // texto escrito pelo usuário, sem tools nativas: vai como está e nada é compactado (sem prompt)
   const own = buildRequest(
@@ -177,11 +204,11 @@ test('texto das tools no system prompt: o gerado segue a compactação; um texto
     mkChat({ toolsInPrompt: true, toolsPromptText: 'MEU', cacheEnabled: false }),
     s0,
     [],
-    OR,
+    GEN,
     env
   ).body as any
   assert.equal(ownNative.messages[0].content, `SYS\n\nMEU\n\n${COMPACT_TOOLS_PROMPT}`)
-  assert.equal(ownNative.tools.at(-1).function.name, 'search_tool')
+  assert.equal(ownNative.tools.at(-1).function.name, 'tool_search')
 })
 
 test('subagente: a compactação vale (com o system prompt dos subagentes)', () => {
@@ -189,15 +216,15 @@ test('subagente: a compactação vale (com o system prompt dos subagentes)', () 
     mkChat({ subagentSystemPrompt: 'SUB', cacheEnabled: false }),
     { depth: 1, model: 'm' },
     [],
-    OR,
+    GEN,
     env
   ).body as any
   assert.equal(b.messages[0].content, `SUB\n\n${COMPACT_TOOLS_PROMPT}`)
-  assert.equal(b.tools.at(-1).function.name, 'search_tool')
+  assert.equal(b.tools.at(-1).function.name, 'tool_search')
   assert.deepEqual(b.tools[0].function.parameters, COMPACT_PARAMETERS)
 })
 
-test('histórico: compactação desligada depois de usar a search_tool → as chamadas antigas continuam pareadas (OpenRouter e Anthropic)', () => {
+test('histórico: compactação desligada depois de usar a search_tool → as chamadas antigas continuam pareadas (OpenRouter e Anthropic); o nome antigo vai como tool_search só na cópia', () => {
   // o histórico é imutável e reenviado como está (cache): as chamadas de uma tool que não vai mais
   // (search_tool, ou uma tool desligada) seguem como mensagens de tool comuns, pareadas com o
   // resultado; o campo tools continua presente (a Anthropic exige tools quando há tool_use)
@@ -233,6 +260,12 @@ test('histórico: compactação desligada depois de usar a search_tool → as ch
   const calls = or.messages.filter((m: any) => m.tool_calls).map((m: any) => m.tool_calls[0].id)
   const results = or.messages.filter((m: any) => m.role === 'tool').map((m: any) => m.tool_call_id)
   assert.deepEqual(calls, ['c1', 'c2'])
+  // renome 1.12.0: na cópia enviada a chamada antiga vira tool_search; o histórico salvo não muda
+  assert.equal(
+    or.messages.find((m: any) => m.tool_calls).tool_calls[0].function.name,
+    'tool_search'
+  )
+  assert.equal((hist[1].message as any).tool_calls[0].function.name, 'search_tool')
   assert.deepEqual(results, ['c1', 'c2'])
   assert.ok(!textOf(or.messages[0].content).includes(COMPACT_TOOLS_PROMPT))
   const an = buildRequest(
@@ -249,6 +282,10 @@ test('histórico: compactação desligada depois de usar a search_tool → as ch
   const blocks = an.messages.flatMap((m: any) => m.content.map((c: any) => [m.role, c.type]))
   const uses = an.messages.flatMap((m: any) =>
     m.content.filter((c: any) => c.type === 'tool_use').map((c: any) => c.id)
+  )
+  assert.equal(
+    an.messages.flatMap((m: any) => m.content).find((c: any) => c.id === 'c1').name,
+    'tool_search'
   )
   const res = an.messages.flatMap((m: any) =>
     m.content.filter((c: any) => c.type === 'tool_result').map((c: any) => c.tool_use_id)
@@ -300,8 +337,10 @@ const SCRIPT: Record<string, { name: string; args: string }> = {
   invalido: { name: 'read_file', args: JSON.stringify({ file: 'a.txt' }) },
   json: { name: 'read_file', args: '{"path": "a.txt"' },
   valido: { name: 'read_file', args: JSON.stringify({ path: 'a.txt' }) },
-  busca: { name: 'search_tool', args: JSON.stringify({ names: ['read_file', 'shell'] }) },
-  desconhecida: { name: 'search_tool', args: JSON.stringify({ names: ['nope'] }) },
+  busca: { name: 'tool_search', args: JSON.stringify({ names: ['read_file', 'shell'] }) },
+  // nome antigo (≤ 1.11.0): alias de leitura na execução
+  buscaAntiga: { name: 'search_tool', args: JSON.stringify({ names: ['datetime'] }) },
+  desconhecida: { name: 'tool_search', args: JSON.stringify({ names: ['nope'] }) },
   hora: { name: 'datetime', args: JSON.stringify({ format: '%Y' }) },
   // `files` como texto (fora do esquema, mas a tool aceita — ex.: caminho do Windows)
   apresenta: { name: 'present_file', args: JSON.stringify({ files: 'a.txt' }) },
@@ -453,7 +492,7 @@ test('runner: compacta com argumentos válidos roda normalmente (sem ler antes)'
   assert.match(r.content, /conteúdo A/)
 })
 
-test('runner: search_tool devolve a definição completa das enviadas; desconhecida → erro com a lista', async () => {
+test('runner: tool_search devolve a definição completa das enviadas; desconhecida → erro com a lista; o nome antigo search_tool também roda', async () => {
   const sid = await newChat()
   const r = await turn(sid, 'busca')
   assert.equal(r.status, 'ok')
@@ -461,6 +500,9 @@ test('runner: search_tool devolve a definição completa das enviadas; desconhec
   assert.deepEqual(defs[0], TOOL_DEFINITIONS.read_file.function)
   assert.equal(defs[1].name, 'shell')
   assert.ok(defs[1].parameters.properties.command, 'esquema completo do shell')
+  const old = await turn(sid, 'buscaAntiga')
+  assert.equal(old.status, 'ok', old.content)
+  assert.equal(JSON.parse(old.content)[0].name, 'datetime')
   const u = await turn(sid, 'desconhecida')
   assert.equal(u.status, 'error')
   assert.equal(
@@ -476,13 +518,13 @@ test('runner: datetime roda sem aprovação (fuso do aparelho)', async () => {
   assert.equal(r.content, String(new Date().getFullYear()))
 })
 
-test('runner: sem compactação não há search_tool (nem na request nem na execução)', async () => {
+test('runner: sem compactação não há tool_search (nem na request nem na execução)', async () => {
   const sid = await newChat({ toolsCompact: false })
   const r = await turn(sid, 'busca')
   assert.equal(r.status, 'error')
-  assert.match(r.content, /a ferramenta "search_tool" não está disponível/)
+  assert.match(r.content, /a ferramenta "tool_search" não está disponível/)
   const req = hits.filter((h) => textOf(h.messages.at(-1)?.content) === 'busca').at(-1)
-  assert.ok(!req.tools.some((t: any) => t.function.name === 'search_tool'))
+  assert.ok(!req.tools.some((t: any) => t.function.name === 'tool_search'))
   assert.ok(!textOf(req.messages[0].content).includes(COMPACT_TOOLS_PROMPT))
   // inválidos numa tool completa: o erro de sempre (sem a definição — o modelo já a tem)
   const v = await turn(sid, 'invalido')

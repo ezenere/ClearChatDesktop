@@ -129,7 +129,7 @@ export const TOOL_LABELS: Record<ToolName, string> = {
   skill_load: 'Carregar skill',
   skill_read: 'Ler arquivo da skill',
   end_call: 'Encerrar chamada',
-  search_tool: 'Ler definição de tool'
+  tool_search: 'Ler definição de tool'
 }
 
 /**
@@ -140,11 +140,15 @@ export const TOOL_LABELS: Record<ToolName, string> = {
 export const END_CALL_TOOL: ToolName = 'end_call'
 
 /**
- * Tool automática das tools compactadas (protocolo 1.11.0 — @shared/compactTools): vai sempre
- * completa, só quando alguma tool da request vai compacta. NÃO é escolhível (fora de TOOL_NAMES,
- * `enabledTools` e `toolsFull`; leitores a ignoram nessas listas).
+ * Tool automática da versão local das tools compactadas (protocolo 1.11.0 — @shared/compactTools):
+ * vai sempre completa, só quando alguma tool da request vai compacta. NÃO é escolhível (fora de
+ * TOOL_NAMES, `enabledTools` e `toolsFull`; leitores a ignoram nessas listas). Desde 1.12.0 se chama
+ * `tool_search` (antes `search_tool`: alias de leitura em TOOL_ALIASES; o histórico não é regravado).
+ * Nos modos de busca nativa do provedor (@shared/toolSearch) ela não vai.
  */
-export const SEARCH_TOOL: ToolName = 'search_tool'
+export const SEARCH_TOOL: ToolName = 'tool_search'
+/** Nome antigo (≤ 1.11.0) da SEARCH_TOOL: chamadas antigas no histórico. */
+export const LEGACY_SEARCH_TOOL = 'search_tool'
 
 const def = (
   name: ToolName,
@@ -763,8 +767,8 @@ export const TOOL_DEFINITIONS: Record<ToolName, ToolDefinition> = {
   ),
   ...MEMORY_TOOL_DEFINITIONS,
   ...SKILL_TOOL_DEFINITIONS,
-  search_tool: def(
-    'search_tool',
+  tool_search: def(
+    'tool_search',
     'Devolve a definição completa (descrição e parâmetros) de ferramentas enviadas compactadas — só com o nome e uma descrição curta, sem os parâmetros. Leia uma ferramenta compactada com esta antes de usá-la; dá para pedir várias de uma vez.',
     {
       names: {
