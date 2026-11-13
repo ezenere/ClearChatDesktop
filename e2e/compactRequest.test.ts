@@ -302,7 +302,10 @@ const SCRIPT: Record<string, { name: string; args: string }> = {
   valido: { name: 'read_file', args: JSON.stringify({ path: 'a.txt' }) },
   busca: { name: 'search_tool', args: JSON.stringify({ names: ['read_file', 'shell'] }) },
   desconhecida: { name: 'search_tool', args: JSON.stringify({ names: ['nope'] }) },
-  hora: { name: 'datetime', args: JSON.stringify({ format: '%Y' }) }
+  hora: { name: 'datetime', args: JSON.stringify({ format: '%Y' }) },
+  // `files` como texto (fora do esquema, mas a tool aceita — ex.: caminho do Windows)
+  apresenta: { name: 'present_file', args: JSON.stringify({ files: 'a.txt' }) },
+  apresentaRuim: { name: 'present_file', args: JSON.stringify({ arquivos: ['a.txt'] }) }
 }
 
 before(async () => {
@@ -412,13 +415,14 @@ async function turn(sid: string, text: string): Promise<{ content: string; statu
   return { content: textOf(t.message.content), status: t.meta.toolStatus ?? '' }
 }
 
-test('runner: compacta com argumentos inválidos → erro com a definição completa; JSON inválido idem', async () => {
+test('runner: compacta com argumentos inválidos → o erro da tool + a definição completa; JSON inválido idem', async () => {
   const sid = await newChat()
   const r = await turn(sid, 'invalido')
   assert.equal(r.status, 'error')
+  assert.match(r.content, /^Erro: /)
   assert.match(
     r.content,
-    /^Erro: argumentos inválidos para read_file: falta "path" \(obrigatório\); parâmetro desconhecido: "file"\./
+    /Os argumentos não seguem o esquema de read_file: falta "path" \(obrigatório\); parâmetro desconhecido: "file"\./
   )
   assert.ok(r.content.endsWith(JSON.stringify(TOOL_DEFINITIONS.read_file.function)), r.content)
   // a request que gerou a chamada mandou read_file compacta
@@ -428,6 +432,18 @@ test('runner: compacta com argumentos inválidos → erro com a definição comp
   assert.equal(j.status, 'error')
   assert.match(j.content, /^Erro: Argumentos JSON inválidos/)
   assert.ok(j.content.endsWith(JSON.stringify(TOOL_DEFINITIONS.read_file.function)))
+})
+
+test('runner: compacta roda com os argumentos que a tool aceita, mesmo fora do esquema (present_file com files em texto)', async () => {
+  const sid = await newChat({ enabledTools: ['read_file', 'present_file', 'datetime'] })
+  const r = await turn(sid, 'apresenta')
+  assert.equal(r.status, 'ok', r.content)
+  assert.ok(!r.content.includes('foi enviada compactada'))
+  // falhou E fora do esquema → o erro dela + a definição completa
+  const b = await turn(sid, 'apresentaRuim')
+  assert.equal(b.status, 'error')
+  assert.match(b.content, /Os argumentos não seguem o esquema de present_file: falta "files"/)
+  assert.ok(b.content.endsWith(JSON.stringify(TOOL_DEFINITIONS.present_file.function)), b.content)
 })
 
 test('runner: compacta com argumentos válidos roda normalmente (sem ler antes)', async () => {

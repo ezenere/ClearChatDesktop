@@ -379,6 +379,25 @@ export function validateToolArgs(def: ToolDefinition, args: Record<string, unkno
   return out
 }
 
+/**
+ * Erro de uma tool que foi COMPACTA e falhou (a tool roda com os argumentos como vierem — cada uma
+ * tem as tolerâncias dela, ex.: `present_file` aceita `files` como texto ou `path` solto): se os
+ * argumentos não batem com o esquema, o erro da própria tool ganha os problemas e a definição
+ * completa; se batem (o erro é de outra coisa — arquivo inexistente…), fica como está.
+ */
+export function compactToolErrorText(
+  toolError: string,
+  def: ToolDefinition,
+  args: Record<string, unknown>
+): string {
+  const problems = validateToolArgs(def, args)
+  if (!problems.length) return toolError
+  return withFullDefinition(
+    `${toolError}\n\nOs argumentos não seguem o esquema de ${def.function.name}: ${problems.join('; ')}.`,
+    def
+  )
+}
+
 /** Texto do erro de argumentos inválidos de uma tool compacta (problemas + definição completa). */
 export function invalidArgsText(def: ToolDefinition, problems: readonly string[]): string {
   return withFullDefinition(

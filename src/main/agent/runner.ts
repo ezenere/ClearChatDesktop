@@ -183,13 +183,13 @@ import {
 } from '@shared/askUser'
 import { cancelQuestion, getQuestion, listQuestions, requestQuestion } from './questions'
 import { resolveAskUserQuestions } from '../askUserImages'
-import { MEMORY_TOOL_NAMES, SEARCH_TOOL, SKILL_TOOL_NAMES } from '@shared/tools'
 import {
-  invalidArgsText,
-  runSearchTool,
-  validateToolArgs,
-  withFullDefinition
-} from '@shared/compactTools'
+  MEMORY_TOOL_NAMES,
+  SEARCH_TOOL,
+  SKILL_TOOL_NAMES,
+  type ToolDefinition
+} from '@shared/tools'
+import { compactToolErrorText, runSearchTool, withFullDefinition } from '@shared/compactTools'
 import { afterCompaction, ensureSnapshot, runMemoryToolFor } from '../memory'
 import { isTypedFirstMessage, scheduleAutoTitle } from '../autoTitle'
 import { manualSkillParts, sandboxSkillDirs, sessionSkills } from '../skills'
@@ -1528,8 +1528,14 @@ async function executeTool(
   let smart: SmartApproveRecord | undefined
   let smartOverride = false
   let approval: ApprovalRecord | undefined
+  // tool que foi compacta (protocolo 1.11.0): roda com os argumentos como vierem; se falhar e os
+  // argumentos não seguem o esquema, o erro ganha a definição completa (compactToolErrorText)
+  let argCheck: { def: ToolDefinition; args: Record<string, unknown> } | undefined
   const done = (o: Omit<ToolOutcome, 'durationMs'>): ToolOutcome => ({
     ...o,
+    ...(argCheck && o.status === 'error'
+      ? { content: compactToolErrorText(o.content, argCheck.def, argCheck.args) }
+      : {}),
     ...(smart ? { smartApprove: smart } : {}),
     ...(smartOverride ? { smartOverride: true } : {}),
     ...(approval ? { approval } : {}),
@@ -1577,11 +1583,7 @@ async function executeTool(
       status: 'error'
     })
   }
-  if (compactDef) {
-    const problems = validateToolArgs(compactDef, args)
-    if (problems.length)
-      return done({ content: invalidArgsText(compactDef, problems), status: 'error' })
-  }
+  if (compactDef) argCheck = { def: compactDef, args }
   // chamada de voz: `end_call` não pede aprovação (só encerra a chamada — o VoiceCallManager vê o
   // resultado no histórico e desliga quando a resposta terminar de tocar)
   if (name === 'end_call') return done({ content: END_CALL_RESULT, status: 'ok' })
