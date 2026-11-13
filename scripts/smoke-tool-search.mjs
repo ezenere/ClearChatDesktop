@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 /* eslint-disable @typescript-eslint/explicit-function-return-type -- script Node puro (.mjs), sem anotações de tipo */
 // Smoke test PAGO (centavos) da busca nativa de ferramentas — protocolo 1.12.0.
+// 2ª rodada (--only=v2): o prompt fixo nativo (o Haiku 4.5 sem raciocínio passa a buscar?) e V-2
+// de verdade — tool removida e referências filtradas/vazias depois de uma busca que aconteceu
+// (Anthropic: tool_search_tool_result; OpenRouter: openrouter_tool_search_result como o app manda
+// — opaco — e uma variante com a tool removida tirada de matches/tool_names).
 // Responde os itens não verificados V-1…V-9 do design (conversas mínimas de dois turnos):
 //   - Anthropic nativa (claude-haiku-4-5; + V-3 com pensamento: Haiku 4.5 com budget e Haiku 5.5 adaptativo)
 //   - OpenRouter Messages API com um Claude (anthropic/claude-haiku-5.5)
@@ -10,7 +14,9 @@
 // Uso:
 //   ANTHROPIC_API_KEY=… OPENROUTER_API_KEY=… node scripts/smoke-tool-search.mjs
 //   node scripts/smoke-tool-search.mjs --dry-run          # só imprime os bodies (nada é enviado)
-// Opções: --yes (sem a pausa de 5 s antes de começar) · --only=anthropic,or-claude,… (ids dos alvos)
+//   ANTHROPIC_API_KEY=… OPENROUTER_API_KEY=… node scripts/smoke-tool-search.mjs --only=v2
+// Opções: --yes (sem a pausa de 5 s antes de começar) · --only=anthropic,or-claude,… (ids dos alvos;
+// `v2` = os alvos da 2ª rodada)
 // Modelos trocáveis por env: SMOKE_ANTHROPIC_MODEL, SMOKE_OR_CLAUDE_MODEL, SMOKE_OR_OTHER_MODEL,
 // SMOKE_OR_NOPDF_MODEL. Node 20+, sem dependências. Chaves só por env; uma seção sem a chave é pulada.
 // Nunca imprime chaves nem headers (e mascara as chaves em qualquer texto impresso).
@@ -64,6 +70,15 @@ function trunc(v, max = 160, depth = 0) {
 
 const EPH = { type: 'ephemeral' }
 const SYSTEM = 'Você é um assistente. Responda em português, em uma frase curta.'
+/**
+ * Prompt fixo nativo do app (protocolo 1.12.0: vai no fim do system prompt com ≥ 1 tool adiada), com
+ * as categorias das tools adiadas deste teste (list_dir, shell, web_search, datetime) — o mesmo texto
+ * que o app gera (@shared/toolSearch → nativeToolSearchPrompt).
+ */
+const NATIVE_PROMPT =
+  'Algumas ferramentas deste chat estão adiadas (arquivos, terminal, web, data e hora): procure-as com a busca de ferramentas antes de dizer que não tem uma.'
+/** Pergunta sem a dica "procure a ferramenta" (2ª rodada: mede o efeito do prompt nativo). */
+const PLAIN_PROMPT = 'Que horas são agora?'
 const PROMPT = 'Que horas são agora? Procure a ferramenta de data e hora e use-a.'
 
 const obj = (properties, required = []) => ({
@@ -212,8 +227,56 @@ const TARGETS = [
     maxTokens: 300,
     effort: 'low',
     steps: ['pdf']
+  },
+  // ---- 2ª rodada (--only=v2): prompt fixo nativo + V-2 com uma busca que aconteceu ----
+  {
+    // o Haiku 4.5 sem raciocínio não buscou na 1ª rodada: com o prompt nativo, busca?
+    id: 'anthropic-prompt',
+    group: 'v2',
+    provider: 'anthropic',
+    model: ENV.SMOKE_ANTHROPIC_MODEL || 'claude-haiku-4-5',
+    maxTokens: 400,
+    nativePrompt: true,
+    prompt: PLAIN_PROMPT,
+    steps: ['search', 'replay', 'tool-removed', 'refs-empty']
+  },
+  {
+    // garante uma busca (raciocínio liga a busca) para V-2 mesmo se o prompt não bastar
+    id: 'anthropic-thinking-v2',
+    group: 'v2',
+    provider: 'anthropic',
+    model: ENV.SMOKE_ANTHROPIC_MODEL || 'claude-haiku-4-5',
+    maxTokens: 1600,
+    thinking: { type: 'enabled', budget_tokens: 1024 },
+    nativePrompt: true,
+    prompt: PLAIN_PROMPT,
+    steps: ['search', 'tool-removed', 'refs-empty']
+  },
+  {
+    id: 'or-claude-v2',
+    group: 'v2',
+    provider: 'openrouter',
+    model: ENV.SMOKE_OR_CLAUDE_MODEL || 'anthropic/claude-haiku-5.5',
+    maxTokens: 1024,
+    nativePrompt: true,
+    prompt: PLAIN_PROMPT,
+    steps: ['search', 'tool-removed', 'or-filtered']
+  },
+  {
+    id: 'or-other-v2',
+    group: 'v2',
+    provider: 'openrouter',
+    model: ENV.SMOKE_OR_OTHER_MODEL || 'openai/gpt-5.6-luna',
+    maxTokens: 1024,
+    effort: 'low',
+    nativePrompt: true,
+    prompt: PLAIN_PROMPT,
+    steps: ['search', 'tool-removed', 'or-filtered']
   }
 ]
+
+/** Pergunta do turno 1 do alvo. */
+const promptOf = (t) => t.prompt ?? PROMPT
 
 /** Quais V-n cada passo responde. */
 function answersFor(t, step) {
@@ -221,7 +284,8 @@ function answersFor(t, step) {
   if (step === 'replay') a.push('baseline') // reenvio literal (sem pensamento) + tool_result
   if (t.provider === 'anthropic' && step === 'search') a.push('V-9')
   if (step === 'undiscovered' || step === 'undiscovered-loaded') a.push('V-1')
-  if (step === 'tool-removed' || step === 'refs-empty') a.push('V-2')
+  if (step === 'tool-removed' || step === 'refs-empty' || step === 'or-filtered') a.push('V-2')
+  if (t.nativePrompt && step === 'search') a.push('prompt-nativo')
   if ((t.thinking || t.id === 'anthropic-adaptive') && step.startsWith('replay')) a.push('V-3')
   if (t.provider === 'openrouter' && step !== 'pdf') a.push('V-4')
   if (t.provider === 'openrouter' && step.startsWith('replay')) a.push('V-5')
@@ -252,7 +316,8 @@ function withCache(messages) {
 function body(t, { messages, tools, noMaxTokens = false }) {
   const b = { model: t.model }
   if (!noMaxTokens) b.max_tokens = t.maxTokens
-  b.system = [{ type: 'text', text: SYSTEM, cache_control: EPH }]
+  const sys = t.nativePrompt && tools ? `${SYSTEM}\n\n${NATIVE_PROMPT}` : SYSTEM
+  b.system = [{ type: 'text', text: sys, cache_control: EPH }]
   b.messages = withCache(messages)
   if (tools) b.tools = tools
   if (t.thinking) b.thinking = t.thinking
@@ -279,6 +344,23 @@ function filterRefs(content, names) {
         }
       : b
   )
+}
+
+/**
+ * Resultado do OpenRouter sem as tools fora de `names` (matches/tool_names) — o que um app que
+ * filtrasse o bloco opaco mandaria (o ClearChat manda o bloco como veio).
+ */
+function filterOrRefs(content, names) {
+  return content.map((b) => {
+    if (b.type !== 'openrouter_tool_search_result' || !b.content) return b
+    const c = { ...b.content }
+    if (Array.isArray(c.matches))
+      c.matches = c.matches.filter((m) =>
+        names.includes(m?.definition?.name ?? m?.definition?.function?.name ?? m?.tool_id)
+      )
+    if (Array.isArray(c.tool_names)) c.tool_names = c.tool_names.filter((n) => names.includes(n))
+    return { ...b, content: c }
+  })
 }
 
 /** user com um tool_result por tool_use do turno 1 (ou um texto, se não houve tool_use). */
@@ -318,12 +400,12 @@ const allNames = (omit = []) => TOOLS.map((d) => d.name).filter((n) => !omit.inc
 function buildStep(t, step, t1) {
   switch (step) {
     case 'search':
-      return { body: body(t, { messages: [user(PROMPT)], tools: toolsFor(t) }) }
+      return { body: body(t, { messages: [user(promptOf(t))], tools: toolsFor(t) }) }
     case 'replay':
       return {
         body: body(t, {
           messages: [
-            user(PROMPT),
+            user(promptOf(t)),
             { role: 'assistant', content: dropThinking(t1) },
             toolResults(t1)
           ],
@@ -334,14 +416,18 @@ function buildStep(t, step, t1) {
       if (!t1.some(isThinking)) return { skip: 'turno 1 sem blocos de pensamento' }
       return {
         body: body(t, {
-          messages: [user(PROMPT), { role: 'assistant', content: t1 }, toolResults(t1)],
+          messages: [user(promptOf(t)), { role: 'assistant', content: t1 }, toolResults(t1)],
           tools: toolsFor(t)
         })
       }
     case 'canonical':
       return {
         body: body(t, {
-          messages: [user(PROMPT), { role: 'assistant', content: canonical(t1) }, toolResults(t1)],
+          messages: [
+            user(promptOf(t)),
+            { role: 'assistant', content: canonical(t1) },
+            toolResults(t1)
+          ],
           tools: toolsFor(t)
         })
       }
@@ -351,8 +437,24 @@ function buildStep(t, step, t1) {
       return {
         body: body(t, {
           messages: [
-            user(PROMPT),
+            user(promptOf(t)),
             { role: 'assistant', content: filterRefs(dropThinking(t1), allNames(omit)) },
+            toolResults(t1)
+          ],
+          tools: toolsFor(t, { omit })
+        })
+      }
+    }
+    case 'or-filtered': {
+      // OpenRouter: datetime desligada e tirada também do resultado opaco (matches/tool_names)
+      if (!hasType(t1, 'openrouter_tool_search_result'))
+        return { skip: 'turno 1 sem openrouter_tool_search_result' }
+      const omit = ['datetime']
+      return {
+        body: body(t, {
+          messages: [
+            user(promptOf(t)),
+            { role: 'assistant', content: filterOrRefs(dropThinking(t1), allNames(omit)) },
             toolResults(t1)
           ],
           tools: toolsFor(t, { omit })
@@ -365,7 +467,7 @@ function buildStep(t, step, t1) {
       return {
         body: body(t, {
           messages: [
-            user(PROMPT),
+            user(promptOf(t)),
             { role: 'assistant', content: filterRefs(dropThinking(t1), []) },
             toolResults(t1)
           ],
@@ -484,7 +586,7 @@ function anthropicCost(model, u) {
 
 function syntheticT1(t) {
   const use = { type: 'tool_use', id: 'toolu_01SyntheticDatetime', name: 'datetime', input: {} }
-  if (t.provider === 'anthropic' || /^anthropic\//.test(t.model))
+  if (t.provider === 'anthropic')
     return [
       { type: 'text', text: 'Vou ver a hora.' },
       {
@@ -503,17 +605,31 @@ function syntheticT1(t) {
       },
       use
     ]
+  // forma vista na 1ª rodada (OpenRouter, Claude e GPT): pré-busca do roteador + busca do modelo
   return [
+    { type: 'server_tool_use', id: 'orpresearch_2', name: 'openrouter:tool_search', input: {} },
+    {
+      type: 'openrouter_tool_search_result',
+      tool_use_id: 'orpresearch_2',
+      content: {
+        matches: [],
+        tool_names: [],
+        catalog_index: 'Tools: datetime, list_dir, web_search.'
+      }
+    },
     {
       type: 'server_tool_use',
-      id: 'srvtoolu_01Synthetic',
-      name: 'tool_search',
-      input: { pattern: 'hora|time|date' }
+      id: 'call_Synthetic',
+      name: 'openrouter:tool_search',
+      input: { query: 'datetime' }
     },
     {
       type: 'openrouter_tool_search_result',
-      tool_use_id: 'srvtoolu_01Synthetic',
-      content: { matches: [] }
+      tool_use_id: 'call_Synthetic',
+      content: {
+        matches: [{ tool_id: 'datetime', definition: { type: 'function', name: 'datetime' } }],
+        tool_names: ['datetime']
+      }
     },
     use
   ]
@@ -838,7 +954,7 @@ async function runTarget(t) {
       // pause_turn: reenvia o turno do assistente sem nova mensagem do usuário (uma vez)
       if (!DRY && r.out?.stop_reason === 'pause_turn') {
         const b = body(t, {
-          messages: [user(PROMPT), { role: 'assistant', content }],
+          messages: [user(promptOf(t)), { role: 'assistant', content }],
           tools: toolsFor(t)
         })
         const r2 = await send(t, 'resume', b)
@@ -919,7 +1035,7 @@ function summary() {
   for (const r of RESULTS)
     for (const v of r.answers)
       (by[v] ??= []).push(
-        `${r.target}/${r.step}: ${r.status}${r.stop_reason ? ` ${r.stop_reason}` : ''}${r.error ? ` ${r.error.type ?? ''} ${String(r.error.message ?? '').slice(0, 120)}` : ''}${r.stream_error ? ' stream_error' : ''}`
+        `${r.target}/${r.step}: ${r.status}${r.stop_reason ? ` ${r.stop_reason}` : ''}${r.server_tool_use ? ` buscou(${r.server_tool_use.length})` : ''}${r.error ? ` ${r.error.type ?? ''} ${String(r.error.message ?? '').slice(0, 120)}` : ''}${r.stream_error ? ' stream_error' : ''}`
       )
   const or = RESULTS.filter((r) => r.target.startsWith('or-'))
   by['V-4 detail'] = {
@@ -943,7 +1059,9 @@ async function main() {
     console.error('Precisa de Node 20+.')
     process.exit(1)
   }
-  let targets = TARGETS.filter((t) => !ONLY.length || ONLY.includes(t.id))
+  let targets = TARGETS.filter((t) =>
+    ONLY.length ? ONLY.includes(t.id) || (t.group && ONLY.includes(t.group)) : !t.group
+  )
   if (!DRY) {
     const missing = []
     targets = targets.filter((t) => {
