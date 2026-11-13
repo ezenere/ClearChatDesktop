@@ -31,6 +31,8 @@ import {
 import { REMOTE_FS_LIMITS } from '@shared/remoteFs'
 import { aadLiveAnnounce, sealJson, type Envelope } from './crypto'
 import { buildLocal, usesLocalTools, type Plain } from './records'
+import { effectiveFromJson, presetConfigOf } from '../chatInherit'
+import { layerVoiceCallConfig } from '@shared/voice'
 import { withApply } from './schema'
 import { WsRequestError } from './ws'
 import type { SyncEngine } from './engine'
@@ -327,12 +329,9 @@ export class LiveHost {
         }
       | undefined
     if (!r) return null
-    let cfg: Plain = {}
-    try {
-      cfg = JSON.parse(r.config_json) as Plain
-    } catch {
-      /* */
-    }
+    // config EFETIVA (herança ao vivo da persona, §4.3.6): modelo e `usesLocalTools` como rodam
+    const eff = effectiveFromJson(this.conn, r.config_json)
+    const cfg = eff as unknown as Plain
     const presetId = typeof cfg.presetId === 'string' ? cfg.presetId : null
     const preset = presetId
       ? (this.conn.prepare('SELECT name, icon FROM presets WHERE id = ?').get(presetId) as
@@ -370,7 +369,10 @@ export class LiveHost {
       },
       status: st.status,
       pending: st.pending,
-      usesLocalTools: usesLocalTools(cfg),
+      usesLocalTools: usesLocalTools({
+        ...eff,
+        voice: layerVoiceCallConfig(eff.voice, presetConfigOf(this.conn, presetId)?.voice)
+      }),
       hostCwd: typeof cfg.cwd === 'string' && cfg.cwd ? cfg.cwd : null,
       createdAt: r.created_at,
       updatedAt: r.updated_at,

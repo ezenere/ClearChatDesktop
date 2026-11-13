@@ -38,6 +38,8 @@ import {
   type Envelope
 } from './crypto'
 import { WsRequestError } from './ws'
+import { effectiveFromJson, presetConfigOf } from '../chatInherit'
+import { layerVoiceCallConfig } from '@shared/voice'
 import { TRANSIENT_STATUS, usesLocalTools, type Plain } from './records'
 import {
   applyDraftDelta,
@@ -464,20 +466,35 @@ export class HostController {
     }
   }
 
+  /**
+   * Config com que o chat RODA (efetiva — herança ao vivo da persona, §4.3.6 — com a voz da persona
+   * em camadas): é sobre ela que `usesLocalTools` (§8.9) é calculado.
+   */
+  private runConfig(chatId: string): Plain {
+    try {
+      const r = this.engine.conn
+        .prepare('SELECT config_json FROM chats WHERE id = ?')
+        .get(chatId) as { config_json: string } | undefined
+      if (!r) return {}
+      const eff = effectiveFromJson(this.engine.conn, r.config_json)
+      return {
+        ...eff,
+        voice: layerVoiceCallConfig(
+          eff.voice,
+          presetConfigOf(this.engine.conn, eff.presetId)?.voice
+        )
+      } as unknown as Plain
+    } catch {
+      return {}
+    }
+  }
+
   info(chatId: string): ChatHostInfo {
     if (this.isViewerChat(chatId)) return this.viewerInfo(chatId)
     const storage = this.engine.live.storage(chatId)
     if (storage && storage !== 'online') {
       const live = this.engine.live
-      let cfg: Plain = {}
-      try {
-        const r = this.engine.conn
-          .prepare('SELECT config_json FROM chats WHERE id = ?')
-          .get(chatId) as { config_json: string } | undefined
-        cfg = r ? (JSON.parse(r.config_json) as Plain) : {}
-      } catch {
-        /* */
-      }
+      const cfg = this.runConfig(chatId)
       const supported = live.supported()
       return {
         chatId,
@@ -503,15 +520,7 @@ export class HostController {
     }
     const st = this.states.get(chatId)
     const row = this.engine.chatRow(chatId)
-    let cfg: Plain = {}
-    try {
-      const r = this.engine.conn
-        .prepare('SELECT config_json FROM chats WHERE id = ?')
-        .get(chatId) as { config_json: string } | undefined
-      cfg = r ? (JSON.parse(r.config_json) as Plain) : {}
-    } catch {
-      /* */
-    }
+    const cfg = this.runConfig(chatId)
     let hostCwd: ChatHostInfo['hostCwd'] = null
     try {
       hostCwd = row.host_cwd ? JSON.parse(row.host_cwd) : null

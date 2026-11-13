@@ -2,6 +2,7 @@
 // primeiro login, divergência, anexos (blobs) e skills. O host de execução, comandos remotos e o
 // streaming ao vivo ficam em host.ts. Sem Electron: dependências injetadas (SyncDeps) — o app liga
 // em sync/index.ts; os testes usam banco temporário + servidor falso (e2e/fakes/syncServer.ts).
+import { migrateChatInheritance } from '../chatInherit'
 import type Database from 'better-sqlite3'
 import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
@@ -597,7 +598,25 @@ export class SyncEngine {
         this.connection = 'offline'
       }
     }
+    // sem conta: os chats locais migram já (com conta, depois do primeiro pull completo)
+    if (this.phase() === 'signed-out') this.migrateInheritance()
     this.emitStatus()
+  }
+
+  /**
+   * Migração única dos chats anteriores à 1.10.0 para a herança ao vivo da persona (§4.3.6): com
+   * login, depois de um pull completo (runCycle); sem login, na inicialização (chats locais e só ao
+   * vivo migram no próprio dispositivo). O renderer relê os chats.
+   */
+  migrateInheritance(): void {
+    try {
+      const ids = migrateChatInheritance(this.conn)
+      if (!ids.length) return
+      this.log('herança da persona: chats migrados', ids.length)
+      this.emit({ type: 'sync-data-changed', scopes: ['chats'] })
+    } catch (e) {
+      this.log('herança da persona: migração falhou', errMsg(e))
+    }
   }
 
   /** Liga o sync (pull/push + WebSocket). */
@@ -1339,6 +1358,9 @@ export class SyncEngine {
     try {
       await this.pullAll()
       this.backfillSettings()
+      // herança ao vivo (1.10.0, §4.3.6): chats antigos migram depois de um pull completo (persona
+      // e padrões em dia); a gravação marca o chat e ele sobe neste mesmo ciclo
+      this.migrateInheritance()
       await this.pushAll()
       await this.refetchPending()
       this.error = null
@@ -1901,6 +1923,15 @@ export class SyncEngine {
         .prepare('DELETE FROM sync_dirty WHERE type = ? AND id = ? AND mark = ?')
         .run(type, id, mark)
     }
+    // persona apagada (§7.7, desde 1.10.0): o tombstone só sai depois dos chats congelados dela —
+    // no mesmo lote eles vão antes (LWW: chats primeiro); um chat dela ainda em voo adia o tombstone
+    const busyPresetChats = dirty
+      .filter((d) => d.type === 'chat' && this.inflight.has(key('chat', d.id)))
+      .map((d) => {
+        const base = this.basePlain(this.record('chat', d.id))
+        const cfg = (base?.config ?? {}) as Plain
+        return typeof cfg.presetId === 'string' ? cfg.presetId : null
+      })
     for (const d of dirty) {
       if (!isRecordType(d.type) || this.inflight.has(key(d.type, d.id))) continue
       const rec = this.record(d.type, d.id)
@@ -1969,6 +2000,7 @@ export class SyncEngine {
           drop(d.type, d.id, d.mark)
           continue
         }
+        if (d.type === 'preset' && busyPresetChats.includes(d.id)) continue
         item = {
           type: d.type,
           id: d.id,

@@ -1176,7 +1176,13 @@ export function registerIpc(): void {
     [IPC.presets.list]: () => presetsRepo.list(),
     [IPC.presets.create]: (input: PresetInput) => presetsRepo.create(input),
     [IPC.presets.update]: (id: string, patch: PresetPatch) => presetsRepo.update(id, patch ?? {}),
-    [IPC.presets.delete]: (id: string) => presetsRepo.delete(id),
+    // os chats da persona congelam antes (herança ao vivo, §4.3.6): o renderer recebe a config nova
+    [IPC.presets.delete]: (id: string) => {
+      for (const chatId of presetsRepo.delete(id)) {
+        const chat = chatsRepo.get(chatId)
+        if (chat) emit({ type: 'chat-updated', chat })
+      }
+    },
     [IPC.presets.duplicate]: (id: string) => presetsRepo.duplicate(id),
     // ---- memória (SPEC → Memória) ----
     [IPC.memory.listCollections]: () => memory.listCollections(),

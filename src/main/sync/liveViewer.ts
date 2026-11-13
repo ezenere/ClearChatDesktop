@@ -17,6 +17,7 @@ import {
   type LiveItemType
 } from '@shared/live'
 import { aadLiveAnnounce, openJson, type Envelope } from './crypto'
+import { effectiveFromJson } from '../chatInherit'
 import { messageFromPlain, sessionFromPlain, type Plain } from './records'
 import { WsRequestError } from './ws'
 import type { SyncEngine } from './engine'
@@ -779,7 +780,10 @@ export class LiveViewer {
     if (!m || !it?.data) return null
     const d = it.data
     const e = this.list.get(chatId)
-    const cfg = { ...((d.config ?? {}) as Partial<ChatConfig>) } as ChatConfig
+    // o host manda o registro (próprios + cópia + `overrides`, §4.3.6): a config efetiva sai com
+    // as personas e os padrões DESTE dispositivo (sincronizados — iguais aos do host)
+    const raw = { ...((d.config ?? {}) as Partial<ChatConfig>) }
+    const cfg: ChatConfig = effectiveFromJson(this.engine.conn, JSON.stringify(raw))
     cfg.cwd = e?.info.hostCwd ?? ''
     return {
       id: chatId,

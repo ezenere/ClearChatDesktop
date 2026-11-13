@@ -5,10 +5,24 @@ import { getDb } from './db'
 import { indexMessage } from './searchIndex'
 import { ROOT_PARENT } from './migrateBranches'
 import { DEFAULT_CHAT_CONFIG } from '@shared/defaults'
-import { normalizeAppSignatureId } from '@shared/appSignatures'
 import { isChatProvider, providerKind } from '@shared/providerKinds'
 import { migrateConfigTools } from '@shared/toolRename'
-import { normalizeVoiceCallConfig } from '@shared/voice'
+import {
+  applyChatConfigPatch,
+  hasOverrides,
+  newInheritingChatConfig,
+  type ChatPatchContext,
+  type InheritConfig,
+  type InheritEnv
+} from '@shared/chatInherit'
+import {
+  chatRecordFrom,
+  effectiveOf,
+  freezeChatsOfPreset,
+  inheritEnvOf,
+  migrateChatInheritance,
+  presetConfigOf
+} from './chatInherit'
 import {
   activeLeaf,
   activePath,
@@ -32,7 +46,6 @@ import type {
   ApprovalItem,
   ApprovalMode,
   Chat,
-  ChatConfig,
   ChatParams,
   MessageMeta,
   Preset,
@@ -227,12 +240,17 @@ function writeSel(sessionId: string, sel: BranchSel): void {
     .run(JSON.stringify(sel), sessionId)
 }
 
+/** Sessão principal de um chat que herda a persona: o modelo é o efetivo do chat (ao vivo). */
+const withMainModel = (s: Session, model: string | null): Session =>
+  model && s.depth === 0 && s.model !== model ? { ...s, model } : s
+
 export const sessionsRepo = {
   list(chatId: string): Session[] {
     const rows = getDb()
       .prepare('SELECT * FROM sessions WHERE chat_id = ? ORDER BY created_at, rowid')
       .all(chatId) as SessionRow[]
-    return rows.map(toSession)
+    const main = rows.some((r) => r.depth === 0) ? inheritedMainModel(chatId) : null
+    return rows.map((r) => withMainModel(toSession(r), main))
   },
   /** Subsessões criadas diretamente por `parentSessionId` (filhos), na ordem de criação. */
   children(parentSessionId: string): Session[] {
@@ -244,7 +262,9 @@ export const sessionsRepo = {
   get(id: string): Session | null {
     const r = getDb().prepare('SELECT * FROM sessions WHERE id = ?').get(id) as
       SessionRow | undefined
-    return r ? toSession(r) : null
+    if (!r) return null
+    const s = toSession(r)
+    return s.depth === 0 ? withMainModel(s, inheritedMainModel(s.chatId)) : s
   },
   create(s: Omit<Session, 'id' | 'createdAt'>): Session {
     const sess: Session = {
@@ -647,34 +667,19 @@ interface ChatRow {
 const legacyGlobalModes = (): Partial<Record<ApprovalItem, ApprovalMode>> | null =>
   settingsRepo.get<Partial<Record<ApprovalItem, ApprovalMode>>>(APPROVAL_MODES_SETTING) ?? null
 
-const toChat = (r: ChatRow): Chat => {
-  const fallback = DEFAULT_CHAT_CONFIG(homedir())
-  // alias de leitura: nomes antigos de tools ('bash' → 'shell'), autoApprove (≤ 0.3.0) e
-  // smartApprove.enabled/tools (≤ 0.4.0) → approvalModes
-  const cfg = migrateLegacyApprovals(
-    migrateConfigTools(parse<Partial<ChatConfig>>(r.config_json, {})),
-    { globalModes: legacyGlobalModes }
-  )
-  return {
-    id: r.id,
-    title: r.title,
-    config: {
-      ...fallback,
-      ...cfg,
-      // ids antigos de assinatura (ex.: 'cleartchat') resolvem para o atual
-      appSignature: normalizeAppSignatureId(cfg.appSignature),
-      params: { ...(cfg.params ?? {}) },
-      // normalizada como na persona (`sanitizePresetConfig`): campos legados de registros antigos
-      // (`interjections` — protocolo §4.3.6) somem aqui e nunca voltam a ser gravados
-      ...(cfg.voice && typeof cfg.voice === 'object'
-        ? { voice: normalizeVoiceCallConfig(cfg.voice) }
-        : {})
-    },
-    mainSessionId: r.main_session_id ?? '',
-    createdAt: r.created_at,
-    updatedAt: r.updated_at
-  }
-}
+/**
+ * Chat com a config EFETIVA (herança ao vivo da persona, protocolo 1.10.0 — @shared/chatInherit):
+ * é o que roda (runner, subagentes, compactação, voz, memória, skills) e o que o renderer exibe.
+ * `config.overrides` (as unidades próprias) vai junto; o registro gravado é `chatsRepo.record`.
+ */
+const toChat = (r: ChatRow, env?: InheritEnv): Chat => ({
+  id: r.id,
+  title: r.title,
+  config: effectiveOf(getDb(), chatRecordFrom(getDb(), r.config_json), env),
+  mainSessionId: r.main_session_id ?? '',
+  createdAt: r.created_at,
+  updatedAt: r.updated_at
+})
 
 /** Merge de params: chaves com undefined/null no patch são removidas. */
 function mergeParams(base: ChatParams, patch: ChatParams | undefined): ChatParams {
@@ -687,46 +692,76 @@ function mergeParams(base: ChatParams, patch: ChatParams | undefined): ChatParam
   return out as ChatParams
 }
 
+const chatRow = (id: string): ChatRow | undefined =>
+  getDb().prepare('SELECT * FROM chats WHERE id = ?').get(id) as ChatRow | undefined
+
+/** Contexto da interpretação de patches de config (persona e padrões lidos agora). */
+const patchContext = (): ChatPatchContext => ({
+  env: inheritEnvOf(getDb()),
+  persona: (id) => presetConfigOf(getDb(), id)
+})
+
 export const chatsRepo = {
   list(): Chat[] {
     const rows = getDb().prepare('SELECT * FROM chats ORDER BY updated_at DESC').all() as ChatRow[]
-    return rows.map(toChat)
+    const env = rows.length ? inheritEnvOf(getDb()) : undefined
+    return rows.map((r) => toChat(r, env))
   },
   get(id: string): Chat | null {
-    const r = getDb().prepare('SELECT * FROM chats WHERE id = ?').get(id) as ChatRow | undefined
+    const r = chatRow(id)
     return r ? toChat(r) : null
+  },
+  /** Registro gravado (valores próprios + cópia das herdadas + `overrides`) — sync e testes. */
+  record(id: string): InheritConfig | null {
+    const r = chatRow(id)
+    return r ? chatRecordFrom(getDb(), r.config_json) : null
   },
   create(input: ChatCreateInput): { chat: Chat; session: Session } {
     const s = (k: string): string | undefined => {
       const v = settingsRepo.get<unknown>(k)
       return typeof v === 'string' && v.trim() ? v : undefined
     }
-    const inCfg = input?.config ?? {}
-    const providerId =
-      inCfg.providerId ||
-      s('defaultProviderId') ||
-      providersRepo.list().find(isChatProvider)?.id ||
-      ''
-    const provider = providerId ? providersRepo.get(providerId) : null
-    const base = DEFAULT_CHAT_CONFIG(s('defaultCwd') ?? homedir(), {
-      providerId,
-      model: s('defaultModel'),
-      systemPrompt: settingsRepo.get<string>('defaultSystemPrompt') ?? undefined,
-      baseUrl: provider?.baseUrl,
-      kind: provider?.kind
-    })
+    const inCfg = (input?.config ?? {}) as Partial<InheritConfig>
     const definedCfg = migrateLegacyApprovals(
       migrateConfigTools(
         Object.fromEntries(
           Object.entries(inCfg).filter(([, v]) => v !== undefined)
-        ) as Partial<ChatConfig>
+        ) as Partial<InheritConfig>
       ),
       { globalModes: legacyGlobalModes }
     )
-    const config: ChatConfig = {
-      ...base,
-      ...definedCfg,
-      params: mergeParams(base.params, inCfg.params)
+    const persona = presetConfigOf(getDb(), inCfg.presetId)
+    let config: InheritConfig
+    if (inCfg.presetId && persona) {
+      // com persona (≥ 1.10.0): herda ao vivo; `overrides` = o que o formulário mudou (ou a
+      // diferença para o valor efetivo da persona); a config sai completa (cópia informativa)
+      config = newInheritingChatConfig(
+        {
+          ...definedCfg,
+          cwd: definedCfg.cwd || persona.cwd || s('defaultCwd') || homedir(),
+          presetId: inCfg.presetId
+        },
+        persona,
+        inheritEnvOf(getDb())
+      )
+    } else {
+      const providerId =
+        inCfg.providerId ||
+        s('defaultProviderId') ||
+        providersRepo.list().find(isChatProvider)?.id ||
+        ''
+      const provider = providerId ? providersRepo.get(providerId) : null
+      const base = DEFAULT_CHAT_CONFIG(s('defaultCwd') ?? homedir(), {
+        providerId,
+        model: s('defaultModel'),
+        systemPrompt: settingsRepo.get<string>('defaultSystemPrompt') ?? undefined,
+        baseUrl: provider?.baseUrl,
+        kind: provider?.kind
+      })
+      // persona que não existe aqui: sem `overrides` (a migração decide quando ela chegar)
+      const { overrides: _ov, ...rest } = definedCfg
+      void _ov
+      config = { ...base, ...rest, params: mergeParams(base.params, inCfg.params) }
     }
     if (!config.cwd) config.cwd = homedir()
 
@@ -753,37 +788,40 @@ export const chatsRepo = {
     const session = tx()
     return { chat: chatsRepo.get(chatId)!, session }
   },
-  /** Atualiza título/config (merge; `params` em deep-merge). Retorna o chat e se o modelo mudou. */
+  /**
+   * Atualiza título/config. A config é um patch sobre a config EFETIVA com a semântica da herança
+   * (@shared/chatInherit → applyChatConfigPatch): sem `overrides` = edição (as unidades tocadas
+   * viram próprias); com `overrides` = como enviado (voltar a herdar); `presetId` = trocar de
+   * persona (null = congelar). `params` em deep-merge (null remove). Grava o REGISTRO (a cópia das
+   * herdadas não é regravada numa edição comum). Retorna o chat (efetivo) e se o modelo mudou.
+   */
   update(id: string, patch: ChatUpdateInput): { chat: Chat; modelChanged: boolean } {
-    const cur = chatsRepo.get(id)
-    if (!cur) throw new Error(`Chat não encontrado: ${id}`)
-    let config = cur.config
+    const r = chatRow(id)
+    if (!r) throw new Error(`Chat não encontrado: ${id}`)
+    const cur = toChat(r)
+    let record = chatRecordFrom(getDb(), r.config_json)
     if (patch?.config) {
       const raw = Object.fromEntries(
         Object.entries(patch.config).filter(([k, v]) => v !== undefined && k !== 'params')
-      ) as Partial<ChatConfig>
+      ) as Partial<InheritConfig>
       // patch legado { autoApprove: [...] } (ex.: scripts/testes antigos) → approvalModes por cima
       const definedCfg = migrateApprovalConfig(migrateConfigTools(raw))
       if ('autoApprove' in raw && definedCfg.approvalModes)
         definedCfg.approvalModes = { ...cur.config.approvalModes, ...definedCfg.approvalModes }
       if ('autoApprove' in raw && definedCfg.smartApprove && !raw.smartApprove)
         delete definedCfg.smartApprove
-      // smartApprove legado (enabled/tools, ≤ 0.4.0) no patch → modos por item, sobre a config
-      // mesclada (os overrides existentes do chat entram no mapeamento)
-      config = migrateSmartApproveConfig(
-        {
-          ...cur.config,
-          ...definedCfg,
-          params: mergeParams(cur.config.params, patch.config.params)
-        },
-        { globalModes: legacyGlobalModes }
-      )
+      if (patch.config.params !== undefined) definedCfg.params = patch.config.params
+      // smartApprove legado (enabled/tools, ≤ 0.4.0) no patch → modos por item
+      record = migrateSmartApproveConfig(applyChatConfigPatch(record, definedCfg, patchContext()), {
+        globalModes: legacyGlobalModes
+      })
     }
     const title = patch?.title !== undefined ? patch.title : cur.title
     const now = Date.now()
     getDb()
       .prepare('UPDATE chats SET title = ?, config_json = ?, updated_at = ? WHERE id = ?')
-      .run(title, JSON.stringify(config), now, id)
+      .run(title, JSON.stringify(record), now, id)
+    const config = effectiveOf(getDb(), record)
     return {
       chat: { ...cur, title, config, updatedAt: now },
       modelChanged: config.model !== cur.config.model
@@ -794,7 +832,27 @@ export const chatsRepo = {
   },
   delete(id: string): void {
     getDb().prepare('DELETE FROM chats WHERE id = ?').run(id)
+  },
+  /**
+   * Migração única dos chats antigos para a herança ao vivo (§4.3.6) — ver
+   * main/chatInherit.ts → migrateChatInheritance. Retorna os ids migrados.
+   */
+  migrateInheritance(): string[] {
+    return migrateChatInheritance(getDb())
   }
+}
+
+/**
+ * Modelo efetivo da sessão principal de um chat que herda a persona ao vivo (o modelo da persona
+ * mudou sem regravar o chat nem a sessão); null = vale o gravado na sessão.
+ */
+function inheritedMainModel(chatId: string): string | null {
+  const r = getDb().prepare('SELECT config_json FROM chats WHERE id = ?').get(chatId) as
+    { config_json: string } | undefined
+  if (!r) return null
+  const rec = chatRecordFrom(getDb(), r.config_json)
+  if (!rec.presetId || !hasOverrides(rec)) return null
+  return effectiveOf(getDb(), rec).model || null
 }
 
 // ---------------- presets (personas) ----------------
@@ -867,10 +925,21 @@ export const presetsRepo = {
       .run(next.name, next.description, next.icon, JSON.stringify(next.config), next.updatedAt, id)
     return next
   },
-  delete(id: string): void {
-    getDb().prepare('DELETE FROM presets WHERE id = ?').run(id)
+  /**
+   * Apaga a persona. Antes, congela os chats dela (protocolo 1.10.0, §4.3.6/§7.7: valores efetivos
+   * gravados, `presetId` removido — o push leva os chats antes do tombstone). Retorna os ids dos
+   * chats congelados.
+   */
+  delete(id: string): string[] {
+    const db = getDb()
+    const frozen = db.transaction(() => {
+      const ids = freezeChatsOfPreset(db, id)
+      db.prepare('DELETE FROM presets WHERE id = ?').run(id)
+      return ids
+    })()
     if (settingsRepo.get(DEFAULT_PRESET_SETTING) === id)
       settingsRepo.set(DEFAULT_PRESET_SETTING, null)
+    return frozen
   },
   duplicate(id: string): Preset {
     const cur = presetsRepo.get(id)

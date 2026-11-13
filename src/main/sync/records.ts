@@ -2,6 +2,8 @@
 // Sem Electron: SQL direto na conexão (testável com banco temporário). Campos locais do dispositivo
 // (§4.4: `cwd` de chats e personas; as settings de voz `audioInput`/`sttSettings`/`ttsSettings`/
 // `voiceCallDefaults`, locais desde o protocolo 1.9.0) nunca saem daqui e são preservados ao aplicar.
+import { mergeChatConfig3 } from '@shared/chatInherit'
+import { freezeChatsOfPreset } from '../chatInherit'
 import type Database from 'better-sqlite3'
 import { homedir } from 'node:os'
 import { providerKind } from '@shared/providerKinds'
@@ -614,7 +616,9 @@ export function listLocalIds(conn: Database.Database, type: RecordType): string[
 
 /**
  * Sobre o plaintext atual do servidor, aplica só os campos que mudaram localmente desde `base`
- * (para `config`, chave a chave). `updatedAt` = máximo. Campos desconhecidos do servidor ficam.
+ * (para `config`, chave a chave — `mergeChatConfig3`: desde 1.10.0 `config.overrides` por unidade e
+ * a cópia de uma unidade herdada não sobrescreve um valor próprio, §7.5/§4.3.6). `updatedAt` =
+ * máximo. Campos desconhecidos do servidor ficam.
  */
 export function merge3(server: Plain, base: Plain | null, local: Plain): Plain {
   const out: Plain = JSON.parse(JSON.stringify(server))
@@ -622,15 +626,11 @@ export function merge3(server: Plain, base: Plain | null, local: Plain): Plain {
   for (const k of new Set([...Object.keys(local), ...Object.keys(b)])) {
     if (k === 'sv' || k === 'updatedAt') continue
     if (k === 'config') {
-      const lc = (local.config ?? {}) as Plain
-      const bc = (b.config ?? {}) as Plain
-      const oc = { ...((out.config ?? {}) as Plain) }
-      for (const ck of new Set([...Object.keys(lc), ...Object.keys(bc)])) {
-        if (sameJson(lc[ck], bc[ck])) continue
-        if (lc[ck] === undefined) delete oc[ck]
-        else oc[ck] = lc[ck]
-      }
-      out.config = oc
+      out.config = mergeChatConfig3(
+        (out.config ?? {}) as Plain,
+        (b.config ?? {}) as Plain,
+        (local.config ?? {}) as Plain
+      )
       continue
     }
     if (!(k in local)) continue
@@ -1048,10 +1048,17 @@ export function deleteLocal(conn: Database.Database, type: string, id: string): 
       conn.prepare('DELETE FROM providers WHERE id = ?').run(id)
       res.scopes.add('providers')
       break
-    case 'preset':
+    case 'preset': {
+      // §7.7 (desde 1.10.0): os chats locais que ainda apontam para ela congelam ANTES (a cópia
+      // local; quem apagou já mandou os dele) e voltam ao servidor com a nova revisão
+      for (const chatId of freezeChatsOfPreset(conn, id)) {
+        res.redirty.push({ type: 'chat', id: chatId })
+        res.scopes.add('chats')
+      }
       conn.prepare('DELETE FROM presets WHERE id = ?').run(id)
       res.scopes.add('presets')
       break
+    }
     case 'memory_collection':
       conn.prepare('DELETE FROM memory_collections WHERE id = ?').run(id)
       res.scopes.add('memory')
