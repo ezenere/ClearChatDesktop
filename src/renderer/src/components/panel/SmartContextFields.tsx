@@ -30,7 +30,7 @@ import type { CapturePrompts, CapturedEntry, ChatConfig, ContextCaptureConfig } 
 import { api } from '../../lib/api'
 import { cn, formatCost, relativeTime } from '../../lib/format'
 import { useStore } from '../../store'
-import { AutoTextarea, Button } from '../ui/controls'
+import { AutoTextarea, Button, Switch } from '../ui/controls'
 import { ModelPicker } from '../ui/ModelPicker'
 import { C, HelpTip, Tip } from '../ui/Tooltip'
 import { PlaceholderList } from '../ui/PlaceholderList'
@@ -357,14 +357,13 @@ export function SmartContextSection({
           >
             Global
           </button>
-          <label className="inline-flex items-center gap-1.5 text-[11px] text-subtle">
-            <input
-              type="checkbox"
-              data-testid="env-use-global"
+          <label className="inline-flex cursor-pointer items-center gap-1.5 text-[11px] text-subtle">
+            <Switch
+              size="sm"
+              testId="env-use-global"
+              label="Usar a descrição global"
               checked={!ownEnv}
-              onChange={(e) =>
-                set({ environment: e.target.checked ? null : (defaults.environment ?? '') })
-              }
+              onChange={(v) => set({ environment: v ? null : (defaults.environment ?? '') })}
             />
             usar a global
           </label>
@@ -394,12 +393,13 @@ export function SmartContextSection({
       <div className="border-t border-border/60 pt-2.5">
         <div className="mb-1.5 flex items-center gap-2">
           <span className="text-[12.5px] font-medium text-fg/90">Coleta de contexto</span>
-          <label className="ml-auto inline-flex items-center gap-1.5 text-[11px] text-subtle">
-            <input
-              type="checkbox"
-              data-testid="capture-use-global"
+          <label className="ml-auto inline-flex cursor-pointer items-center gap-1.5 text-[11px] text-subtle">
+            <Switch
+              size="sm"
+              testId="capture-use-global"
+              label="Usar o padrão global da coleta de contexto"
               checked={!ownCapture}
-              onChange={(e) => set({ capture: e.target.checked ? null : { ...capture } })}
+              onChange={(v) => set({ capture: v ? null : { ...capture } })}
             />
             usar o padrão global
           </label>
@@ -444,14 +444,13 @@ export function SmartContextSection({
         warning={capturePromptsWarning(prompts)}
       >
         <div data-testid="chat-capture-prompts" className="space-y-2">
-          <label className="inline-flex items-center gap-1.5 text-[11px] text-subtle">
-            <input
-              type="checkbox"
-              data-testid="capture-prompts-use-global"
+          <label className="inline-flex cursor-pointer items-center gap-1.5 text-[11px] text-subtle">
+            <Switch
+              size="sm"
+              testId="capture-prompts-use-global"
+              label="Usar os prompts globais do resumidor"
               checked={!ownPrompts}
-              onChange={(e) =>
-                set({ capturePrompts: e.target.checked ? null : normalizeCapturePrompts(prompts) })
-              }
+              onChange={(v) => set({ capturePrompts: v ? null : normalizeCapturePrompts(prompts) })}
             />
             usar o global
           </label>

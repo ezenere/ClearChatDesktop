@@ -315,8 +315,8 @@ function RecoveryKey(): React.JSX.Element {
           >
             Baixar .txt
           </Button>
-          <label className="ml-auto flex items-center gap-1.5 text-[12px] text-muted">
-            <input type="checkbox" checked={saved} onChange={(e) => setSaved(e.target.checked)} />
+          <label className="ml-auto flex cursor-pointer items-center gap-1.5 text-[12px] text-muted">
+            <Switch size="sm" label="Guardei a chave" checked={saved} onChange={setSaved} />
             Guardei a chave
           </label>
           <Button size="sm" variant="primary" disabled={!saved} onClick={() => setKey(null)}>

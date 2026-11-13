@@ -293,6 +293,33 @@ async function panelTab(name: string): Promise<void> {
 }
 
 /**
+ * Abre o (?) de "Enviar tools compactadas" (o modo de envio fica lá dentro, não visível o tempo
+ * todo) e devolve o elemento `tool-search-mode` dentro do tooltip.
+ */
+async function openModeHelp(
+  scope: ReturnType<Page['locator']>
+): Promise<ReturnType<Page['locator']>> {
+  const btn = scope.getByRole('button', { name: 'Ajuda: Enviar tools compactadas' }).first()
+  await btn.scrollIntoViewIfNeeded()
+  for (let i = 0; ; i++) {
+    await page.mouse.move(5, 5)
+    await page.keyboard.press('Escape')
+    await page
+      .getByTestId('help-tip-content')
+      .waitFor({ state: 'detached', timeout: 3000 })
+      .catch(() => {})
+    await btn.hover()
+    try {
+      const tip = page.getByTestId('help-tip-content').last()
+      await tip.waitFor({ timeout: 3000 })
+      return tip
+    } catch (e) {
+      if (i >= 2) throw e
+    }
+  }
+}
+
+/**
  * Passa o mouse no </> dentro de `scope` e devolve o texto do tooltip. O Radix às vezes não reabre
  * um tooltip logo depois de outro fechar: sai e passa de novo (até 3 vezes).
  */
@@ -361,15 +388,18 @@ async function main(): Promise<void> {
       const sw = rowEl.getByRole('switch', { name: 'Enviar tools compactadas' })
       assert((await sw.getAttribute('aria-checked')) === 'true', 'ligado por padrão')
       assert((await mark('toolsCompact').count()) === 0, 'herdado (sem marca)')
-      // provedor OpenAI-compatible genérico → versão local, com o motivo e o aviso do protocolo
-      const line = rowEl.getByTestId('tool-search-mode')
-      await line.waitFor({ timeout: 5000 })
+      // provedor OpenAI-compatible genérico → versão local: marca curta visível; modo, motivo e o
+      // aviso do protocolo dentro do (?)
+      await rowEl.getByTestId('tool-search-local-mark').waitFor({ timeout: 5000 })
+      assert((await rowEl.getByTestId('tool-search-mode').count()) === 0, 'detalhe só no (?)')
+      const help = await openModeHelp(rowEl)
+      const line = help.getByTestId('tool-search-mode')
       assert((await line.getAttribute('data-mode')) === 'local', 'modo local')
       const lineText = (await line.innerText()).replace(/\s+/g, ' ')
       assert(lineText.includes('Versão local do app'), lineText)
       assert(/Motivo: provedor OpenAI-compatible genérico/.test(lineText), lineText)
       assert(
-        (await rowEl.getByTestId('tool-search-local-notice').innerText()).trim() ===
+        (await help.getByTestId('tool-search-local-notice').innerText()).trim() ===
           TOOL_SEARCH_LOCAL_NOTICE,
         'aviso exato da versão local'
       )
@@ -614,15 +644,19 @@ async function main(): Promise<void> {
       await panelTab('Tools')
       const rowEl = panel().getByTestId('tools-compact-row')
       await rowEl.scrollIntoViewIfNeeded()
-      const line = rowEl.getByTestId('tool-search-mode')
       await waitFor(
-        async () => (await line.getAttribute('data-mode')) === 'native-anthropic',
-        'modo native-anthropic na linha',
+        async () => (await rowEl.getByTestId('tool-search-local-mark').count()) === 0,
+        'sem a marca da versão local',
         8000
       )
+      const help = await openModeHelp(rowEl)
+      const line = help.getByTestId('tool-search-mode')
+      assert((await line.getAttribute('data-mode')) === 'native-anthropic', 'modo native-anthropic')
       const lineText = (await line.innerText()).replace(/\s+/g, ' ')
       assert(lineText.includes('Busca nativa da Anthropic'), lineText)
-      assert((await rowEl.getByTestId('tool-search-local-notice').count()) === 0, 'sem aviso')
+      assert((await help.getByTestId('tool-search-local-notice').count()) === 0, 'sem aviso')
+      await page.mouse.move(5, 5)
+      await page.keyboard.press('Escape')
       // chip vira "adiada"
       assert(
         (await row('shell').getByTestId('tool-full-shell').innerText()) === 'adiada',

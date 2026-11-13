@@ -5,7 +5,6 @@
 import {
   ArrowUpRight,
   BrainCircuit,
-  Check,
   PenLine,
   RefreshCw,
   RotateCcw,
@@ -460,24 +459,12 @@ function CategoryBlock({
                   data-checked={checked || undefined}
                   className="relative flex h-8 cursor-pointer items-center gap-2 rounded-md px-1.5 hover:bg-hover/50"
                 >
-                  <input
-                    type="checkbox"
+                  <Switch
+                    size="sm"
                     checked={checked}
-                    onChange={(e) => onChange(toggleCollection(mem, c, e.target.checked))}
-                    aria-label={`${label}: ${c.name}`}
-                    className="peer sr-only"
+                    onChange={(v) => onChange(toggleCollection(mem, c, v))}
+                    label={`${label}: ${c.name}`}
                   />
-                  <span
-                    aria-hidden
-                    className={cn(
-                      'flex size-3.5 shrink-0 items-center justify-center rounded-[4px] border transition-colors peer-focus-visible:ring-2 peer-focus-visible:ring-accent/40',
-                      checked
-                        ? 'border-accent bg-accent text-white'
-                        : 'border-border-strong bg-active'
-                    )}
-                  >
-                    {checked && <Check className="size-2.5" strokeWidth={3} />}
-                  </span>
                   <CollectionIcon collection={c} size="xs" />
                   <span
                     className={cn(

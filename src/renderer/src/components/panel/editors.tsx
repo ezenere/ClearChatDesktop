@@ -743,11 +743,12 @@ function OtherToolsGroup({
 }
 
 /**
- * Linha de status de "Enviar tools compactadas" (1.12.0): o modo efetivo deste chat + modelo
- * (busca nativa da Anthropic / do OpenRouter / versão local), o motivo quando não é nativo e, na
- * versão local, o aviso exigido pelo protocolo (§4.3.6).
+ * Modo de envio de "Enviar tools compactadas" (1.12.0): o modo efetivo deste chat + modelo (busca
+ * nativa da Anthropic / do OpenRouter / versão local), o motivo quando não é nativo e, na versão
+ * local, o aviso do protocolo (§4.3.6). Fica DENTRO do (?) — visível só a marca curta da versão local
+ * (`ToolSearchLocalMark`).
  */
-function ToolSearchModeLine({
+function ToolSearchModeHelp({
   view,
   fallbackCount
 }: {
@@ -765,28 +766,44 @@ function ToolSearchModeLine({
   if (view.mode === 'off')
     return (
       <span data-testid="tool-search-mode" data-mode="off">
-        Todas as ligadas vão completas
+        Agora: todas as ligadas vão completas.
       </span>
     )
   const native = isNativeMode(view.mode)
   return (
     <span data-testid="tool-search-mode" data-mode={view.mode} className="block">
-      <b className="font-medium text-fg/85">{view.label}</b>
-      {': '}
-      {toolSearchStatus(view.mode, native ? view.deferred.length : view.compacted.length)}
+      <span className="block">
+        <b className="font-medium text-fg/85">Agora — {view.label}</b>
+        {': '}
+        {toolSearchStatus(view.mode, native ? view.deferred.length : view.compacted.length)}
+      </span>
       {!native && view.reason && (
-        <span data-testid="tool-search-reason" className="block">
+        <span data-testid="tool-search-reason" className="mt-1 block">
           Motivo: {view.reason}.
         </span>
       )}
       {!native && (
         <span
           data-testid="tool-search-local-notice"
-          className="mt-1 block rounded-md border border-warning/30 bg-warning/10 px-2 py-1 text-warning/90"
+          className="mt-1.5 block rounded-md border border-warning/30 bg-warning/10 px-2 py-1 text-warning/90"
         >
           {TOOL_SEARCH_LOCAL_NOTICE}
         </span>
       )}
+    </span>
+  )
+}
+
+/** Marca visível curta quando a compactação usa a versão local (o detalhe fica no (?)). */
+function ToolSearchLocalMark({
+  view
+}: {
+  view: ToolSearchModeView | null
+}): React.JSX.Element | null {
+  if (!view || view.mode === 'off' || isNativeMode(view.mode)) return null
+  return (
+    <span data-testid="tool-search-local-mark" className="text-warning/90">
+      Versão local do app — este endpoint não tem busca nativa (detalhes no ?).
     </span>
   )
 }
@@ -831,13 +848,30 @@ export function ToolsListSection({
       <div data-testid="tools-compact-row" className="mb-2.5">
         <ToggleRow
           label="Enviar tools compactadas"
-          help="Economiza contexto. Onde o provedor tem busca nativa de ferramentas (Anthropic; OpenRouter pela Messages API), cada tool vai completa mas adiada e o modelo a encontra pela busca do provedor. Nos outros endpoints, a versão local do app: cada tool vai só com o nome e uma descrição curta e o modelo lê a definição completa com tool_search. Marque “completa”/“carregada” nas que devem ir inteiras desde o início."
+          help={
+            <>
+              <p>
+                Economiza contexto. Onde o provedor tem busca nativa de ferramentas (Anthropic;
+                OpenRouter pela Messages API), cada tool vai completa mas adiada e o modelo a
+                encontra pela busca do provedor. Nos outros endpoints, a versão local do app: cada
+                tool vai só com o nome e uma descrição curta e o modelo lê a definição completa com
+                tool_search. Marque “completa”/“carregada” nas que devem ir inteiras desde o início.
+              </p>
+              {compact && (
+                <p>
+                  <ToolSearchModeHelp view={view} fallbackCount={compactOn} />
+                </p>
+              )}
+            </>
+          }
           checked={compact}
           onChange={(toolsCompact) => patch({ toolsCompact })}
           info={<CompactToolsInfo view={view} />}
           inherit={['toolsCompact']}
           status={
-            !compact ? undefined : <ToolSearchModeLine view={view} fallbackCount={compactOn} />
+            compact && view && view.mode !== 'off' && !native ? (
+              <ToolSearchLocalMark view={view} />
+            ) : undefined
           }
         />
       </div>

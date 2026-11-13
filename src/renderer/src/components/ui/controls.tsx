@@ -95,7 +95,8 @@ export function Switch({
   disabled,
   label,
   size = 'md',
-  indeterminate
+  indeterminate,
+  testId
 }: {
   checked: boolean
   onChange: (v: boolean) => void
@@ -104,6 +105,8 @@ export function Switch({
   size?: 'sm' | 'md'
   /** Estado parcial (ex.: "todos" com só alguns ligados). */
   indeterminate?: boolean
+  /** data-testid do botão (role=switch — o Playwright usa check()/uncheck() nele). */
+  testId?: string
 }): React.JSX.Element {
   const md = size === 'md'
   const x = indeterminate
@@ -121,6 +124,7 @@ export function Switch({
       role="switch"
       aria-checked={indeterminate ? 'mixed' : checked}
       aria-label={label}
+      data-testid={testId}
       disabled={disabled}
       onClick={() => onChange(indeterminate ? true : !checked)}
       className={cn(

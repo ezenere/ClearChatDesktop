@@ -6,7 +6,7 @@ import { takeoverWarnsLocalTools, type ChatHostInfo } from '@shared/sync'
 import { api, errorMessage } from '../../lib/api'
 import { compactPath } from '../../lib/format'
 import { useStore } from '../../store'
-import { Button } from '../ui/controls'
+import { Button, Switch } from '../ui/controls'
 import { Modal } from '../ui/layers'
 
 const EMPTY: ChatHostInfo | undefined = undefined
@@ -157,14 +157,16 @@ export function useTakeover(chat: Chat): {
             </div>
           )}
           {info.pinned && (
-            <label className="flex items-start gap-2 rounded-lg border border-border bg-bg/40 px-3 py-2">
-              <input
-                type="checkbox"
-                className="mt-0.5"
-                checked={pinnedOk}
-                onChange={(e) => setPinnedOk(e.target.checked)}
-                data-testid="takeover-pinned"
-              />
+            <label className="flex cursor-pointer items-start gap-2 rounded-lg border border-border bg-bg/40 px-3 py-2">
+              <span className="pt-0.5">
+                <Switch
+                  size="sm"
+                  testId="takeover-pinned"
+                  label="Executar neste dispositivo mesmo assim"
+                  checked={pinnedOk}
+                  onChange={setPinnedOk}
+                />
+              </span>
               <span>
                 <Lock className="mr-1 inline size-3 text-subtle" />O host está fixado em{' '}
                 <b className="text-fg/90">{host?.name ?? 'outro dispositivo'}</b>. Executar neste
