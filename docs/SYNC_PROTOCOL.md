@@ -775,7 +775,8 @@ gravado na config):
   Claude 4.5 ou mais novo (os que a Anthropic lista para a tool search): todas as tools vão **completas**;
   as que não estão em `toolsFull` levam `defer_loading: true`; o array de tools termina com
   `{ "type": "tool_search_tool_regex_20251119", "name": "tool_search_tool_regex" }`; o ponto de cache
-  (`cache_control`) fica numa tool **não** adiada (a API recusa nas adiadas). A busca roda no servidor,
+  (`cache_control`) fica na última tool **não** adiada do app (a API recusa nas adiadas; sem nenhuma
+  carregada, nenhuma tool leva `cache_control`). A busca roda no servidor,
   dentro da mesma resposta, e a API expande as definições achadas. Sem prompt fixo e sem a nossa
   `tool_search`.
 - **Busca nativa do OpenRouter** — provedor `openrouter`, modelo servido pela **Messages API** do
@@ -783,13 +784,17 @@ gravado na config):
   parâmetros ou `extraBody` exclusivos da Chat Completions, sem anexo que a Messages API não leve): a
   request vai para `<baseUrl>/messages` no formato da Messages API, com as mesmas regras de
   `defer_loading` e `{ "type": "openrouter:tool_search" }` no lugar da entrada da Anthropic. Fora desse
-  caso, o OpenRouter continua na Chat Completions — e então vale a versão local.
+  caso, o OpenRouter continua na Chat Completions — e então vale a versão local. `endpoints`
+  desconhecidos (catálogo de modelos ainda não carregado) contam como servido pela Messages API; a
+  queda cobre o erro.
 - **Versão local** — qualquer outro caso (provedor `openai` e outros endpoints genéricos, host
   Anthropic de terceiros, modelo sem suporte, modo de tools no prompt, OpenRouter fora da Messages API ou
   depois de uma falha da busca nativa): exatamente a compactação de 1.11.0 (descrição curta, a nossa
   `tool_search` devolve as definições completas, prompt fixo). A UI DEVE avisar que, nesse endpoint, a
   compactação não usa a busca nativa do provedor e sim a versão local do app.
-- **Queda:** se o provedor recusar o modo nativo, o host DEVE repetir a request uma vez na versão local;
+- **Queda:** se a request reenviou blocos nativos (§4.3.8) e o provedor a recusou, o host PODE antes
+  repeti-la uma vez no mesmo modo sem reenviar nenhum (se der certo, não lembra falha e para de reenviar
+  aqueles blocos naquela sessão). Se o provedor recusar o modo nativo, o host DEVE repetir a request uma vez na versão local;
   se essa repetição der certo, ele lembra a falha daquele provedor+modelo por 24 h (local do dispositivo,
   §4.4). Erro que também acontece na versão local não é lembrado (é do pedido, não da busca nativa).
 - **Transparência:** a UI DEVE mostrar o modo efetivo do chat (e o motivo quando não é nativo) e, no
@@ -862,6 +867,11 @@ native?: { v: 1, api: 'anthropic-messages', providerId: string, kind: 'anthropic
   se precisar). Antes de reenviar, tira das referências de tools as que não estão no array `tools` da
   request. Nunca vai para outro formato de API. Edição, ramos, compactação do histórico e troca de
   modelo/provedor/aparelho caem nessa regra sozinhas.
+- Uma tool adiada que aparece chamada no histórico enviado sem que a descoberta dela vá junto (blocos
+  descartados pela regra acima) vai **carregada** (sem `defer_loading`) naquela request.
+- Resposta com `stop_reason: 'pause_turn'` (o servidor pausou um turno longo de ferramentas do
+  servidor) é gravada com `native` e o host pede de novo, sem nova mensagem do usuário (no máximo 3
+  vezes seguidas).
 - Quem edita `content`/`tool_calls` de uma resposta DEVERIA remover `native` (a checagem acima cobre
   quem não remove). Leitores que não conhecem `native` o ignoram e o preservam ao regravar.
 
