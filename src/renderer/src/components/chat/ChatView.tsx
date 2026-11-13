@@ -1,3 +1,4 @@
+import { hasOverrides, isOwn } from '@shared/chatInherit'
 import {
   AlertTriangle,
   ArrowLeft,
@@ -103,6 +104,12 @@ function AutoApproveBadge({ chat }: { chat: Chat }): React.JSX.Element | null {
       item: i,
       mode,
       own: !!chat.config.approvalModes?.[i],
+      // herança ao vivo (1.10.0): o modo veio da persona (não é deste chat)
+      persona:
+        !!chat.config.approvalModes?.[i] &&
+        !!chat.config.presetId &&
+        hasOverrides(chat.config) &&
+        !isOwn(chat.config, `approvalModes.${i}`),
       risky:
         mode === 'always' &&
         (CONFIRM_TOOLS.includes(ITEM_TOOL[i]) || effectiveMode(null, global, i) !== 'always')
@@ -178,7 +185,7 @@ function AutoApproveBadge({ chat }: { chat: Chat }): React.JSX.Element | null {
           <div className="px-3 pt-1 pb-1.5 text-[11px] font-semibold tracking-[0.06em] text-subtle uppercase">
             Aprovações deste chat
           </div>
-          {modes.map(({ item, mode, own, risky }, idx) => (
+          {modes.map(({ item, mode, own, persona, risky }, idx) => (
             <div
               key={item}
               data-testid="auto-approve-item"
@@ -205,6 +212,7 @@ function AutoApproveBadge({ chat }: { chat: Chat }): React.JSX.Element | null {
               <span className={cn('text-[11.5px]', risky ? 'text-warning/90' : 'text-subtle')}>
                 {modeLabel(item, mode)}
                 {!own && <span className="text-faint"> · global</span>}
+                {persona && <span className="text-faint"> · persona</span>}
                 {mode === 'smart' && !judge && (
                   <span className="text-warning/90"> (sem modelo)</span>
                 )}

@@ -421,8 +421,14 @@ CLEARCHAT_E2E_DIR=/tmp/clearchat-websearch-e2e npm run test:e2e:websearch
 # E2E do sync com DUAS instâncias do app (userData isolados) contra o servidor de sync FALSO
 # (e2e/fakes/syncServer.ts) e um provedor falso — sem key: login pela UI, sync nos dois sentidos, controle
 # remoto com stream ao vivo e aprovação remota, host offline → assumir, troca forçada, divergência, skills,
-# anexos e captcha; screenshots em $CLEARCHAT_E2E_DIR/shots
+# anexos, captcha e a herança ao vivo da persona (1.10.0); screenshots em $CLEARCHAT_E2E_DIR/shots
 CLEARCHAT_E2E_DIR=/tmp/clearchat-sync-e2e npm run test:e2e:sync
+
+# E2E da herança ao vivo da persona na UI (app real, provedor falso, userData isolado, sync num endereço
+# morto, microfone negado): Novo chat → overrides, "neste chat ↺"/voltar a herdar, ★ das aprovações,
+# persona editada nas Configurações, troca de persona, "Nenhuma" e persona apagada; screenshots em
+# $CLEARCHAT_SHOTS (padrão $CLEARCHAT_E2E_DIR/shots)
+CLEARCHAT_E2E_DIR=/tmp/clearchat-inherit-e2e npm run test:e2e:inherit-ui
 
 # Fumaça contra o servidor de sync REAL (../ClearChatWebsite/backend com MAIL_BACKEND=console; os códigos
 # por e-mail são lidos do log do servidor). Motor do sync, sem Electron (fora do test:unit; exige as variáveis):
