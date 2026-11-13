@@ -720,12 +720,15 @@ ChatConfig.toolsFull?: ToolName[]      // com a compactação, estas vão comple
 - **Compactação (padrão ligada).** Para economizar contexto, cada tool enviada ao modelo que **não** está
   em `toolsFull` vai **compacta**: só o nome e uma **descrição curta** do app (1 a 20 palavras, sem
   detalhes de uso), com um esquema de parâmetros vazio que aceita qualquer objeto. Havendo pelo menos uma
-  tool compacta, o host acrescenta automaticamente a tool **`search_tool`** (sempre completa:
-  `{ names: string[] }` → a definição completa — descrição e esquema de parâmetros, exatamente como
-  iriam sem compactação — de cada tool pedida entre as enviadas; nome desconhecido → erro com a lista
-  das disponíveis) e um **prompt fixo** curto no fim do system prompt (separado por linha em branco)
+  tool compacta, o host acrescenta automaticamente a tool **`search_tool`** (sempre completa, a
+  **última** do array de tools, depois de `end_call`: `{ names: string[] }` → um array JSON de
+  `{ name, description, parameters }` — o `function` da definição completa, exatamente como iria sem
+  compactação — de cada tool pedida entre as enviadas, na ordem pedida; algum nome desconhecido →
+  resultado de erro com a lista das disponíveis e as definições das encontradas) e um **prompt fixo** curto no fim do system prompt (separado por linha em branco)
   dizendo que as tools compactas precisam ser lidas com `search_tool` antes do uso. Sem nenhuma tool
-  compacta (compactação desligada, ou todas em `toolsFull`), não há `search_tool` nem o prompt.
+  compacta (compactação desligada, ou todas em `toolsFull`), não há `search_tool` nem o prompt. Sem
+  tools chegando ao modelo (sem tools nativas e sem o texto gerado — modo texto desligado, ou um
+  `toolsPromptText` do usuário), nada é compactado.
   `search_tool` **não** é uma tool escolhível: escritores NÃO DEVEM pô-la em `enabledTools`/`toolsFull`
   (leitores a ignoram lá).
 - **Transparência:** o prompt fixo, a definição da `search_tool` e a descrição curta de cada tool são
@@ -733,8 +736,9 @@ ChatConfig.toolsFull?: ToolName[]      // com a compactação, estas vão comple
   e a `search_tool` ao lado da opção; a definição compacta ou completa de cada tool no detalhe "enviado à
   API" dela, conforme o modo).
 - **Uso:** uma tool compacta chamada com argumentos válidos roda normalmente (ler antes é orientação, não
-  trava). Argumentos inválidos → o resultado de erro DEVE trazer a definição completa da tool, para o
-  modelo se corrigir.
+  trava). Argumentos inválidos (JSON que não é objeto, obrigatório ausente, parâmetro fora do esquema
+  quando ele tem `additionalProperties: false`, tipo ou `enum` errado — números/booleanos em texto
+  valem) → o resultado de erro DEVE trazer a definição completa da tool, para o modelo se corrigir.
 - **Alcance:** vale para todas as tools da request — as de `enabledTools` e as que entram por outras
   configurações (memória, skills) —, nos turnos normais, nos subagentes e na chamada de voz
   (`voice.tools.enabledTools`). Exceção: `end_call` vai sempre completa (o comportamento da despedida
@@ -742,13 +746,16 @@ ChatConfig.toolsFull?: ToolName[]      // com a compactação, estas vão comple
   segue a mesma regra (compactas com a descrição curta, `search_tool` completa); um `toolsPromptText`
   escrito pelo usuário vai como está.
 - **Herança (§4.3.6):** `toolsCompact` é uma unidade; `toolsFull.<tool>` é uma unidade por tool (como
-  `enabledTools.<tool>`; a chave `toolsFull` é compartilhada — LWW pela chave inteira, como as outras).
-  Persona sem esses campos → padrão de "Novos chats" (`true` e `[]`).
+  `enabledTools.<tool>`, com os mesmos renomes de tool; a chave `toolsFull` é compartilhada — LWW pela
+  chave inteira, como as outras). Persona sem esses campos → padrão de "Novos chats" (`true` e `[]`). Na
+  migração, `toolsFull.<t>` é comparada como booleano e `toolsCompact` ausente vale `true`.
 - **`datetime`** (tool nova, roda em qualquer aparelho, sem aprovação, no padrão de tools do app):
   `{ format?: string }` → a data e hora atuais **do aparelho que roda o turno**, no fuso dele. Sem
-  `format`: data/hora ISO 8601 com o deslocamento, o dia da semana por extenso e o fuso (IANA e UTC±hh:mm).
+  `format`: `<ISO 8601 com deslocamento> · <dia da semana> · fuso <IANA> (UTC±hh:mm)` (ex.:
+  `2026-11-13T14:05:09-03:00 · sexta-feira · fuso America/Sao_Paulo (UTC-03:00)`).
   Com `format`: o texto formatado com os códigos de `strftime` (`%Y %m %d %H %M %S %A %a %B %b %j %p %I
-  %y %e %u %w %Z %z %F %T %D %s %%`, nomes de dia e mês no idioma do app); código desconhecido → erro
+  %y %e %u %w %Z %z %F %T %D %s %%`, nomes de dia e mês no idioma do app; `%Z` = nome IANA, `%z` =
+  `±hhmm`, `%p` = `AM`/`PM`, sem tradução); código desconhecido → erro
   com a lista dos aceitos. O system prompt continua sem data/hora (o prefixo fica estável para o cache):
   `datetime` é o jeito de o modelo saber o momento.
 - **Histórico:** chamadas de `search_tool` e `datetime` são mensagens de tool comuns (§4.3.8). Apps
