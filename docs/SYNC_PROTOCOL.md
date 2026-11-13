@@ -1,6 +1,6 @@
 # ClearChat Sync — Protocolo v1 (contrato)
 
-> **Versão do protocolo: 1.11.0** · status: contrato inicial (ainda sem implementação) · data: 2026-11-13
+> **Versão do protocolo: 1.12.0** · status: contrato inicial (ainda sem implementação) · data: 2026-11-13
 >
 > ⚠️ **AVISO — CONTRATO COMPARTILHADO ENTRE OS REPOSITÓRIOS**
 > Fonte única: `docs/SYNC_PROTOCOL.md` e `docs/test-vectors/` do repositório pai `ezenere/ClearChat`.
@@ -375,7 +375,7 @@ Todo plaintext é um objeto JSON com `sv` (versão do esquema do tipo, hoje `1`)
 `environment`/`capture`/`capturePrompts`/`thinkingTokens`/`cache` (os dois últimos desde 1.4.1), `ContextCaptureConfig.thinkingTokens`/`cache` (desde 1.4.1),
 `MessageMeta.autoTitle`/`presentFiles`/`reasoningMs`; desde 1.5.0, tipos do app com o áudio (depois do 0.9.0):
 `ChatConfig.voice` (§4.3.6), `MessageMeta.voice`/`voiceCall` e `MessageMeta.kind: 'voice-call'` (§4.3.8),
-`VoiceCallConfig.endCall`/`promptMode`; desde 1.10.0, `ChatConfig.overrides` — herança ao vivo da persona, §4.3.6; desde 1.11.0, `ChatConfig.toolsCompact`/`toolsFull` e as tools `datetime`/`search_tool`, §4.3.6). Leitores DEVEM ignorar campos
+`VoiceCallConfig.endCall`/`promptMode`; desde 1.10.0, `ChatConfig.overrides` — herança ao vivo da persona, §4.3.6; desde 1.11.0, `ChatConfig.toolsCompact`/`toolsFull` e as tools `datetime`/`search_tool`, §4.3.6; desde 1.12.0, `ApiMessage.native`, `MessageMeta.toolSearch` e a tool `tool_search` (antes `search_tool`), §4.3.6/§4.3.8). Leitores DEVEM ignorar campos
 desconhecidos e DEVEM preservá-los ao regravar (merge por campo); escritores NÃO DEVEM enviar `undefined`.
 
 #### 4.3.1 `provider`
@@ -768,6 +768,38 @@ ChatConfig.toolsFull?: ToolName[]      // com a compactação, estas vão comple
   merge por chave do chat; editar uma **persona** num app < 1.11.0 os apaga dela) e não conhecem
   `datetime` em `enabledTools` (DEVERIAM preservá-la, §4.3.6 "Tools de um tipo de aparelho").
 
+**Busca nativa de ferramentas (desde 1.12.0).** Com a compactação ligada e pelo menos uma tool que não
+está em `toolsFull`, o host escolhe, **a cada request**, como enviar as tools (o modo é derivado, nunca
+gravado na config):
+- **Busca nativa da Anthropic** — provedor `anthropic` com o host oficial (`api.anthropic.com`) e modelo
+  Claude 4.5 ou mais novo (os que a Anthropic lista para a tool search): todas as tools vão **completas**;
+  as que não estão em `toolsFull` levam `defer_loading: true`; o array de tools termina com
+  `{ "type": "tool_search_tool_regex_20251119", "name": "tool_search_tool_regex" }`; o ponto de cache
+  (`cache_control`) fica numa tool **não** adiada (a API recusa nas adiadas). A busca roda no servidor,
+  dentro da mesma resposta, e a API expande as definições achadas. Sem prompt fixo e sem a nossa
+  `tool_search`.
+- **Busca nativa do OpenRouter** — provedor `openrouter`, modelo servido pela **Messages API** do
+  OpenRouter (os `endpoints` do modelo em `/models`) e chat compatível com ela (sem áudio na entrada, sem
+  parâmetros ou `extraBody` exclusivos da Chat Completions, sem anexo que a Messages API não leve): a
+  request vai para `<baseUrl>/messages` no formato da Messages API, com as mesmas regras de
+  `defer_loading` e `{ "type": "openrouter:tool_search" }` no lugar da entrada da Anthropic. Fora desse
+  caso, o OpenRouter continua na Chat Completions — e então vale a versão local.
+- **Versão local** — qualquer outro caso (provedor `openai` e outros endpoints genéricos, host
+  Anthropic de terceiros, modelo sem suporte, modo de tools no prompt, OpenRouter fora da Messages API ou
+  depois de uma falha da busca nativa): exatamente a compactação de 1.11.0 (descrição curta, a nossa
+  `tool_search` devolve as definições completas, prompt fixo). A UI DEVE avisar que, nesse endpoint, a
+  compactação não usa a busca nativa do provedor e sim a versão local do app.
+- **Queda:** se o provedor recusar o modo nativo, o host DEVE repetir a request uma vez na versão local;
+  se essa repetição der certo, ele lembra a falha daquele provedor+modelo por 24 h (local do dispositivo,
+  §4.4). Erro que também acontece na versão local não é lembrado (é do pedido, não da busca nativa).
+- **Transparência:** a UI DEVE mostrar o modo efetivo do chat (e o motivo quando não é nativo) e, no
+  detalhe "enviado à API", a forma exata de cada tool (com `defer_loading`) e da entrada de busca do
+  provedor. Cada resposta registra o modo em que foi gerada (`MessageMeta.toolSearch`, §4.3.8).
+- **`tool_search` (desde 1.12.0; antes `search_tool`)** — a tool automática da versão local, renomeada
+  (o OpenRouter só reconhece tools de busca por nomes como `tool_search`). Leitores DEVEM tratar
+  `search_tool` como `tool_search` (chamadas no histórico e execução); o histórico não é regravado — o
+  host PODE trocar o nome na cópia enviada. Nenhum dos dois nomes vai em `enabledTools`/`toolsFull`.
+
 #### 4.3.7 `session`
 
 ```ts
@@ -811,6 +843,31 @@ são append-only no app (editar, apagar, `insertAt` da compactação desloca `se
 uma nova revisão do registro, e todas acontecem no host (§8). O `seq` dentro do plaintext é a posição
 na sessão (não confundir com o `seq` do servidor). Referências a anexos (`clearchat-attachment://…`)
 ficam como estão (§14).
+
+**Blocos nativos do provedor (desde 1.12.0).** Uma `ApiMessage` de `role: 'assistant'` PODE ter
+```ts
+native?: { v: 1, api: 'anthropic-messages', providerId: string, kind: 'anthropic' | 'openrouter',
+           model: string, content: object[] }
+```
+= o `content` da resposta do provedor, **na ordem e sem alteração**, sem os blocos `thinking` e
+`redacted_thinking`. Regras:
+- Escritores gravam `native` só quando a resposta (num modo de busca nativa, §4.3.6) trouxe blocos de
+  ferramenta do servidor que precisam voltar ao provedor (`server_tool_use`, `tool_search_tool_result`,
+  `openrouter_tool_search_result`, …); nunca numa resposta interrompida. `content`/`tool_calls`
+  continuam sendo a forma canônica (texto = os blocos `text` concatenados; `tool_calls` = os `tool_use`,
+  mesmos ids, `arguments` = o JSON do `input`).
+- O host só reenvia `native.content` (no lugar da conversão de `content`/`tool_calls`) para o mesmo
+  `providerId`, `api` e `model`, num modo de busca nativa, e se ele ainda bate com a forma canônica
+  (mesmo texto e mesmos `tool_use`); senão a mensagem vai pela conversão normal (o modelo busca de novo
+  se precisar). Antes de reenviar, tira das referências de tools as que não estão no array `tools` da
+  request. Nunca vai para outro formato de API. Edição, ramos, compactação do histórico e troca de
+  modelo/provedor/aparelho caem nessa regra sozinhas.
+- Quem edita `content`/`tool_calls` de uma resposta DEVERIA remover `native` (a checagem acima cobre
+  quem não remove). Leitores que não conhecem `native` o ignoram e o preservam ao regravar.
+
+`MessageMeta.toolSearch?: { mode: 'native-anthropic' | 'native-openrouter' | 'local', fallbackFrom?:
+'native-anthropic' | 'native-openrouter', reason?: string }` (desde 1.12.0) — só exibição: o modo de envio
+das tools em que a resposta foi gerada (e, numa queda, de qual modo nativo ela veio).
 
 **Voz no histórico (desde 1.5.0)** — campos opcionais de `MessageMeta`, só exibição/custos (nunca
 mudam o que vai ao modelo; numa resposta interrompida o `content` já é só o trecho ouvido e o resto fica
@@ -912,6 +969,7 @@ Ver §13 (formato do bundle).
 | `defaultCwd` | `settings` | pasta padrão desta máquina |
 | settings de voz `audioInput`, `sttSettings`, `ttsSettings`, `voiceCallDefaults` (desde 1.9.0; antes sincronizavam, §4.3.2) | `settings` | dependem do que está instalado/configurado em cada máquina; a voz que sincroniza é a da persona/chat (`config.voice.tts`/`stt`) |
 | `skillsSettings` (locais de skills, `projectSkills`) | `settings` | pastas desta máquina |
+| `toolSearchCaps` (desde 1.12.0) | `settings` | falhas da busca nativa por provedor+modelo (24 h) — o que este dispositivo já viu falhar |
 | `presetsSeeded`, `migration.*` (`toolShellRename`, `approvalModes`, `smartApproveItems`, `searchIndex`, `messageTree`) | `settings` | estado de migração local |
 | `updateDismissedVersion` (aviso de versão nova dispensado) | `settings` | cada instalação tem a sua versão do app |
 | índices FTS (`message_search`, `messages_fts`, `memories_fts`) | SQLite | derivados; reconstruídos localmente |
@@ -2473,6 +2531,7 @@ gastem o limite do dono do e-mail ou o bloqueiem.
 | 1.9.0 | 2026-11-12 | Voz por persona: `config.voice.tts`/`config.voice.stt` (chat/persona; motor/provedor, modelo, voz, parâmetros e idioma; herança chat → persona → settings do dispositivo; indisponível no dispositivo → as globais dele; ditado usa a transcrição da persona). As settings `audioInput`, `sttSettings`, `ttsSettings` e `voiceCallDefaults` viram **locais do dispositivo** (escritores não enviam, leitores ignoram; os registros antigos ficam no servidor). Sem mudança no servidor além da versão. |
 | 1.10.0 | 2026-11-12 | Adições compatíveis — **chats herdam a persona ao vivo** (§4.3.6): `ChatConfig.overrides` (`{ [unidade]: true }`) marca o que é próprio do chat; o resto segue o valor efetivo da persona (o dela ou, se ela não define, o padrão de "Novos chats" — cadeia Novos chats → persona → chat, ao vivo); unidades (`model` = par provedor+modelo, `params.<nome>`, `enabledTools.<tool>`, `approvalModes.<item>`, `appSignature` com o custom, `smartApprove`/`memory`/`skills` inteiras, as demais chaves de `PresetConfig` uma a uma; `voice` continua com `null` = herda, `cwd`/`presetId`/`capturedContext` sempre próprios); `config` continua completa como cópia informativa (gravada ao criar, migrar, voltar a herdar, trocar de persona e congelar; não regravada a cada edição da persona); migração única dos chats antigos depois de um pull completo (iguais à persona → herdam; diferentes → próprios; na `voice`, iguais à persona → `null`); trocar de persona mantém `overrides`; persona apagada → os chats dela congelam antes (valores efetivos gravados, `presetId` removido, enviados antes do tombstone) (§4.3.3, §7.7); `overrides` mesclado por subchave e cópia informativa que não sobrescreve valor próprio no conflito (§7.5); `chat.update` com/sem `overrides` (§23.7); nota no merge do primeiro login (§12). Tools de um tipo de aparelho (só no computador / só no celular, com limpeza única dos chats marcados por builds de teste): mesma lista em todos os aparelhos, o host manda ao modelo só as que roda, nunca viram próprias por causa do aparelho, padrão do app inclui as do celular, preservadas por quem não as conhece, migração só as marca próprias se o chat rodou naquele tipo; o celular hospeda chats com ferramentas locais sem elas (antes recusava); aviso forte de troca de host só para chats com `hostCwd`; `present_file` em `usesLocalTools`; o merge do primeiro login grava `hostCwd` (§4.3.6, §8.9, §12). Apps < 1.10.0 leem a cópia e preservam `overrides`; edições deles em campos herdados não valem nos apps novos. Sem mudança no servidor além da versão. |
 | 1.11.0 | 2026-11-13 | Adições compatíveis — **tools compactadas** (§4.3.6): `ChatConfig.toolsCompact` (padrão ligado) e `toolsFull` (as que vão completas); tool compacta = nome + descrição curta do app (1–20 palavras) com esquema vazio; `search_tool` automática (só com alguma tool compacta, nunca escolhível) devolve a definição completa; prompt fixo curto no fim do system prompt; textos do app visíveis na UI; erro de argumentos devolve a definição completa; vale para memória/skills, subagentes, chamada de voz (menos `end_call`) e o texto gerado do modo tools no prompt; unidades de herança `toolsCompact` e `toolsFull.<tool>`. Tool **`datetime`** (`format` opcional, códigos `strftime`, fuso do aparelho que roda o turno; no padrão de tools; o system prompt continua sem data). Apps < 1.11.0 ignoram os campos novos e mostram as tools novas como desconhecidas. Sem mudança no servidor além da versão. |
+| 1.12.0 | 2026-11-13 | Adições compatíveis — **busca nativa de ferramentas** (§4.3.6): com a compactação, o host escolhe por request a busca nativa da Anthropic (host oficial, Claude 4.5+: tools completas com `defer_loading` + `tool_search_tool_regex_20251119`, cache numa tool não adiada) ou a do OpenRouter (Messages API + `openrouter:tool_search`, só para modelos servidos por ela e chats compatíveis), e senão a versão local de 1.11.0 com aviso na UI; queda para a local quando o provedor recusa, lembrada por 24 h no dispositivo (`toolSearchCaps`, §4.4); `search_tool` renomeada `tool_search` (alias de leitura, histórico não regravado); `ApiMessage.native` (blocos da resposta, sem pensamento, reenviados só ao mesmo provedor/API/modelo e se ainda batem com a forma canônica) e `MessageMeta.toolSearch` (§4.3.8). Apps < 1.12.0 ignoram `native` e mostram `tool_search` como desconhecida. Sem mudança no servidor além da versão. |
 
 ---
 
