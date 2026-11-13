@@ -152,6 +152,7 @@ import {
   nativeToolSearchPrompt,
   nativeTurnFrom,
   toolSearchView,
+  withoutStaleNative,
   type ToolSearchModeResult,
   type ToolSearchModeView
 } from '@shared/toolSearch'
@@ -3463,9 +3464,10 @@ export async function amendVoiceTurn(
           }
         : {}
     if (voice.voice && !spoken.trim()) delete voice.voice.spoken
+    // o texto mudou: blocos nativos do provedor que não batem mais com ele saem (§4.3.8)
     const updated = messagesRepo.update(
       m.id,
-      { ...m.message, content: hasCalls && !spoken ? null : heard },
+      withoutStaleNative({ ...m.message, content: hasCalls && !spoken ? null : heard }),
       { ...m.meta, interrupted: true, ...voice }
     )
     emit({ type: 'message-updated', message: updated })
