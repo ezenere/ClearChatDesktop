@@ -1052,7 +1052,7 @@ Clientes chamam antes de login (validação do servidor escolhido) e a cada cone
     "push": { "providers": ["fcm"] },
     "liveChats": true
   },
-  "links": { "download": "https://github.com/ezenere/ClearChat/releases", "signup": "https://clear.ezenere.com/signup" } }
+  "links": { "download": "https://github.com/ezenere/ClearChatDesktop/releases", "signup": "https://clear.ezenere.com/signup" } }
 ```
 - `captcha: null` = a instância não usa captcha (sem chaves configuradas ou desligado no painel): os
   clientes não abrem a janela de captcha e omitem `turnstile_token`; os limites de taxa continuam.
