@@ -847,8 +847,14 @@ export const chatsRepo = {
  * mudou sem regravar o chat nem a sessão); null = vale o gravado na sessão.
  */
 function inheritedMainModel(chatId: string): string | null {
-  const r = getDb().prepare('SELECT config_json FROM chats WHERE id = ?').get(chatId) as
-    { config_json: string } | undefined
+  // só chats na forma da herança (persona + `overrides`): o resto nem é lido
+  const r = getDb()
+    .prepare(
+      `SELECT config_json FROM chats WHERE id = ? AND json_valid(config_json)
+         AND json_extract(config_json, '$.presetId') IS NOT NULL
+         AND json_type(config_json, '$.overrides') = 'object'`
+    )
+    .get(chatId) as { config_json: string } | undefined
   if (!r) return null
   const rec = chatRecordFrom(getDb(), r.config_json)
   if (!rec.presetId || !hasOverrides(rec)) return null
