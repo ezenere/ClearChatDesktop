@@ -1,6 +1,6 @@
 # ClearChat Sync — Protocolo v1 (contrato)
 
-> **Versão do protocolo: 1.9.0** · status: contrato inicial (ainda sem implementação) · data: 2026-11-12
+> **Versão do protocolo: 1.10.0** · status: contrato inicial (ainda sem implementação) · data: 2026-11-12
 >
 > ⚠️ **AVISO — CONTRATO COMPARTILHADO ENTRE OS REPOSITÓRIOS**
 > Fonte única: `docs/SYNC_PROTOCOL.md` e `docs/test-vectors/` do repositório pai `ezenere/ClearChat`.
@@ -375,7 +375,7 @@ Todo plaintext é um objeto JSON com `sv` (versão do esquema do tipo, hoje `1`)
 `environment`/`capture`/`capturePrompts`/`thinkingTokens`/`cache` (os dois últimos desde 1.4.1), `ContextCaptureConfig.thinkingTokens`/`cache` (desde 1.4.1),
 `MessageMeta.autoTitle`/`presentFiles`/`reasoningMs`; desde 1.5.0, tipos do app com o áudio (depois do 0.9.0):
 `ChatConfig.voice` (§4.3.6), `MessageMeta.voice`/`voiceCall` e `MessageMeta.kind: 'voice-call'` (§4.3.8),
-`VoiceCallConfig.endCall`/`promptMode`). Leitores DEVEM ignorar campos
+`VoiceCallConfig.endCall`/`promptMode`; desde 1.10.0, `ChatConfig.overrides` — herança ao vivo da persona, §4.3.6). Leitores DEVEM ignorar campos
 desconhecidos e DEVEM preservá-los ao regravar (merge por campo); escritores NÃO DEVEM enviar `undefined`.
 
 #### 4.3.1 `provider`
@@ -504,7 +504,10 @@ de chats e personas (§4.3.6) cujo registro online ainda não tem `voice` (merge
 `config` = `sanitizePresetConfig` (`PRESET_FIELDS`) **sem `cwd`** — o diretório raiz opcional da
 persona é local do dispositivo (§4.4). Ao aplicar um registro remoto, o cliente mantém o `cwd` local.
 Desde 1.5.0 `config.voice` (`VoiceCallConfig`, a chamada de voz da persona — §4.3.6) sincroniza; até
-1.4.1 era local e não era enviado.
+1.4.1 era local e não era enviado. Desde 1.10.0 os chats **herdam a persona ao vivo** (os campos que o
+chat não sobrescreveu seguem a persona — `ChatConfig.overrides`, §4.3.6); apagar uma persona **congela**
+os chats dela antes (§4.3.6, §7.7). Campos que a persona não define seguem os padrões de "Novos chats"
+(`defaultModel`, `defaultSystemPrompt`, padrões do app) — também ao vivo.
 
 #### 4.3.4 `memory_collection`
 
@@ -591,6 +594,88 @@ Campos `null`/ausentes herdam (chat → persona de origem `presetId` → `voiceC
 localmente = "sem modelo próprio"). `voice.tools.enabledTools` conta em `usesLocalTools` (§8.9). Clientes
 < 1.5.0 guardam `voice` como chave desconhecida e a preservam ao regravar o chat; mas editar uma
 **persona** num app < 1.5.0 (que reescreve a `config` pelos campos que conhece) apaga a `voice` dela.
+
+**Herança ao vivo da persona (`config.overrides`, desde 1.10.0).** Até 1.9.0 a `config` de um chat era
+uma **cópia** da persona feita na criação. Desde 1.10.0 o chat **herda ao vivo**: cada campo que o chat
+não mudou segue a persona de origem (`presetId`) — mudar a persona muda os chats dela —, e um campo
+mudado no chat vira **próprio** só daquele chat, até o usuário "voltar a herdar".
+```ts
+ChatConfig.overrides?: { [unidade: string]: true }   // unidades próprias do chat; as outras herdam
+```
+- **Unidades** (o que se herda ou sobrescreve de uma vez; nomes estáveis, leitores ignoram nomes
+  desconhecidos e valores ≠ `true`):
+
+  | Unidade | Campos de `config` |
+  |---|---|
+  | `model` | `providerId` + `model` (o par anda junto) |
+  | `params.<nome>` | `params[<nome>]` — cada parâmetro é uma unidade (`params.temperature`, `params.extraBody`…) |
+  | `enabledTools.<tool>` | se a tool `<tool>` está em `enabledTools` (cada tool é uma unidade; renomes de tool do app valem também para o nome da unidade) |
+  | `approvalModes.<item>` | `approvalModes[<item>]` (cada item de aprovação) |
+  | `appSignature` | `appSignature` + `appSignatureCustom` |
+  | `smartApprove`, `memory`, `skills` | a seção inteira |
+  | qualquer outra chave de `PresetConfig` (`systemPrompt`, `nativeTools`, `toolsInPrompt`, `toolsPromptText`, `envInPrompt`, `cacheEnabled`, `subagentSystemPrompt`, `acceptEditsInRoot`, `contextWindow`, `compactThreshold`, `autoCompact`, `compactPrompt`, `maxToolOutputChars`, `confineToRoot`, `sandboxBash` e as que vierem) | a própria chave |
+
+  Ficam **fora** de `overrides`: `voice` (cada campo `null` da `voice` do chat já herda a persona ao vivo
+  desde 1.5.0 — "voltar a herdar" = `null`), `cwd` (local, §4.4), `presetId` e `capturedContext`
+  (estado do chat), sempre próprios.
+- **Valor efetivo da persona** de uma unidade: o da persona, se a `config` dela define a unidade (a
+  chave; em `params`/`approvalModes`, a subchave; em `enabledTools`, a persona ter a lista); senão o
+  padrão de **"Novos chats"**, também ao vivo — `model` = setting `defaultModel` (provedor da persona
+  apagado → o par padrão, como hoje), `systemPrompt` = `defaultSystemPrompt` (`null` → o texto padrão do
+  app), `params.*`/`approvalModes.*` = ausente (o padrão do provedor/o global), `enabledTools.*` = as
+  tools padrão do app, `cacheEnabled` = segue o provedor **efetivo do chat** (OpenRouter/Anthropic
+  ligam), o resto = o padrão do app. Ou seja, a cadeia é **Novos chats → persona → chat**: mudar um
+  padrão de "Novos chats" muda as personas que não definem aquele campo e os chats delas que não o
+  sobrescrevem (a UI DEVERIA avisar isso na tela de "Novos chats").
+- **Config efetiva do chat** (a que o host usa para rodar e todos usam para exibir; tudo que o protocolo
+  calcula sobre a config — ex.: `usesLocalTools`, §8.9 — usa a efetiva): se o chat tem `presetId` de uma
+  persona que existe neste dispositivo **e** tem `overrides` → cada unidade em `overrides` usa o valor do
+  próprio chat (ausente inclusive: vale a semântica de "ausente" do campo — ex.: `memory` ausente =
+  desligada; escritores DEVERIAM gravar a forma explícita quando ela existe) e cada unidade fora usa o
+  valor efetivo da persona; `voice` pela regra própria. Sem `presetId`, ou com a persona inexistente
+  aqui → a `config` como está (valores próprios; `overrides` não tem efeito).
+- **Cópia informativa.** A `config` continua **completa** no registro: nas unidades herdadas, o
+  escritor grava o valor efetivo da persona **no momento** em que cria o chat, migra, "volta a herdar",
+  troca de persona ou congela. Esses valores servem a apps < 1.10.0 e ao congelamento — leitores ≥ 1.10.0
+  NÃO DEVEM usá-los enquanto a persona existe. Escritores NÃO DEVERIAM regravar os chats só porque a
+  persona ou um padrão mudou (seria uma escrita por chat a cada edição) nem atualizar a cópia nas outras
+  escritas do chat (ex.: o `updatedAt` do turno, §8.5).
+- **Criar um chat** (≥ 1.10.0) com persona: `presetId` = a persona; `overrides` = as unidades que o
+  usuário mudou no formulário do Novo chat em relação ao valor efetivo da persona (`{}` se nenhuma);
+  `config` completa. Sem persona: sem `presetId` (e `overrides` ausente ou vazio) — valores próprios.
+- **Editar um campo no chat** → a(s) unidade(s) entram em `overrides` com o valor novo. **Voltar a herdar**
+  → a unidade sai de `overrides` e a cópia recebe o valor efetivo atual da persona.
+- **Trocar a persona do chat** → `presetId` novo, `overrides` mantido (as unidades próprias continuam
+  próprias), as herdadas passam a seguir a persona nova (cópia atualizada); na `voice`, os campos `null`
+  passam a herdar da nova. Escolher **nenhuma persona** = congelar (abaixo). Um chat sem persona que
+  ganha uma: as unidades em `overrides` (se houver) ficam próprias, todas as outras herdam.
+- **Persona apagada → os chats dela congelam.** Antes de apagar uma persona (localmente ou ao aplicar o
+  tombstone dela, §7.7), o cliente DEVE congelar cada chat local com aquele `presetId`: grava em `config`
+  o valor efetivo atual de todas as unidades herdadas, preenche os campos `null` da `voice` com os
+  valores não nulos da `voice` da persona, **remove `presetId`** e **mantém `overrides`** (só sem efeito,
+  para uma persona escolhida depois). Quem apaga DEVE enviar os chats congelados antes do tombstone da
+  persona, ou no mesmo push e antes dele; quem recebe o tombstone e ainda tem chats apontando para ela os
+  congela com a cópia local (valores iguais → nenhum conflito real). Chats só ao vivo (§23): o host
+  congela a cópia local dele.
+- **Migração de chats antigos** (com `presetId` e **sem** `overrides` — gravados por apps < 1.10.0 ou
+  antes da migração): uma vez por chat, **depois de um pull completo** (para persona e padrões estarem
+  atualizados), um cliente ≥ 1.10.0 DEVE gravar `overrides` = as unidades cujo valor no chat **difere**
+  (JSON) do valor efetivo da persona — as iguais passam a herdar — e, na `voice`, pôr `null` nos campos
+  iguais ao campo **não nulo** correspondente da `voice` da persona (os padrões de voz do dispositivo são
+  locais e não entram na comparação). O resultado é determinístico (depende só do que sincroniza): dois
+  dispositivos que migram juntos gravam o mesmo. Até migrar, o chat vale como cópia (valores próprios).
+  `presetId` de uma persona que não existe depois do pull completo → nada a migrar (valores próprios).
+  Chats locais (sem login) e só ao vivo migram no próprio dispositivo/host.
+- **Conflito:** `overrides` é mesclado **por unidade** (subchave) no merge por chave da `config`
+  (§7.5): dois dispositivos que sobrescrevem campos diferentes ao mesmo tempo não perdem nenhuma marca.
+  Ao reaplicar campos sujos num `rev_mismatch`, o cliente NÃO DEVE reaplicar o valor de uma unidade que
+  ele tem como herdada se no servidor ela está em `overrides` (a cópia informativa não sobrescreve um
+  valor próprio). As chaves compartilhadas por várias unidades (`params`, `approvalModes`,
+  `enabledTools`) continuam LWW pela chave inteira, como antes.
+- **Apps < 1.10.0** leem a `config` como cópia (os valores herdados da última atualização da cópia) e
+  preservam `overrides` como chave desconhecida ao regravar. Uma edição feita num app < 1.10.0 num campo
+  que o chat herda não vale nos apps ≥ 1.10.0 (o campo continua herdando; a migração não roda de novo
+  porque `overrides` já existe) — atualize os apps. Chats criados por apps < 1.10.0 são migrados como acima.
 
 #### 4.3.7 `session`
 
@@ -1058,7 +1143,10 @@ cada registro pendente, o conjunto de campos que mudou localmente (`dirty_fields
 `preset.config`, as chaves de `config`). Em `rev_mismatch`: pega o plaintext atual do servidor, aplica
 por cima **só** os campos sujos locais, e reenvia com `base_rev = current.rev` (novo `push_id`).
 Resultado: vence quem chega por último ao servidor, campo a campo; edições em campos diferentes não se
-perdem. `updatedAt` = máximo dos dois. Campos desconhecidos do servidor são preservados.
+perdem. `updatedAt` = máximo dos dois. Campos desconhecidos do servidor são preservados. Exceção (desde
+1.10.0): `chat.config.overrides` é mesclado **por subchave** (cada unidade da herança é suja sozinha), e a
+cópia informativa de uma unidade herdada não sobrescreve um valor que no servidor está em `overrides`
+(§4.3.6).
 
 **LWW inteiro** (`setting`, `skill`): o valor local substitui o atual (`base_rev = current.rev`) — a
 escrita que chega depois vence.
@@ -1090,6 +1178,10 @@ DEVE puxar e tratar como divergência.
 - **Chat que vira só ao vivo (desde 1.8.0)**: a conversão online → ao vivo é exatamente esta exclusão,
   feita pelo host, que mantém a cópia local e ignora o tombstone (§23.8). Para o servidor e para os outros
   dispositivos é uma exclusão comum.
+- **Persona (desde 1.10.0)**: antes de apagar uma persona — por ação local ou ao aplicar o tombstone
+  dela —, o cliente congela os chats locais com aquele `presetId` (valores efetivos gravados, `presetId`
+  removido, §4.3.6); quem apaga envia os chats congelados antes do tombstone (ou no mesmo push, antes
+  dele). O servidor não faz nada além do comum (sem cascata).
 - **Coleção de memória**: o servidor apaga fisicamente as `memory` com `scope = collection_id`; clientes
   fazem a cascata local (a FK do app já faz). `supersedes_id` que apontava para elas: zerado pelo trigger
   do app (não é enviado nada).
@@ -1736,7 +1828,9 @@ Num chat só ao vivo o `snapshot` ganha `live: { lseq }` (o `lseq` atual do host
    (desde 1.5.0); `ChatConfig.presetId`, setting
    `defaultPresetId`; `ChatConfig.memory.collections[]` e `writeTo` (chats e personas), `Memory.collectionId`;
    `Memory.supersedesId`. Metadados informativos em `MessageMeta` (inclusive `voice`/`voiceCall`) não
-   são remapeados.
+   são remapeados. `ChatConfig.overrides` (desde 1.10.0) não tem ids; depois do merge, as unidades
+   herdadas dos chats seguem a persona e os padrões de "Novos chats" que venceram (herança ao vivo,
+   §4.3.6) — a persona online vencedora pode mudar os campos herdados dos chats locais.
 6. **Conteúdo vencedor**: priorizar online → o conteúdo online fica e o local é descartado para essas
    entidades; priorizar local → o conteúdo local é enviado por cima (`base_rev = rev online`). **Chats
    com o mesmo id e histórias diferentes**: a versão perdedora é descartada (o diálogo do merge avisa
@@ -2278,6 +2372,7 @@ gastem o limite do dono do e-mail ou o bloqueiem.
 | 1.8.0 | 2026-11-06 | Adições compatíveis — chats só ao vivo (§23): escolha "Salvar online"/"Só ao vivo" ao criar um chat (padrão de instalação nova: só ao vivo; depois, a última escolha do dispositivo, `newChatStorage` local), modo `storage` local do host (`online`/`live`/`live_pending`) e conteúdo inteiro do chat ao vivo fora do sync (§4.4); nada no servidor além de um **vínculo em memória** por chat (host, `epoch` ao vivo escolhido pelo host, `arev`, rodando/ocioso, envelope), com tolerância de queda, reanúncio a cada `welcome`, `settling_s` após reinício do servidor e exclusividade com os chats online (`live_conflict` em anúncio, push de outro dispositivo e `host.begin`/`takeover`/`pin`/resolver divergência) (§23.3); WebSocket: `hello.caps`/`welcome.caps` com `"live_chats"` (§10.3), `live.announce`/`live.withdraw`/`live.list`/`live.refresh` e `live.update`/`live.removed`/`live.host`/`live.refresh_request` (§10.4, §10.5); anúncio cifrado com `K_stream` e AAD nova `clearchat\|v1\|live-announce\|…` amarrando host, chat, epoch e `arev` (§3.10, vetores em `live.json`, §3.15); comandos `history.list`/`history.changes`/`history.item` (histórico paginado sob demanda, itens com o plaintext dos registros e `lseq` por epoch, pedaços para itens grandes) e `chat.update` (renomear/editar config de um chat ao vivo) (§8.6, §23.5, §23.7); anexos sem blob: `attach.put` (arquivo enviado ao host em pedaços de 512 KiB dentro dos comandos cifrados, validado no primeiro pedaço, conferido por tamanho + SHA-256 no último e salvo como anexo local do chat; devolve o `AttachmentInfo` que o `send` usa como referência ao store do host; idempotente por `offset`, cancelamento e expiração por ociosidade) e `attach.get` (anexo do histórico baixado do host em pedaços, como `fs.read`, conferido pelo SHA-256 e mantido só em memória), limites de anexo do app (20 MiB por arquivo, 10 por mensagem, 50 MiB por mensagem) (§8.6, §14, §17.1, §23.7); kind `rec` no stream e `snapshot.live.lseq` (§11, §23.6); conversões ao vivo → online (push comum por replay, vínculo apagado no commit do `chat`) e online → ao vivo (tombstone comum, ignorado pelo host; tombstone aceito como vazamento) (§7.7, §23.8); merge do primeiro login ignora chats ao vivo, inclusive os criados antes do login, que continuam locais (salvar online é opt-in) (§12, §23.1); `features.liveChats` em `/api/info` (§6.2); linha nova em §2; `quota_exceeded` com `kind: 'live_chats'` (§7.10), constantes, limites e erro `live_conflict` (§17); notas em §8.1, §8.2, §8.7, §8.8, §9.1, §14. Push: `from_device_id` posto pelo servidor em toda mensagem FCM, `PushPayload.hostDeviceId?`/`live?`, `device_id` do host no `host_offline` (que conta chats ao vivo rodando) e o celular apaga as pendências daquele host ao receber `host_offline` (§22.3, §22.4, §22.6, §22.7). Clientes < 1.8.0 não veem chats ao vivo (sem registros; o servidor só manda `live.*` a quem declarou `caps`); clientes ≥ 1.8.0 contra servidor < 1.8.0 escondem a escolha e criam tudo online. Servidor ≥ 1.8.0 precisa repassar os kinds novos antes de os apps os usarem. |
 | 1.8.0 (emenda) | 2026-11-12 | Remoção sem mudança de fio: `interjections` (em `voiceCallDefaults` e em `config.voice` de chat/persona) vira legado — escritores não enviam, leitores ignoram; a chamada de voz não tem mais interjeições nem modo sombra (§4.3.6).. Também aditivos (sem mudança de fio): tags de voz `audioTags`/`audioTagsPrompt` (chat/persona e `voiceCallDefaults`), campos de "falar por cima" em `voiceCallDefaults.turn`, novos padrões das frases de demora (8000/15000), `audioInput.activationDb` como parte do dispositivo `MessageMeta.voice.unheard` e as frases de ferramenta (`voiceCallDefaults.toolPhrases`, `config.voice.toolPhrases`). |
 | 1.9.0 | 2026-11-12 | Voz por persona: `config.voice.tts`/`config.voice.stt` (chat/persona; motor/provedor, modelo, voz, parâmetros e idioma; herança chat → persona → settings do dispositivo; indisponível no dispositivo → as globais dele; ditado usa a transcrição da persona). As settings `audioInput`, `sttSettings`, `ttsSettings` e `voiceCallDefaults` viram **locais do dispositivo** (escritores não enviam, leitores ignoram; os registros antigos ficam no servidor). Sem mudança no servidor além da versão. |
+| 1.10.0 | 2026-11-12 | Adições compatíveis — **chats herdam a persona ao vivo** (§4.3.6): `ChatConfig.overrides` (`{ [unidade]: true }`) marca o que é próprio do chat; o resto segue o valor efetivo da persona (o dela ou, se ela não define, o padrão de "Novos chats" — cadeia Novos chats → persona → chat, ao vivo); unidades (`model` = par provedor+modelo, `params.<nome>`, `enabledTools.<tool>`, `approvalModes.<item>`, `appSignature` com o custom, `smartApprove`/`memory`/`skills` inteiras, as demais chaves de `PresetConfig` uma a uma; `voice` continua com `null` = herda, `cwd`/`presetId`/`capturedContext` sempre próprios); `config` continua completa como cópia informativa (gravada ao criar, migrar, voltar a herdar, trocar de persona e congelar; não regravada a cada edição da persona); migração única dos chats antigos depois de um pull completo (iguais à persona → herdam; diferentes → próprios; na `voice`, iguais à persona → `null`); trocar de persona mantém `overrides`; persona apagada → os chats dela congelam antes (valores efetivos gravados, `presetId` removido, enviados antes do tombstone) (§4.3.3, §7.7); `overrides` mesclado por subchave e cópia informativa que não sobrescreve valor próprio no conflito (§7.5); `chat.update` com/sem `overrides` (§23.7); nota no merge do primeiro login (§12). Apps < 1.10.0 leem a cópia e preservam `overrides`; edições deles em campos herdados não valem nos apps novos. Sem mudança no servidor além da versão. |
 
 ---
 
@@ -2834,7 +2929,11 @@ esquecer as mais antigas (e responder `reset`).
 - **`chat.update`** (novo, só chats ao vivo): `{ chatId, title?, config? }` — `config` = as chaves de
   `ChatConfig` a trocar (sem `cwd`; o valor substitui a chave inteira, como o merge por chave da §7.5). O
   host aplica como uma edição local (as mesmas validações da tela de configuração do chat), emite o `rec`
-  do `chat` e um anúncio novo → `{ sv: 1, status: 'accepted' }`, ou `rejected` com `error` em texto. Nos
+  do `chat` e um anúncio novo (desde 1.10.0, herança da persona, §4.3.6: um patch **sem** `overrides` é
+  uma edição — cada unidade tocada pelas chaves enviadas vira própria; um patch **com** `overrides` (o
+  mapa completo novo) vale como enviado — é assim que o remoto "volta a herdar", mandando só o mapa sem a
+  unidade; o host recalcula a cópia das unidades herdadas; `presetId: null` = escolher nenhuma persona =
+  congelar) → `{ sv: 1, status: 'accepted' }`, ou `rejected` com `error` em texto. Nos
   chats online, renomear/editar continua sendo o registro `chat` (§4.3.6) — o servidor recusa
   `chat.update` sem vínculo ao vivo.
 - **Entre chats** (§8.6): um agente noutro dispositivo PODE mandar `send` com `meta` a um chat ao vivo
