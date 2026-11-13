@@ -387,8 +387,15 @@ export function applyAnthropicEvent(acc: StreamAccumulator, ev: Record<string, u
       else if (d.type === 'thinking_delta' && typeof d.thinking === 'string')
         acc.reasoning += d.thinking
       else if (d.type === 'input_json_delta' && typeof d.partial_json === 'string') {
+        // Só o input de um bloco tool_use vira argumento de tool call. O de outro bloco conhecido
+        // (server_tool_use da busca nativa, …) NUNCA vai para a tool call anterior; o fallback para
+        // a última tool call vale só para um índice cujo content_block_start não chegou.
         const blk = s.blocks.get(n(ev.index) ?? -1)
-        const slot = blk?.tool !== undefined ? acc.toolCalls[blk.tool] : acc.toolCalls.at(-1)
+        const slot = blk
+          ? blk.tool !== undefined
+            ? acc.toolCalls[blk.tool]
+            : undefined
+          : acc.toolCalls.at(-1)
         if (slot) slot.arguments += d.partial_json
       }
       return

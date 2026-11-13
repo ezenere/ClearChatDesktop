@@ -318,6 +318,57 @@ test('anthropic: SSE nativo → texto, tool_use, usage e finishReason', () => {
   )
 })
 
+test('anthropic: input_json_delta de um bloco que não é tool_use (server_tool_use) não vai para a tool call anterior', () => {
+  const acc = newAccumulator()
+  const evs: any[] = [
+    { type: 'message_start', message: { model: 'claude-haiku-4-5', usage: {} } },
+    {
+      type: 'content_block_start',
+      index: 0,
+      content_block: { type: 'tool_use', id: 'toolu_1', name: 'read_file', input: {} }
+    },
+    {
+      type: 'content_block_delta',
+      index: 0,
+      delta: { type: 'input_json_delta', partial_json: '{"path":"a"}' }
+    },
+    { type: 'content_block_stop', index: 0 },
+    // busca nativa (docs "Tool search tool" → streaming): input chega por input_json_delta
+    {
+      type: 'content_block_start',
+      index: 1,
+      content_block: {
+        type: 'server_tool_use',
+        id: 'srvtoolu_1',
+        name: 'tool_search_tool_regex',
+        input: {}
+      }
+    },
+    {
+      type: 'content_block_delta',
+      index: 1,
+      delta: { type: 'input_json_delta', partial_json: '{"pattern":"date|time"}' }
+    },
+    { type: 'content_block_stop', index: 1 },
+    { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 3 } }
+  ]
+  for (const e of evs) applyAnthropicEvent(acc, e)
+  assert.deepEqual(acc.toolCalls, [{ id: 'toolu_1', name: 'read_file', arguments: '{"path":"a"}' }])
+  // índice sem content_block_start (provedor fora do padrão): continua indo para a última tool call
+  const a2 = newAccumulator()
+  applyAnthropicEvent(a2, {
+    type: 'content_block_start',
+    index: 0,
+    content_block: { type: 'tool_use', id: 'toolu_2', name: 'shell', input: {} }
+  })
+  applyAnthropicEvent(a2, {
+    type: 'content_block_delta',
+    index: 5,
+    delta: { type: 'input_json_delta', partial_json: '{}' }
+  })
+  assert.equal(a2.toolCalls[0].arguments, '{}')
+})
+
 test('anthropic: streamChat contra servidor local com SSE nativo', async () => {
   const sse = [
     [
