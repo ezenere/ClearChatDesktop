@@ -660,11 +660,13 @@ ChatConfig.overrides?: { [unidade: string]: true }   // unidades próprias do ch
   valores não nulos da `voice` da persona, **remove `presetId`** e **mantém `overrides`** (só sem efeito,
   para uma persona escolhida depois). Quem apaga DEVE enviar os chats congelados antes do tombstone da
   persona, ou no mesmo push e antes dele; quem recebe o tombstone e ainda tem chats apontando para ela os
-  congela com a cópia local (valores iguais → nenhum conflito real). Chats só ao vivo (§23): o host
+  congela com a cópia local (valores iguais → nenhum conflito real); sem cópia local da persona (ex.:
+  apagada antes deste dispositivo a conhecer) não há o que congelar — o chat fica com a cópia que já tem. Chats só ao vivo (§23): o host
   congela a cópia local dele.
 - **Migração de chats antigos** (com `presetId` e **sem** `overrides` — gravados por apps < 1.10.0 ou
   antes da migração): uma vez por chat, **depois de um pull completo** (para persona e padrões estarem
-  atualizados), um cliente ≥ 1.10.0 DEVE gravar `overrides` = as unidades cujo valor no chat **difere**
+  atualizados — ou de qualquer momento em que o cliente sabe estar em dia com o feed, ex.: um lote ao
+  vivo contíguo), um cliente ≥ 1.10.0 DEVE gravar `overrides` = as unidades cujo valor no chat **difere**
   (JSON canônico — chaves ordenadas; `memory`/`skills` normalizadas, ausente = o padrão; `enabledTools.<t>`
   comparada como booleano) do valor efetivo da persona — as iguais passam a herdar — e, na `voice`, pôr `null` nos campos
   iguais ao campo **não nulo** correspondente da `voice` da persona (os padrões de voz do dispositivo são
@@ -2935,7 +2937,9 @@ esquecer as mais antigas (e responder `reset`).
     pedir só ao exibir e soltar o que saiu da tela. Recusa: `code` ∈ `missing`, `invalid`, `too_large`,
     `not_live`.
 - **`chat.update`** (novo, só chats ao vivo): `{ chatId, title?, config? }` — `config` = as chaves de
-  `ChatConfig` a trocar (sem `cwd`; o valor substitui a chave inteira, como o merge por chave da §7.5). O
+  `ChatConfig` a trocar (sem `cwd`; o valor substitui a chave inteira, como o merge por chave da §7.5 —
+  exceto `params`, mesclado parâmetro a parâmetro, com `null` removendo o parâmetro, como na tela de
+  configuração do chat; o remetente PODE mandar o objeto inteiro com `null` nos removidos). O
   host aplica como uma edição local (as mesmas validações da tela de configuração do chat), emite o `rec`
   do `chat` e um anúncio novo (desde 1.10.0, herança da persona, §4.3.6: um patch **sem** `overrides` é
   uma edição — cada unidade tocada pelas chaves enviadas vira própria; um patch **com** `overrides` (o
