@@ -14,6 +14,8 @@
 //   … --dry-run   só monta as requests (nada vai à rede)
 //   … --tool      pede um arquivo (write_file): mede também os argumentos da tool call
 //   … --control   (OpenRouter) também pela Chat Completions, para comparar
+//   … --after-tool  a resposta DEPOIS de uma tool (histórico com list_dir e o resultado): o caso em
+//                 que o claude-opus-5-5 segura a resposta inteira no servidor (2026-11-14)
 //   … --effort=low|medium|high|xhigh|max   o esforço de raciocínio do chat (padrão: nenhum, como
 //                 um chat novo — o modelo usa o padrão dele)
 // Chaves só por env; nunca imprime chaves nem headers da request. Linha do tempo completa em JSON
@@ -30,6 +32,7 @@ const opt = (k: string): string | undefined =>
 const DRY = ARGS.includes('--dry-run')
 const TOOL = ARGS.includes('--tool')
 const CONTROL = ARGS.includes('--control')
+const AFTER_TOOL = ARGS.includes('--after-tool')
 const ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY?.trim() || ''
 const OPENROUTER_KEY = process.env.OPENROUTER_API_KEY?.trim() || ''
 const SECRETS = [ANTHROPIC_KEY, OPENROUTER_KEY].filter((s) => s.length >= 8)
@@ -83,7 +86,29 @@ setNativeTestHosts(
 
 const PROMPT = TOOL
   ? 'Crie o arquivo poema.txt com um poema de umas 25 linhas sobre o mar (use a ferramenta de escrever arquivos; não precisa confirmar nada antes).'
-  : 'Escreva três parágrafos (umas 200 palavras no total) sobre como as marés funcionam.'
+  : AFTER_TOOL
+    ? 'Liste os arquivos desta pasta e me diga em três ou quatro frases o que parece ter nela.'
+    : 'Escreva três parágrafos (umas 200 palavras no total) sobre como as marés funcionam.'
+/** --after-tool: a tool já rodou (o turno continua depois do resultado). */
+const AFTER_TOOL_MESSAGES = [
+  {
+    role: 'assistant',
+    content: null,
+    tool_calls: [
+      {
+        id: 'toolu_probe01',
+        type: 'function',
+        function: { name: 'list_dir', arguments: '{"path":"."}' }
+      }
+    ]
+  },
+  {
+    role: 'tool',
+    tool_call_id: 'toolu_probe01',
+    content:
+      'fotos/ (pasta)\nplanilha-2024.xlsx (12 KB)\nrascunho.txt (2 KB)\nrelatorio-vendas.pdf (340 KB)'
+  }
+]
 
 interface Target {
   id: string
@@ -198,13 +223,21 @@ for (const t of targets) {
       message: { role: 'user', content: PROMPT },
       meta: {},
       createdAt: Date.now()
-    }
+    },
+    ...(AFTER_TOOL ? AFTER_TOOL_MESSAGES : []).map((message, i) => ({
+      id: `m${i + 2}`,
+      sessionId: 's1',
+      seq: i + 2,
+      message,
+      meta: {},
+      createdAt: Date.now()
+    }))
   ]
   const req = buildRequest(chat, { depth: 0, model: t.model, id: 's1' }, history, t.provider)
   const b = req.body as any
   log(`\n=== ${t.id} — ${t.model} — modo ${req.toolSearch?.mode ?? 'off'} — POST ${req.url}`)
   log(
-    `body: stream=${b.stream} tools=${(b.tools ?? []).length} (adiadas ${(b.tools ?? []).filter((x: any) => x.defer_loading).length})` +
+    `body: stream=${b.stream} tools=${(b.tools ?? []).length} (adiadas ${(b.tools ?? []).filter((x: any) => x.defer_loading).length}, eager ${(b.tools ?? []).filter((x: any) => x.eager_input_streaming).length})` +
       ` thinking=${JSON.stringify(b.thinking ?? null)} output_config=${JSON.stringify(b.output_config ?? null)} max_tokens=${b.max_tokens ?? '—'}`
   )
   if (DRY) continue
