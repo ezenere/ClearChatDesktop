@@ -13,10 +13,12 @@ import {
 import { useEffect, useMemo, useState } from 'react'
 import type { Chat, DirEntry } from '@shared/types'
 import { api } from '../../lib/api'
+import { contributeCtx } from '../../lib/contextMenu'
 import { resourceActions, sourcesFor } from '../../lib/fileSources'
 import { cn, compactPath, formatBytes } from '../../lib/format'
 import { useStore } from '../../store'
 import { Button, IconButton, Spinner } from '../ui/controls'
+import { Modal } from '../ui/layers'
 import { RootInfo } from '../apiDocs'
 import { useHostInfo } from '../sync/hooks'
 import { fileIcon } from '../viewer/fileIcons'
@@ -122,6 +124,54 @@ export function NewFolderForm({
   )
 }
 
+/** Nome válido para renomear (um segmento, sem barras, nem "." nem ".."). */
+const validName = (n: string): boolean =>
+  // eslint-disable-next-line no-control-regex
+  !!n.trim() && !/[/\\\u0000]/.test(n) && n.trim() !== '.' && n.trim() !== '..'
+
+/** Campo inline de "Renomear" no lugar do nome (Enter/fora salva, Esc cancela). */
+function RenameField({
+  entry,
+  onDone
+}: {
+  entry: DirEntry
+  onDone: (name: string | null) => void
+}): React.JSX.Element {
+  const [name, setName] = useState(entry.name)
+  const commit = (): void =>
+    onDone(validName(name) && name.trim() !== entry.name ? name.trim() : null)
+  return (
+    <input
+      autoFocus
+      value={name}
+      aria-label={`Novo nome de ${entry.name}`}
+      data-testid="files-rename-input"
+      onFocus={(e) => {
+        // seleciona só o nome, sem a extensão (como os gerenciadores de arquivo)
+        const dot = entry.isDir ? -1 : entry.name.lastIndexOf('.')
+        e.target.setSelectionRange(0, dot > 0 ? dot : entry.name.length)
+      }}
+      onChange={(e) => setName(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault()
+          commit()
+        }
+        if (e.key === 'Escape') {
+          e.preventDefault()
+          e.stopPropagation()
+          onDone(null)
+        }
+      }}
+      className={cn(
+        'h-6 min-w-0 flex-1 rounded-md bg-bg px-1.5 font-mono text-[12px] outline-none ring-1',
+        validName(name) ? 'ring-accent/50' : 'ring-danger/60'
+      )}
+    />
+  )
+}
+
 export function FilesTab({ chat }: { chat: Chat }): React.JSX.Element {
   const homeDir = useStore((s) => s.homeDir)
   const patchConfig = useStore((s) => s.patchConfig)
@@ -147,6 +197,19 @@ export function FilesTab({ chat }: { chat: Chat }): React.JSX.Element {
   } | null>(null)
   const active = useStore((s) => s.viewer[chat.id])
   const openFile = useStore((s) => s.openFile)
+  const mentionFile = useStore((s) => s.mentionFile)
+  const fileMoved = useStore((s) => s.fileMoved)
+  // clique num `@pasta/` de uma mensagem: a aba vem até a pasta pedida
+  const nav = useStore((s) => s.filesNav[chat.id])
+  const [navSeen, setNavSeen] = useState(nav?.n ?? 0)
+  if (nav && nav.n !== navSeen) {
+    setNavSeen(nav.n)
+    setDir(nav.dir)
+  }
+  /** Entrada em "Renomear" (campo inline) / pedindo confirmação para excluir. */
+  const [renaming, setRenaming] = useState<string | null>(null)
+  const [deleting, setDeleting] = useState<DirEntry | null>(null)
+  const [busyDelete, setBusyDelete] = useState(false)
   const [prevRoot, setPrevRoot] = useState(root)
   if (prevRoot !== root) {
     setPrevRoot(root)
@@ -231,6 +294,29 @@ export function FilesTab({ chat }: { chat: Chat }): React.JSX.Element {
   }
 
   const parts = confine ? rootCrumbs(shownDir, root) : crumbs(shownDir, homeDir)
+
+  /** Renomear: confinamento e "já existe" no main; o painel de arquivo e o chip acompanham. */
+  const rename = async (e: DirEntry, path: string, name: string | null): Promise<void> => {
+    setRenaming(null)
+    if (!name) return
+    const to = await run(
+      () => api.fs.rename(chat.id, path, name),
+      `Não foi possível renomear ${e.name}`
+    )
+    if (to) fileMoved(chat.id, path, to)
+  }
+  const confirmDelete = async (): Promise<void> => {
+    if (!deleting) return
+    const path = deleting.path
+    setBusyDelete(true)
+    const r = await run(
+      () => api.fs.remove(chat.id, path),
+      `Não foi possível excluir ${deleting.name}`
+    )
+    setBusyDelete(false)
+    setDeleting(null)
+    if (r) fileMoved(chat.id, path, null)
+  }
 
   return (
     <div className="flex h-full flex-col">
@@ -355,11 +441,33 @@ export function FilesTab({ chat }: { chat: Chat }): React.JSX.Element {
           const path = e.path || join(shownDir, e.name)
           const isActive = !e.isDir && active?.path === path
           const { icon: FIcon } = fileIcon(e.name)
+          const icon = e.isDir ? (
+            <Folder
+              className="size-3.5 shrink-0 text-accent-strong/70"
+              fill="currentColor"
+              fillOpacity={0.15}
+            />
+          ) : (
+            <FIcon className={cn('size-3.5 shrink-0', isActive ? 'text-fg/80' : 'text-subtle')} />
+          )
+          if (renaming === path)
+            return (
+              <div
+                key={path}
+                data-testid="files-entry"
+                data-renaming="true"
+                className="flex h-7 w-full items-center gap-2 rounded-md bg-active px-2"
+              >
+                {icon}
+                <RenameField entry={e} onDone={(name) => void rename(e, path, name)} />
+              </div>
+            )
           return (
             <button
               key={path}
               type="button"
               data-testid="files-entry"
+              data-path={path}
               aria-current={isActive ? 'true' : undefined}
               title={
                 e.isDir
@@ -368,22 +476,28 @@ export function FilesTab({ chat }: { chat: Chat }): React.JSX.Element {
               }
               onClick={() => (e.isDir ? setDir(path) : openInViewer(e, path))}
               onDoubleClick={() => !e.isDir && void openInApp(path)}
+              onContextMenu={(ev) =>
+                // botão direito: mencionar no chat (arquivos), copiar caminho e — só com os arquivos
+                // neste dispositivo (sem comando do protocolo para o host) — renomear / excluir
+                contributeCtx(ev, {
+                  copy: { fileCopyPath: path },
+                  run: {
+                    ...(e.isDir ? {} : { fileMention: () => mentionFile(chat.id, path, e.name) }),
+                    ...(remoteMode
+                      ? {}
+                      : {
+                          fileRename: () => setRenaming(path),
+                          fileDelete: () => setDeleting({ ...e, path })
+                        })
+                  }
+                })
+              }
               className={cn(
                 'group flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-[12.5px]',
                 isActive ? 'bg-active text-fg' : 'hover:bg-hover'
               )}
             >
-              {e.isDir ? (
-                <Folder
-                  className="size-3.5 shrink-0 text-accent-strong/70"
-                  fill="currentColor"
-                  fillOpacity={0.15}
-                />
-              ) : (
-                <FIcon
-                  className={cn('size-3.5 shrink-0', isActive ? 'text-fg/80' : 'text-subtle')}
-                />
-              )}
+              {icon}
               <span
                 className={cn(
                   'min-w-0 flex-1 truncate',
@@ -402,6 +516,38 @@ export function FilesTab({ chat }: { chat: Chat }): React.JSX.Element {
           )
         })}
       </div>
+      {deleting && (
+        <Modal
+          open
+          onClose={() => setDeleting(null)}
+          title={deleting.isDir ? 'Excluir pasta?' : 'Excluir arquivo?'}
+          width={460}
+          footer={
+            <>
+              <Button variant="ghost" onClick={() => setDeleting(null)}>
+                Cancelar
+              </Button>
+              <Button
+                variant="danger"
+                loading={busyDelete}
+                data-testid="files-delete-confirm"
+                onClick={() => void confirmDelete()}
+              >
+                Excluir
+              </Button>
+            </>
+          }
+        >
+          <p className="text-[13px] leading-relaxed text-muted" data-testid="files-delete-text">
+            <span className="font-mono text-fg">{deleting.name}</span>
+            {deleting.isDir ? ' e tudo o que está dentro dela' : ''} vai para a lixeira do sistema
+            (dá para restaurar por lá).
+          </p>
+          <p className="mt-1 truncate font-mono text-[11px] text-faint" title={deleting.path}>
+            {deleting.path}
+          </p>
+        </Modal>
+      )}
     </div>
   )
 }

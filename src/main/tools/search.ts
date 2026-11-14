@@ -101,7 +101,7 @@ async function* walk(dir: string, signal: AbortSignal): AsyncGenerator<string> {
 }
 
 /** Executa rg e coleta até `cap` linhas de stdout (mata o processo ao atingir). */
-function runRg(
+export function runRg(
   argv: string[],
   cwd: string,
   cap: number,

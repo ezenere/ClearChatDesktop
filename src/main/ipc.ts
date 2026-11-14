@@ -33,7 +33,14 @@ import {
   type VoiceRuntimeStatus,
   type VoiceSettingKind
 } from '@shared/ipc'
-import type { ApiMessage, AttachmentInfo, Chat, ChatConfig, QuestionAnswer } from '@shared/types'
+import type {
+  ApiMessage,
+  AttachmentInfo,
+  Chat,
+  ChatConfig,
+  MessageMeta,
+  QuestionAnswer
+} from '@shared/types'
 import {
   chatOfMessage,
   chatOfSession,
@@ -55,6 +62,8 @@ import {
 } from './repo'
 import { invalidateModels, listModels, testProvider } from './providers'
 import * as fsapi from './fsapi'
+import { deleteEntry, renameEntry } from './fileOps'
+import { chatFileIndex } from './fileIndex'
 import {
   checkPresented,
   grantedPath,
@@ -139,6 +148,7 @@ import {
 import { cachedVoiceUnitPrice, fetchVoicePreview, listVoiceCatalog } from './voice/voiceCatalog'
 import { onSttApiUsage } from './voice/stt'
 import { audioDurationMs, sanitizeDictationMeta } from '@shared/voiceCallMarks'
+import { parseOpenFile } from '@shared/openFile'
 import type { VoiceCatalogRequest } from '@shared/voiceCatalog'
 import {
   clipVoiceId,
@@ -214,6 +224,20 @@ function remoteProcessGuard(chatId: string): void {
   const e = syncEngine()
   if (e?.active && e.host.mode(chatId) === 'remote')
     throw new Error(`Os processos rodam no host (${e.host.hostName(chatId)}) — gerencie-os por lá.`)
+}
+
+/**
+ * Chat cujos arquivos estão NESTE dispositivo (renomear/excluir da aba Arquivos): existe aqui e
+ * não é executado em outro dispositivo (controle remoto / host offline / ao vivo de outro).
+ */
+function localFilesChat(chatId: string): Chat {
+  const chat = typeof chatId === 'string' ? chatsRepo.get(chatId) : null
+  if (!chat) throw new Error('Chat não encontrado.')
+  const e = syncEngine()
+  const mode = e?.active ? e.host.mode(chatId) : null
+  if (mode === 'remote' || mode === 'host-offline')
+    throw new Error('Os arquivos deste chat estão no dispositivo que o executa.')
+  return chat
 }
 
 /** Sessão de transcrição viva pelo id — erro legível para id desconhecido/encerrado/substituído. */
@@ -581,8 +605,7 @@ export function registerIpc(): void {
     sendTurn: (sessionId, text, meta) => {
       // mesmo caminho do composer (`agent.send` → gatedSend → runner.send; fila/⚡ respeitadas);
       // o `meta.voice` da fala vai junto da mensagem (gatedSend só leva texto)
-      if (meta) runner.stashUserMeta(sessionId, text, meta)
-      void gatedSend(sessionId, text, undefined, undefined).catch((e) =>
+      void gatedSend(sessionId, text, undefined, undefined, meta ?? undefined).catch((e) =>
         voiceCalls.reportError(e instanceof Error ? e.message : String(e))
       )
     },
@@ -859,13 +882,20 @@ export function registerIpc(): void {
       text: string,
       attachments?: AttachmentInfo[],
       skills?: string[],
-      opts?: { voice?: unknown }
+      opts?: { voice?: unknown; openFile?: unknown }
     ) => {
-      // texto ditado no composer: `meta.voice` (só ditado é aceito do renderer)
+      // texto ditado no composer: `meta.voice` (só ditado é aceito do renderer); arquivo
+      // selecionado (1.13.0): `meta.openFile` — validado aqui e normalizado pelo host contra a raiz
       const voice = sanitizeDictationMeta(opts?.voice)
-      if (voice && typeof sessionId === 'string' && typeof text === 'string')
-        runner.stashUserMeta(sessionId, text, { voice })
-      return gatedSend(sessionId, text, attachments, skills)
+      const openFile = parseOpenFile(opts?.openFile)
+      const meta: MessageMeta = { ...(voice ? { voice } : {}), ...(openFile ? { openFile } : {}) }
+      return gatedSend(
+        sessionId,
+        text,
+        attachments,
+        skills,
+        Object.keys(meta).length ? meta : undefined
+      )
     },
     [IPC.agent.forceSend]: (queuedId: string) =>
       gateById(
@@ -1033,6 +1063,23 @@ export function registerIpc(): void {
     },
     [IPC.fs.homeDir]: () => fsapi.homeDir(),
     [IPC.fs.mkdir]: (path: string) => fsapi.mkdir(path),
+    // aba Arquivos: renomear / excluir com o confinamento do chat; só chats executados AQUI (num
+    // chat de outro dispositivo os arquivos são do host e não há comando do protocolo para isso)
+    [IPC.fs.rename]: (chatId: string, path: string, newName: string) =>
+      renameEntry(localFilesChat(chatId), path, newName),
+    [IPC.fs.remove]: (chatId: string, path: string) =>
+      deleteEntry(
+        localFilesChat(chatId),
+        path,
+        typeof shell.trashItem === 'function' ? (p) => shell.trashItem(p) : null
+      ),
+    // popup de `@` do composer: índice da raiz (null num chat executado em outro dispositivo)
+    [IPC.fs.index]: (chatId: string) => {
+      const chat = typeof chatId === 'string' ? chatsRepo.get(chatId) : null
+      const mode = chat ? syncEngine()?.host.mode(chatId) : null
+      if (!chat || !chat.config.cwd || mode === 'remote' || mode === 'host-offline') return null
+      return chatFileIndex(chat.config.cwd)
+    },
 
     // ---- visualizador de arquivos (só a allowlist do main; ver fileViewer.ts) ----
     [IPC.viewer.open]: (target: ViewerTarget) => openViewerFile(target, viewerDeps),

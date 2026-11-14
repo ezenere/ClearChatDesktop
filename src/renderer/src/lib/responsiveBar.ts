@@ -24,6 +24,7 @@ export type BarItemId =
   | 'composer-host'
   | 'composer-info'
   | 'composer-hint'
+  | 'composer-file'
 
 export interface BarItemSpec {
   /** Maior = continua legível por mais tempo. */
@@ -69,6 +70,11 @@ export const BAR_ITEMS: Record<BarItemId, BarItemSpec> = {
     priority: 20,
     levels: [0, 1],
     doc: '[ telefone | mic | ˅ ] → [ telefone | mic ] (o menu do microfone vai para o botão direito do mic); nunca some'
+  },
+  'composer-file': {
+    priority: 18,
+    levels: [0, 1],
+    doc: 'chip do arquivo selecionado [ícone nome.ext ×] → [ícone ×] (o caminho fica no tooltip); nunca some'
   },
   'composer-host': {
     priority: 16,

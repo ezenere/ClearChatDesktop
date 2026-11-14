@@ -15,10 +15,13 @@ export const CTX_COPY_ACTIONS = ['copyCode', 'copyMessage', 'copyMarkdown', 'fil
 export const CTX_RUN_ACTIONS = [
   'editMessage',
   'regenerate',
+  'fileMention',
   'fileRun',
   'fileOpenExternal',
   'fileShowInFolder',
-  'fileSaveAs'
+  'fileSaveAs',
+  'fileRename',
+  'fileDelete'
 ] as const
 
 export type CtxCopyAction = (typeof CTX_COPY_ACTIONS)[number]
@@ -36,11 +39,14 @@ export const CTX_APP_ITEMS: readonly {
   { action: 'copyMarkdown', label: 'Copiar como Markdown', group: 'msg' },
   { action: 'editMessage', label: 'Editar', group: 'msg' },
   { action: 'regenerate', label: 'Regenerar resposta', group: 'msg' },
+  { action: 'fileMention', label: 'Mencionar no chat', group: 'file' },
   { action: 'fileRun', label: 'Executar…', group: 'file' },
   { action: 'fileOpenExternal', label: 'Abrir no app', group: 'file' },
   { action: 'fileShowInFolder', label: 'Mostrar na pasta', group: 'file' },
   { action: 'fileSaveAs', label: 'Salvar como…', group: 'file' },
-  { action: 'fileCopyPath', label: 'Copiar caminho', group: 'file' }
+  { action: 'fileCopyPath', label: 'Copiar caminho', group: 'file' },
+  { action: 'fileRename', label: 'Renomear', group: 'file' },
+  { action: 'fileDelete', label: 'Excluir', group: 'file' }
 ]
 
 /** Teto de cada texto copiável que atravessa o IPC (mensagens enormes são cortadas). */

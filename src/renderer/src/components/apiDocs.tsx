@@ -20,6 +20,7 @@ import {
 import { COMPACTION_NOTE, compactionMessageText } from '@shared/defaults'
 import { LIMITS } from '@shared/limits'
 import { audioFormat, contentText, formatSize, messageAttachments } from '@shared/attachments'
+import { withStoredOpenFile } from '@shared/openFile'
 import type {
   ApiMessage,
   AttachmentMeta,
@@ -673,6 +674,16 @@ export function ComposerInfo({ running }: { running: boolean }): React.JSX.Eleme
         <C>{'<file name="…">'}</C>) e, por último, <C>{'{ type: "text", text }'}</C> com o que você
         digitou.
       </p>
+      <p>
+        Com um <strong className="text-fg">arquivo selecionado</strong> (chip ao lado: o aberto no
+        painel ou o de “Mencionar no chat”), vai depois do seu texto — após uma linha em branco, ou
+        como outro part <C>text</C> — exatamente:{' '}
+        <C>
+          O usuário está com o arquivo &lt;caminho&gt; selecionado; ele pode ou não estar
+          relacionado a esta mensagem.
+        </C>{' '}
+        Menções <C>@caminho</C> vão como texto normal.
+      </p>
       {running && (
         <p>
           O agente está trabalhando: a mensagem entra na <strong className="text-fg">fila</strong> e
@@ -772,14 +783,23 @@ export function MessageInfo({
       </>
     )
   }
+  // arquivo selecionado (1.13.0): o objeto como vai (com o texto fixo) — nada escondido
+  const sent = withStoredOpenFile(msg).message
   return (
     <ApiInfo
       title={msg.meta.synthetic ? 'Mensagem sintética (criada pelo app)' : undefined}
-      code={JSON.stringify(m, null, 2)}
+      code={JSON.stringify(sent, null, 2)}
       codeLabel="Objeto exato no array messages:"
       side={side}
     >
       <p>{desc[m.role]}</p>
+      {sent !== m && (
+        <p>
+          Com o <strong className="text-fg">arquivo selecionado</strong> (<C>meta.openFile</C>): o
+          texto fixo vai depois do seu em toda request; o histórico salvo guarda só o que você
+          digitou.
+        </p>
+      )}
       {messageAttachments(m).length > 0 && (
         <p>
           Anexos: no banco ficam só referências <C>clearchat-attachment://…</C> (e o campo privado{' '}

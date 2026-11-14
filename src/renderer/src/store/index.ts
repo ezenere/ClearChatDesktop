@@ -232,6 +232,16 @@ interface State {
   viewer: Record<string, ActiveFile | undefined>
   /** Largura do painel de arquivo (px; lembrada em localStorage). */
   viewerWidth: number
+  /**
+   * Arquivo selecionado do composer (1.13.0 — `meta.openFile`), por chat: escolhido pelo
+   * "Mencionar no chat" do menu do arquivo (vale mesmo sem abrir). Sem ele, o arquivo aberto no
+   * painel de arquivo. Ver `selectMention`.
+   */
+  mention: Record<string, { path: string; name: string } | undefined>
+  /** Caminho do arquivo aberto que o usuário tirou da mensagem (× do chip) — até abrir outro. */
+  mentionOff: Record<string, string | undefined>
+  /** Pedido para a aba Arquivos do chat ir até uma pasta (clique num `@pasta/`); `n` muda a cada pedido. */
+  filesNav: Record<string, { dir: string; n: number } | undefined>
   capabilities: AppCapabilities
   /** Seção do painel Config para rolar até (ex.: 'contexto'). */
   configFocus: string | null
@@ -342,8 +352,11 @@ interface Actions {
     text: string,
     attachments?: AttachmentInfo[],
     skills?: string[],
-    /** `voice`: texto ditado no composer (`meta.voice` da mensagem). */
-    opts?: { voice?: VoiceMessageMeta }
+    /**
+     * `voice`: texto ditado no composer (`meta.voice` da mensagem); `openFile`: arquivo selecionado
+     * (1.13.0 — o chip do composer).
+     */
+    opts?: { voice?: VoiceMessageMeta; openFile?: { path: string } }
   ): Promise<boolean>
   /** Entra na chamada de voz do chat (só sessão principal; erros legíveis viram toast). */
   startVoiceCall(sessionId: string): Promise<boolean>
@@ -384,6 +397,17 @@ interface Actions {
   closeFile(chatId: string): void
   /** Recarrega o arquivo ativo do chat. */
   reloadFile(chatId: string): void
+  /** "Mencionar no chat": o chip do composer passa a ser este arquivo (um por vez). */
+  mentionFile(chatId: string, path: string, name: string): void
+  /** × do chip: para de mencionar (o painel de arquivo continua aberto). */
+  dismissMention(chatId: string): void
+  /** Abre o painel na aba Arquivos, na pasta `dir` (absoluta). */
+  showFolder(chatId: string, dir: string): void
+  /**
+   * Arquivo/pasta renomeado (`to`) ou excluído (`to` null) pela aba Arquivos: recarrega as
+   * listagens e acompanha o painel de arquivo e o chip do composer (caminho novo / fecha / some).
+   */
+  fileMoved(chatId: string, from: string, to: string | null): void
   setViewerWidth(width: number, persist?: boolean): void
   setSettingsOpen(open: boolean, tab?: SettingsTarget): void
   /** Troca a sub-tela de Configurações → Áudio ("Modelos locais" ↔ principal). */
@@ -544,6 +568,9 @@ export const useStore = create<Store>()((set, get) => ({
   fsTick: {},
   viewer: {},
   viewerWidth: loadViewerWidth(),
+  mention: {},
+  mentionOff: {},
+  filesNav: {},
   capabilities: { bwrap: false, ripgrep: false },
   configFocus: null,
   pendingAttachments: {},
@@ -1084,7 +1111,7 @@ export const useStore = create<Store>()((set, get) => ({
     const res = await get()
       .run(
         () =>
-          opts?.voice
+          opts?.voice || opts?.openFile
             ? api.agent.send(sessionId, text, attachments ?? [], skills ?? [], opts)
             : skills?.length
               ? api.agent.send(sessionId, text, attachments ?? [], skills)
@@ -1322,11 +1349,68 @@ export const useStore = create<Store>()((set, get) => ({
     set((s) => ({ panelOpen: open, panelTab: tab ?? s.panelTab }))
   },
   openFile(chatId, target, path, name) {
+    // abrir um arquivo (outro, ou o mesmo de novo) volta a mencioná-lo e substitui o "Mencionar"
     set((s) => ({
       viewer: {
         ...s.viewer,
         [chatId]: { target, path, name, nonce: (s.viewer[chatId]?.nonce ?? 0) + 1 }
+      },
+      mention: { ...s.mention, [chatId]: undefined },
+      mentionOff: { ...s.mentionOff, [chatId]: undefined }
+    }))
+  },
+  mentionFile(chatId, path, name) {
+    set((s) => ({
+      mention: { ...s.mention, [chatId]: { path, name } },
+      mentionOff: { ...s.mentionOff, [chatId]: undefined }
+    }))
+  },
+  showFolder(chatId, dir) {
+    savePanelTab('files')
+    set((s) => ({
+      panelOpen: true,
+      panelTab: 'files',
+      filesNav: { ...s.filesNav, [chatId]: { dir, n: (s.filesNav[chatId]?.n ?? 0) + 1 } }
+    }))
+  },
+  fileMoved(chatId, from, to) {
+    // mesmo caminho ou dentro da pasta movida → o caminho correspondente no destino
+    const map = (p: string): string | null | undefined => {
+      if (p === from) return to
+      const pre = from.endsWith('/') ? from : `${from}/`
+      if (p.startsWith(pre)) return to ? `${to}/${p.slice(pre.length)}` : null
+      return undefined
+    }
+    const nameOf = (p: string): string => p.split(/[\\/]/).filter(Boolean).pop() ?? p
+    set((s) => {
+      const out: Partial<Store> = {
+        fsTick: { ...s.fsTick, [chatId]: (s.fsTick[chatId] ?? 0) + 1 }
       }
+      const v = s.viewer[chatId]
+      const nv = v ? map(v.path) : undefined
+      if (v && nv !== undefined)
+        out.viewer = {
+          ...s.viewer,
+          [chatId]: nv
+            ? {
+                target: { chatId, source: 'browse', path: nv },
+                path: nv,
+                name: nameOf(nv),
+                nonce: v.nonce + 1
+              }
+            : undefined
+        }
+      const m = s.mention[chatId]
+      const nm = m ? map(m.path) : undefined
+      if (m && nm !== undefined)
+        out.mention = { ...s.mention, [chatId]: nm ? { path: nm, name: nameOf(nm) } : undefined }
+      return out
+    })
+  },
+  dismissMention(chatId) {
+    set((s) => ({
+      mention: { ...s.mention, [chatId]: undefined },
+      mentionOff: { ...s.mentionOff, [chatId]: s.viewer[chatId]?.path }
     }))
   },
   closeFile(chatId) {
@@ -1782,3 +1866,18 @@ export const selectPendingSkills =
   (sessionId: string) =>
   (s: Store): string[] =>
     s.pendingSkills[sessionId] ?? EMPTY_SKILLS
+
+/**
+ * Arquivo que a próxima mensagem do chat menciona (chip do composer, `meta.openFile`): o do
+ * "Mencionar no chat"; senão o aberto no painel de arquivo, salvo se o usuário o tirou (×). Devolve
+ * objetos do próprio estado (referência estável para o seletor).
+ */
+export const selectMention =
+  (chatId: string | undefined) =>
+  (s: Store): { path: string; name: string } | undefined => {
+    if (!chatId) return undefined
+    const m = s.mention[chatId]
+    if (m) return m
+    const v = s.viewer[chatId]
+    return v && v.path !== s.mentionOff[chatId] ? v : undefined
+  }

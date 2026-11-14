@@ -2323,7 +2323,21 @@ export function createMockApi(scenario: string): ClearApi {
         }),
       pickDirectory: () => delay(`${HOME}/projetos/outro`),
       homeDir: () => delay(HOME),
-      mkdir: (p) => delay(p)
+      mkdir: (p) => delay(p),
+      rename: (_c, p, name) => delay(`${p.slice(0, p.lastIndexOf('/'))}/${name}`),
+      remove: () => delay('trash' as const),
+      index: () =>
+        delay({
+          entries: [
+            'README.md',
+            'package.json',
+            'src/',
+            'src/index.ts',
+            'src/utils/',
+            'src/utils/a.ts'
+          ],
+          truncated: false
+        })
     },
     app: {
       capabilities: () =>

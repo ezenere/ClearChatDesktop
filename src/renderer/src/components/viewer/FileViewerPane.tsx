@@ -532,6 +532,7 @@ export function FileViewerPane({
   const setWidth = useStore((s) => s.setViewerWidth)
   const closeFile = useStore((s) => s.closeFile)
   const reloadFile = useStore((s) => s.reloadFile)
+  const mentionFile = useStore((s) => s.mentionFile)
   const run = useStore((s) => s.run)
   const host = useHostInfo(chat.id)
   const source = sourcesFor(chat.id, host?.mode).file
@@ -722,6 +723,8 @@ export function FileViewerPane({
         contributeCtx(e, {
           copy: { fileCopyPath: resource?.info.path ?? file.path },
           run: {
+            // a próxima mensagem menciona este arquivo (volta a mencionar depois do × do chip)
+            fileMention: () => mentionFile(chat.id, file.path, file.name),
             fileRun: runFile,
             fileOpenExternal: openExternal,
             fileShowInFolder: showInFolder,

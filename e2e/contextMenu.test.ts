@@ -427,3 +427,22 @@ test('registro do renderer: mais interno vence, editável fica fora, token de us
   contributeCtx({ target: null }, { copy: { copyMessage: '' } })
   assert.equal(snapshotCtx(), null)
 })
+
+test('arquivo (aba Arquivos / painel de arquivo): Mencionar no chat primeiro; Renomear e Excluir no fim', () => {
+  const app = sanitizeAppCtx({
+    token: 8,
+    actions: ['fileDelete', 'fileCopyPath', 'fileRename', 'fileMention', 'fileOpenExternal'],
+    copy: { fileCopyPath: '/r/a.ts' }
+  })
+  assert.deepEqual(view(buildContextMenu(params(), { ...OPTS, app })), [
+    'Mencionar no chat',
+    'Abrir no app',
+    'Copiar caminho',
+    'Renomear',
+    'Excluir'
+  ])
+  assert.deepEqual(find(buildContextMenu(params(), { ...OPTS, app }), 'Excluir').command, {
+    type: 'app',
+    action: 'fileDelete'
+  })
+})

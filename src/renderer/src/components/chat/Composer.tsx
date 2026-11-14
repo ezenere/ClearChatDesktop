@@ -19,11 +19,17 @@ import { splitInterChatText } from '@shared/interChat'
 import { splitSiblingText } from '@shared/siblings'
 import {
   isBusy,
+  selectMention,
   selectPendingAttachments,
   selectPendingSkills,
   selectQueue,
   useStore
 } from '../../store'
+import { normalizeOpenFilePath, openFileText } from '@shared/openFile'
+import { chatRootOf } from '../../lib/chatPaths'
+import { useMentions } from '../../lib/useMentions'
+import { fileIcon } from '../viewer/fileIcons'
+import { MentionHighlight, MentionPopup } from './MentionPopup'
 import { ComposerInfo, QueueInfo } from '../apiDocs'
 import { Tip } from '../ui/Tooltip'
 import { AutoTextarea, Spinner } from '../ui/controls'
@@ -127,6 +133,71 @@ function ComposerHint(): React.JSX.Element {
           <span className="text-subtle">Shift+Enter</span> quebra linha
         </>
       )}
+    </span>
+  )
+}
+
+/**
+ * Arquivo selecionado (1.13.0): chip `[ícone nome.ext ×]` no lugar da dica — a próxima mensagem
+ * leva `meta.openFile` (o arquivo aberto no painel ou o do "Mencionar no chat"). Tooltip com o
+ * caminho como vai e o texto exato que o modelo recebe; × só para de mencionar (o painel fica).
+ * Recolhido: só o ícone e o × (nunca some — muda o que é enviado).
+ */
+function ComposerFileChip({
+  chatId,
+  name,
+  shown
+}: {
+  chatId: string
+  name: string
+  /** Caminho como vai na mensagem (relativo à raiz quando está dentro dela). */
+  shown: string
+}): React.JSX.Element {
+  const level = useBarLevel('composer-file')
+  const dismiss = useStore((s) => s.dismissMention)
+  const { icon: Icon, tone } = fileIcon(name)
+  return (
+    <span
+      {...barAttrs('composer-file', level)}
+      data-testid="composer-file-chip"
+      data-path={shown}
+      onClick={(e) => e.stopPropagation()}
+      className="flex h-6 max-w-[240px] min-w-0 shrink items-center gap-1 rounded-md border border-border bg-elevated/60 pr-0.5 pl-1.5 text-[11.5px] text-muted"
+    >
+      <Tip
+        label={
+          <span className="block max-w-[28rem] leading-snug whitespace-normal">
+            <span className="block">
+              Arquivo selecionado: <span className="font-mono text-fg">{shown}</span>
+            </span>
+            <span className="mt-0.5 block text-subtle">
+              Vai com a mensagem — o modelo recebe, depois do seu texto: “{openFileText(shown)}”
+            </span>
+          </span>
+        }
+      >
+        <span
+          className="flex min-w-0 items-center gap-1"
+          aria-label={`Arquivo selecionado: ${shown}`}
+        >
+          <Icon className={cn('size-3 shrink-0', tone)} />
+          {level === 0 && <span className="min-w-0 truncate text-fg/85">{name}</span>}
+        </span>
+      </Tip>
+      <Tip label="Não mencionar este arquivo (o painel continua aberto)">
+        <button
+          type="button"
+          data-testid="composer-file-dismiss"
+          aria-label="Não mencionar este arquivo"
+          onClick={(e) => {
+            e.stopPropagation()
+            dismiss(chatId)
+          }}
+          className="flex size-4.5 shrink-0 items-center justify-center rounded text-subtle transition-colors hover:bg-hover hover:text-fg"
+        >
+          <X className="size-3" />
+        </button>
+      </Tip>
     </span>
   )
 }
@@ -249,6 +320,11 @@ export function Composer({
   const blocked = !!question || !!retry
   const host = useHostInfo(session.chatId)
   const hostOffline = host?.mode === 'host-offline'
+  /** Arquivo selecionado que a próxima mensagem menciona (1.13.0, `meta.openFile`). */
+  const mention = useStore(selectMention(session.chatId))
+  const mentionShown = mention
+    ? (chat && normalizeOpenFilePath(mention.path, chatRootOf(chat, host))) || mention.path
+    : null
   // rascunho guardado enquanto a chamada escondia o composer (trocar de chat no meio da chamada)
   const [text, setText] = useState(() => takeCallDraft(session.id))
   const ref = useRef<HTMLTextAreaElement>(null)
@@ -492,6 +568,33 @@ export function Composer({
     if (autoFocus) ref.current?.focus()
   }, [autoFocus, session.id])
 
+  /**
+   * `@` no campo: popup com os arquivos/pastas da raiz do chat (lib/useMentions). Aceitar troca o
+   * token via `insertText` (fica no desfazer da textarea); sem a textarea, grava direto.
+   */
+  const mentions = useMentions({
+    chat,
+    host,
+    text,
+    enabled: !voiceActive && !blocked && !callHere,
+    onApply: ({ start, end, insert, caret }) => {
+      const ta = ref.current
+      const cur = textRef.current
+      if (ta && ta.value === cur) {
+        ta.focus()
+        ta.setSelectionRange(start, end)
+        if (document.execCommand('insertText', false, insert)) {
+          ta.setSelectionRange(caret, caret)
+          return
+        }
+      }
+      const next = cur.slice(0, start) + insert + cur.slice(end)
+      textRef.current = next
+      setText(next)
+      requestAnimationFrame(() => ref.current?.setSelectionRange(caret, caret))
+    }
+  })
+
   const warnings = useMemo(() => {
     const out = new Set<string>()
     if (historyWarning) out.add(historyWarning)
@@ -532,12 +635,19 @@ export function Composer({
     setConfirmKey(null)
     if (atts.length) clearAttachments(session.id)
     if (skills.length) setPendingSkills(session.id, [])
+    // arquivo selecionado: o caminho absoluto (local ou do host) — o host normaliza pela raiz dele
+    const openFile = mention ? { path: mention.path } : undefined
     const ok = await send(
       session.id,
       t,
       atts,
       skills,
-      dictated ? { voice: { source: 'dictation' } } : undefined
+      dictated || openFile
+        ? {
+            ...(dictated ? { voice: { source: 'dictation' as const } } : {}),
+            ...(openFile ? { openFile } : {})
+          }
+        : undefined
     )
     if (!ok) {
       setText(t)
@@ -792,40 +902,57 @@ export function Composer({
                   }}
                 />
               )}
+              {!blocked && <MentionPopup m={mentions} />}
               {!blocked && (
-                <AutoTextarea
-                  ref={ref}
-                  value={text}
-                  minRows={1}
-                  maxRows={14}
-                  placeholder={
-                    busy
-                      ? 'Enviar para a fila…'
-                      : session.depth > 0
-                        ? 'Mensagem ao subagente…'
-                        : 'Mensagem…'
-                  }
-                  onChange={(e) => setText(e.target.value)}
-                  onPaste={(e) => {
-                    const files = [...e.clipboardData.files]
-                    if (!files.length) return
-                    e.preventDefault()
-                    void addFiles(session.id, files.map(pastedName))
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-                      e.preventDefault()
-                      void submit()
-                    }
-                  }}
-                  // durante o ditado o espelho toma o lugar (o valor fica intocado até o desfecho)
-                  readOnly={voiceActive}
-                  aria-hidden={voiceActive || undefined}
-                  className={cn(
-                    'block w-full bg-transparent px-4 pt-3.5 pb-1 text-[14px] leading-6 outline-none',
-                    voiceActive && 'hidden'
+                <div className={cn('relative', voiceActive && 'hidden')}>
+                  {!voiceActive && (
+                    <MentionHighlight
+                      text={text}
+                      textarea={ref}
+                      known={mentions.known}
+                      className="px-4 pt-3.5 pb-1 text-[14px] leading-6"
+                    />
                   )}
-                />
+                  <AutoTextarea
+                    ref={ref}
+                    value={text}
+                    minRows={1}
+                    maxRows={14}
+                    placeholder={
+                      busy
+                        ? 'Enviar para a fila…'
+                        : session.depth > 0
+                          ? 'Mensagem ao subagente…'
+                          : 'Mensagem…'
+                    }
+                    onChange={(e) => {
+                      setText(e.target.value)
+                      mentions.track(e.target)
+                    }}
+                    onSelect={(e) => mentions.track(e.currentTarget)}
+                    onBlur={() => mentions.track(null)}
+                    onPaste={(e) => {
+                      const files = [...e.clipboardData.files]
+                      if (!files.length) return
+                      e.preventDefault()
+                      void addFiles(session.id, files.map(pastedName))
+                    }}
+                    onKeyDown={(e) => {
+                      // popup do `@` aberto: ↑/↓, Tab/Enter (aceitar) e Esc são dele
+                      if (mentions.onKeyDown(e)) return
+                      if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                        e.preventDefault()
+                        void submit()
+                      }
+                    }}
+                    // durante o ditado o espelho toma o lugar (o valor fica intocado até o desfecho)
+                    readOnly={voiceActive}
+                    aria-hidden={voiceActive || undefined}
+                    aria-autocomplete="list"
+                    aria-expanded={mentions.open}
+                    className="relative block w-full bg-transparent px-4 pt-3.5 pb-1 text-[14px] leading-6 outline-none"
+                  />
+                </div>
               )}
               <BarLevelsContext.Provider value={barLevels}>
                 <div
@@ -1011,8 +1138,15 @@ export function Composer({
                                         : 'Trabalhando…'
                             }
                           />
-                        ) : (
+                        ) : mention ? null : (
                           <ComposerHint />
+                        )}
+                        {mention && mentionShown && (
+                          <ComposerFileChip
+                            chatId={session.chatId}
+                            name={mention.name}
+                            shown={mentionShown}
+                          />
                         )}
                       </span>
                       <div data-bar-spacer className="min-w-0 flex-1" />

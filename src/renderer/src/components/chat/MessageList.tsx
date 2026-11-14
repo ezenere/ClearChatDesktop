@@ -99,6 +99,8 @@ import { contributeCtx } from '../../lib/contextMenu'
 import { markdownToPlainText } from '@shared/contextMenu'
 import { liveDimFrom } from '@shared/heardText'
 import { useVoiceFollow } from '../../lib/voice/voiceFollow'
+import { storedOpenFile } from '@shared/openFile'
+import { MentionText, OpenFileLine } from './PathMentions'
 
 // ---------- Bits ----------
 
@@ -644,6 +646,8 @@ function UserMessage({
   const kind = msg.meta.kind
   // mensagem digitada na principal: editar = nova versão (ramo); o resto edita no lugar
   const branch = isBranchEditable(msg, ctx.depth)
+  /** Arquivo selecionado ao enviar (1.13.0): linha acima do balão com o texto exato no tooltip. */
+  const openFile = storedOpenFile(msg.meta)
   return (
     <div
       className="group/msg flex animate-slide-up flex-col items-end gap-1 py-2"
@@ -681,6 +685,7 @@ function UserMessage({
               {kind === 'forced' ? 'enviada agora (interrompeu o agente)' : 'da fila'}
             </span>
           )}
+          {openFile && <OpenFileLine chatId={ctx.chatId} path={openFile.path} />}
           {msg.message.role === 'user' && Array.isArray(msg.message.content) && (
             <MessageAttachments parts={msg.message.content} />
           )}
@@ -693,7 +698,7 @@ function UserMessage({
                 msg.meta.voice?.source === 'call' && 'italic'
               )}
             >
-              {text}
+              <MentionText chatId={ctx.chatId} text={text} />
             </div>
           )}
           <BubbleFooter msg={msg} branch={ctx.switcher(msg)}>

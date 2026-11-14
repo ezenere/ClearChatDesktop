@@ -91,7 +91,10 @@ const api: FullClearApi = {
     readFile: (path) => invoke(IPC.fs.readFile, path),
     pickDirectory: () => invoke(IPC.fs.pickDirectory),
     homeDir: () => invoke(IPC.fs.homeDir),
-    mkdir: (path) => invoke(IPC.fs.mkdir, path)
+    mkdir: (path) => invoke(IPC.fs.mkdir, path),
+    rename: (chatId, path, newName) => invoke(IPC.fs.rename, chatId, path, newName),
+    remove: (chatId, path) => invoke(IPC.fs.remove, chatId, path),
+    index: (chatId) => invoke(IPC.fs.index, chatId)
   },
   viewer: {
     open: (target) => invoke(IPC.viewer.open, target),

@@ -118,7 +118,10 @@ export const IPC = {
     readFile: 'fs:readFile',
     pickDirectory: 'fs:pickDirectory',
     homeDir: 'fs:homeDir',
-    mkdir: 'fs:mkdir'
+    mkdir: 'fs:mkdir',
+    rename: 'fs:rename',
+    remove: 'fs:remove',
+    index: 'fs:index'
   },
   viewer: {
     open: 'viewer:open',
@@ -1105,9 +1108,14 @@ export interface ClearApi {
       skills?: string[],
       /**
        * Extras da mensagem: `voice` = texto ditado no composer (`{ source: 'dictation' }` — o main
-       * só aceita ditado daqui; a fala da chamada é marcada pelo próprio main).
+       * só aceita ditado daqui; a fala da chamada é marcada pelo próprio main). `openFile` = arquivo
+       * selecionado (1.13.0, `meta.openFile`): o host valida e normaliza pela raiz do chat; num
+       * chat de outro dispositivo vai no comando remoto `send` (`meta.openFile`).
        */
-      opts?: { voice?: import('./voiceCallMarks').VoiceMessageMeta }
+      opts?: {
+        voice?: import('./voiceCallMarks').VoiceMessageMeta
+        openFile?: { path: string }
+      }
     ): Promise<{ queued: boolean }>
     /** ⚡: aborta o que está rodando e injeta a mensagem já. */
     forceSend(queuedId: string): Promise<void>
@@ -1182,6 +1190,20 @@ export interface ClearApi {
     homeDir(): Promise<string>
     /** Cria uma pasta (pai precisa existir; erro se já existir). Retorna o caminho absoluto. */
     mkdir(path: string): Promise<string>
+    /**
+     * Aba Arquivos → Renomear: `path` (absoluto ou relativo à raiz) ganha `newName` na mesma pasta,
+     * com o confinamento do chat (como as tools de arquivo). Nunca sobrescreve. Devolve o caminho
+     * novo. Só em chats executados neste dispositivo.
+     */
+    rename(chatId: string, path: string, newName: string): Promise<string>
+    /** Aba Arquivos → Excluir (já confirmado na UI): lixeira do sistema se houver, senão apaga. */
+    remove(chatId: string, path: string): Promise<'trash' | 'deleted'>
+    /**
+     * Índice da raiz do chat para o popup de `@` (caminhos relativos com `/`, pastas com `/` no
+     * fim; ignora .git, node_modules e o .gitignore como o find_files). null = chat executado em
+     * outro dispositivo (o popup lista pasta por pasta pela fonte remota).
+     */
+    index(chatId: string): Promise<{ entries: string[]; truncated: boolean } | null>
   }
   /** Visualizador de arquivos — só arquivos da allowlist do main (ver SPEC). */
   viewer: {
