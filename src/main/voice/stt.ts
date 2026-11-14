@@ -327,7 +327,12 @@ export async function transcribeAudio(
   try {
     const res = await fetch(url, {
       method: 'POST',
-      headers: { Accept: 'application/json', ...(key ? { Authorization: `Bearer ${key}` } : {}) },
+      headers: {
+        // assinatura de app do chat/persona do pedido (HTTP-Referer/X-Title — as mesmas do chat)
+        ...(api.appHeaders ?? {}),
+        Accept: 'application/json',
+        ...(key ? { Authorization: `Bearer ${key}` } : {})
+      },
       body,
       signal
     })

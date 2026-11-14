@@ -383,3 +383,76 @@ test('voz da persona/chat: camadas do repositório, resolução aqui e o endpoin
   v.setVoiceSetting('sttSettings', {})
   v.setVoiceSetting('audioInput', {})
 })
+
+// ---------------- assinatura de app nas requests de voz ----------------
+
+test('assinatura de app nas requests de voz: a do chat (persona ao vivo) / a do pedido; sem contexto a padrão; "none" nada; nunca na visão nem gravada', async () => {
+  // bug (uso real, 2026-11-14): a fala/transcrição pelo OpenRouter (clipes, frases da chamada,
+  // ditado) aparecia como app "Unknown" na atividade — os serviços de voz não levavam os headers de
+  // atribuição das requests do chat
+  const v = await voice()
+  const r = await repo()
+  const { appSignatureConfigFrom } = await import('../src/shared/appSignatures.ts')
+  const or = r.providersRepo.create({
+    name: 'OpenRouter',
+    kind: 'openrouter',
+    baseUrl: 'https://openrouter.ai/api/v1',
+    apiKey: 'sk-or-SIGSECRET'
+  })
+  v.setVoiceSetting('ttsSettings', {
+    backend: 'api',
+    api: { providerId: or.id, model: 'fishaudio/drama-3', voice: 'narradora' }
+  })
+  v.setVoiceSetting('sttSettings', {
+    mode: 'api',
+    api: { providerId: or.id, model: 'openai/whisper-large-v3-turbo' }
+  })
+  const persona = r.presetsRepo.create({ name: 'Cline', config: { appSignature: 'cline' } })
+  const { chat } = r.chatsRepo.create({ title: 'Voz', config: { presetId: persona.id } })
+  // a config EFETIVA do chat (a persona ao vivo) é a que a chamada usa
+  const cfg = r.chatsRepo.get(chat.id)!.config
+  const inChat = v.getVoiceSettingsWith({}, cfg)
+  const cline = { 'HTTP-Referer': 'https://cline.bot', 'X-Title': 'Cline' }
+  assert.deepEqual(inChat.tts.api.appHeaders, cline)
+  assert.deepEqual(inChat.stt.api.appHeaders, cline)
+  assert.equal(inChat.tts.api.apiKey, 'sk-or-SIGSECRET', 'o endpoint continua o do provedor')
+  // sem contexto (Configurações, prévias sem persona): a padrão
+  const def = { 'HTTP-Referer': 'https://github.com/ezenere/clearchat', 'X-Title': 'ClearChat' }
+  assert.deepEqual(v.getVoiceSettings().tts.api.appHeaders, def)
+  assert.deepEqual(v.getVoiceSettings().stt.api.appHeaders, def)
+  // 'none' = nada; personalizada = a dela
+  assert.equal(v.getVoiceSettingsWith({}, { appSignature: 'none' }).tts.api.appHeaders, undefined)
+  assert.deepEqual(
+    v.getVoiceSettingsWith(
+      {},
+      { appSignature: 'custom', appSignatureCustom: { referer: 'https://x.dev', title: 'X' } }
+    ).stt.api.appHeaders,
+    { 'HTTP-Referer': 'https://x.dev', 'X-Title': 'X' }
+  )
+  // a do pedido do renderer (editor da persona/chat, ditado): sanitizada
+  assert.deepEqual(appSignatureConfigFrom({ appSignature: 'cline', appSignatureCustom: null }), {
+    appSignature: 'cline'
+  })
+  assert.deepEqual(
+    appSignatureConfigFrom({
+      appSignature: 'custom',
+      appSignatureCustom: { referer: 'https://x.dev\r\nX-Evil: 1', title: ' T ' }
+    }),
+    {
+      appSignature: 'custom',
+      appSignatureCustom: { referer: 'https://x.dev X-Evil: 1', title: 'T' }
+    }
+  )
+  assert.equal(appSignatureConfigFrom(null), null)
+  assert.equal(appSignatureConfigFrom('cline'), null)
+  assert.equal(appSignatureConfigFrom({ appSignature: 42 }), null)
+  // nunca na visão do renderer nem gravada
+  assert.ok(!JSON.stringify(v.getVoiceSettingsView()).includes('HTTP-Referer'))
+  assert.ok(!JSON.stringify(v.setVoiceSetting('ttsSettings', inChat.tts)).includes('appHeaders'))
+  // limpa
+  r.chatsRepo.delete(chat.id)
+  r.presetsRepo.delete(persona.id)
+  r.providersRepo.delete(or.id)
+  v.setVoiceSetting('ttsSettings', { backend: 'local' })
+  v.setVoiceSetting('sttSettings', {})
+})

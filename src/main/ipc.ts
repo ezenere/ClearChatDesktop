@@ -139,6 +139,7 @@ import {
   type VoiceSettings
 } from './voice'
 import { collectVoiceCaps } from './voice/voiceCaps'
+import { appSignatureConfigFrom, type AppSignatureConfig } from '@shared/appSignatures'
 import {
   clipsTtsChoice,
   normalizeVoiceTtsChoice,
@@ -276,10 +277,18 @@ let callVoice: {
   language: string | null
 } | null = null
 
+/**
+ * Assinatura de app do chat da chamada em andamento (config efetiva — persona ao vivo): os headers de
+ * atribuição das requests de voz da chamada (as mesmas do chat). Sem chamada = null (a padrão).
+ */
+function callSignature(): AppSignatureConfig | null {
+  return callVoice ? (chatsRepo.get(callVoice.chatId)?.config ?? null) : null
+}
+
 /** Settings de voz para os serviços da chamada: as efetivas do chat da chamada (ver `callVoice`). */
 function callVoiceSettings(chatId?: string | null): VoiceSettings {
   return callVoice && (!chatId || chatId === callVoice.chatId)
-    ? getVoiceSettingsWith(callVoice)
+    ? getVoiceSettingsWith(callVoice, callSignature())
     : getVoiceSettings()
 }
 
@@ -1287,7 +1296,12 @@ export function registerIpc(): void {
           : opts?.voice
             ? voiceUse(await resolveVoiceFor(voiceLayersFrom(opts.voice)))
             : { stt: null, language: null }
-      const v = getVoiceSettingsWith({ stt: use.stt })
+      // assinatura de app: a do chat da chamada / a do chat do ditado (vem com as camadas)
+      const signature =
+        inCall && callVoice
+          ? callSignature()
+          : appSignatureConfigFrom((opts?.voice as { signature?: unknown } | undefined)?.signature)
+      const v = getVoiceSettingsWith({ stt: use.stt }, signature)
       const lang =
         use.language ||
         (typeof language === 'string' && language.trim() ? language : v.audioInput.language)
@@ -1440,12 +1454,17 @@ export function registerIpc(): void {
       model?: unknown
       text?: unknown
       tts?: unknown
+      signature?: unknown
     }) => {
       // overrides só deste teste (▶ prévia de uma voz/modelo ainda não escolhidos no seletor)
       const clip = (v: unknown): string | null =>
         typeof v === 'string' && v.trim() ? v.trim().slice(0, 200) : null
-      // `tts` = a voz de uma persona/chat (prévias do editor da persona) em vez da deste dispositivo
-      const saved = getVoiceSettingsWith({ tts: normalizeVoiceTtsChoice(input?.tts) }).tts
+      // `tts` = a voz de uma persona/chat (prévias do editor da persona) em vez da deste dispositivo;
+      // `signature` = a assinatura de app dessa persona/chat (headers de atribuição da request)
+      const saved = getVoiceSettingsWith(
+        { tts: normalizeVoiceTtsChoice(input?.tts) },
+        appSignatureConfigFrom(input?.signature)
+      ).tts
       const voice = clip(input?.voice)
       const model = clip(input?.model)
       const settings =
@@ -1493,8 +1512,15 @@ export function registerIpc(): void {
     [IPC.voice.ttsClipsGenerate]: async (input?: {
       tts?: unknown
       call?: boolean
+      signature?: unknown
     }): Promise<TtsClipsView> => {
-      const v = getVoiceSettingsWith({ tts: clipsTtsChoice(input, callVoice?.tts) })
+      // assinatura de app: a do chat da chamada (dock) ou a da persona/chat do editor (`signature`)
+      const v = getVoiceSettingsWith(
+        { tts: clipsTtsChoice(input, callVoice?.tts) },
+        input?.call === true && !input.tts && callVoice
+          ? callSignature()
+          : appSignatureConfigFrom(input?.signature)
+      )
       const manifest = await generateClips({
         baseDir: app.getPath('userData'),
         settings: v.tts,

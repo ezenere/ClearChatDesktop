@@ -13,6 +13,7 @@ import type {
   VoiceSettingsMap,
   VoiceSettingsView
 } from '@shared/ipc'
+import { appSignatureHeadersOf, type AppSignatureConfig } from '@shared/appSignatures'
 import {
   AUDIO_INPUT_SETTING,
   applySttChoice,
@@ -100,20 +101,34 @@ export function getVoiceSettings(): VoiceSettings {
  * `getVoiceSettings` com a voz de uma persona/chat aplicada (protocolo 1.9.0): a fala/transcrição
  * escolhidas (`applyTtsChoice`/`applySttChoice` sobre as deste dispositivo — o que é do dispositivo
  * continua) e o `providerId` resolvido para endereço/chave do provedor salvo. null/ausente = as
- * deste dispositivo. Só para os serviços do main (chamada, ditado, prévias, clipes).
+ * deste dispositivo. `signature` = a config do chat/persona do pedido (a chamada, o ditado, as
+ * prévias/clipes do editor): os headers de atribuição dela vão em cada request de voz
+ * (`api.appHeaders` — as mesmas regras do chat; ausente = a assinatura padrão). Só para os
+ * serviços do main (chamada, ditado, prévias, clipes).
  */
-export function getVoiceSettingsWith(choice: {
-  tts?: VoiceTtsChoice | null
-  stt?: VoiceSttChoice | null
-}): VoiceSettings {
+export function getVoiceSettingsWith(
+  choice: {
+    tts?: VoiceTtsChoice | null
+    stt?: VoiceSttChoice | null
+  },
+  signature?: AppSignatureConfig | null
+): VoiceSettings {
   const v = readVoiceSettings()
   const stt = applySttChoice(v.stt, choice.stt ?? null)
   const tts = applyTtsChoice(v.tts, choice.tts ?? null)
   const lookup = (id: string): Provider | null => providersRepo.get(id)
+  const appHeaders = appSignatureHeadersOf(signature)
+  const sig = Object.keys(appHeaders).length ? { appHeaders } : {}
   return {
     ...v,
-    stt: { ...stt, api: withTtsProviderKind(resolveVoiceEndpoint(stt.api, lookup), lookup) },
-    tts: { ...tts, api: withTtsProviderKind(resolveVoiceEndpoint(tts.api, lookup), lookup) }
+    stt: {
+      ...stt,
+      api: { ...withTtsProviderKind(resolveVoiceEndpoint(stt.api, lookup), lookup), ...sig }
+    },
+    tts: {
+      ...tts,
+      api: { ...withTtsProviderKind(resolveVoiceEndpoint(tts.api, lookup), lookup), ...sig }
+    }
   }
 }
 

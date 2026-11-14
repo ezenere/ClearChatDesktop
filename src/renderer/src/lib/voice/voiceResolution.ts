@@ -92,7 +92,10 @@ export function useVoiceResolution(layers: VoiceLayersInput | null): VoiceResolu
   return key && state ? state.value : null
 }
 
-/** Camadas de voz de um chat (a `voice` dele + a da persona de origem, lida ao vivo do store). */
+/**
+ * Camadas de voz de um chat (a `voice` dele + a da persona de origem, lida ao vivo do store) e a
+ * assinatura de app dele (o ditado leva os mesmos headers de atribuição das requests do chat).
+ */
 export function useChatVoiceLayers(chatId: string | null | undefined): VoiceLayersInput | null {
   const chat = useStore((s) => (chatId ? s.chats.find((c) => c.id === chatId) : undefined))
   const presetId = chat?.config.presetId ?? null
@@ -100,6 +103,12 @@ export function useChatVoiceLayers(chatId: string | null | undefined): VoiceLaye
     presetId ? (s.presets.find((p) => p.id === presetId)?.config.voice ?? null) : null
   )
   const voice = chat?.config.voice ?? null
+  const appSignature = chat?.config.appSignature ?? null
+  const appSignatureCustom = chat?.config.appSignatureCustom ?? null
   const exists = !!chat
-  return useMemo(() => (exists ? { chat: voice, persona } : null), [exists, voice, persona])
+  return useMemo(
+    () =>
+      exists ? { chat: voice, persona, signature: { appSignature, appSignatureCustom } } : null,
+    [exists, voice, persona, appSignature, appSignatureCustom]
+  )
 }

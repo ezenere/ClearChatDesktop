@@ -85,15 +85,21 @@ export function TtsSettingsSection({
   /** Grava `ttsSettings` (ou, com `choice`, a voz da persona/chat). */
   onCommit: (next: TtsSettings) => Promise<boolean>
   /** Voz de uma persona/chat (`voice.tts`): título e textos do nível ("desta persona"/"deste chat"). */
-  choice?: { where: string }
+  choice?: {
+    where: string
+    /** Assinatura de app dessa persona/chat (headers de atribuição do teste/prévia/clipes). */
+    signature?: unknown
+  }
 }): React.JSX.Element | null {
   const voiceApi = api.voice
   /** Com `choice`: a voz da persona/chat vai junto do teste/prévia/clipes (não a deste dispositivo). */
   // estável por CONTEÚDO (o pai recalcula `tts` a cada render): a contagem de clipes só relê
   // quando a voz muda de verdade
-  const choiceKey = choice ? JSON.stringify(ttsChoiceFromSettings(tts)) : null
+  const choiceKey = choice
+    ? JSON.stringify({ tts: ttsChoiceFromSettings(tts), signature: choice.signature ?? null })
+    : null
   const choiceArg = useMemo(
-    () => (choiceKey ? { tts: JSON.parse(choiceKey) as unknown } : undefined),
+    () => (choiceKey ? (JSON.parse(choiceKey) as { tts: unknown; signature: unknown }) : undefined),
     [choiceKey]
   )
   const setSettingsOpen = useStore((s) => s.setSettingsOpen)

@@ -86,3 +86,51 @@ export function resolveAppSignatureHeaders(
   if (title?.trim()) h['X-Title'] = title.trim()
   return h
 }
+
+/** A assinatura de uma config de chat/persona (`ChatConfig.appSignature` + a personalizada). */
+export interface AppSignatureConfig {
+  appSignature?: string | null
+  appSignatureCustom?: { referer: string; title: string } | null
+}
+
+/**
+ * Headers de atribuição das requests feitas num contexto (chat/persona) — as MESMAS regras das
+ * requests do chat: a assinatura da config; sem contexto ou sem assinatura = a padrão (ClearChat);
+ * 'none' = nenhum header. Vale também para as requests de voz (`/audio/speech`,
+ * `/audio/transcriptions` — antes iam sem atribuição: "Unknown" na atividade do OpenRouter).
+ */
+export function appSignatureHeadersOf(cfg?: AppSignatureConfig | null): Record<string, string> {
+  return resolveAppSignatureHeaders(
+    cfg?.appSignature || DEFAULT_APP_SIGNATURE,
+    cfg?.appSignatureCustom ?? undefined
+  )
+}
+
+/** Texto de header seguro (sem quebras de linha — o fetch recusaria o valor), aparado e curto. */
+const headerText = (v: unknown, max: number): string | null =>
+  typeof v === 'string'
+    ? v
+        .replace(/[\r\n]+/g, ' ')
+        .trim()
+        .slice(0, max)
+    : null
+
+/**
+ * Assinatura vinda de um pedido do renderer (`signature` dos pedidos de voz: a do chat/persona da
+ * tela) → config sanitizada; lixo/ausente = null (sem contexto → a padrão).
+ */
+export function appSignatureConfigFrom(v: unknown): AppSignatureConfig | null {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null
+  const o = v as Record<string, unknown>
+  const id = headerText(o.appSignature, 64)
+  const c = o.appSignatureCustom
+  const custom =
+    c && typeof c === 'object' && !Array.isArray(c)
+      ? {
+          referer: headerText((c as Record<string, unknown>).referer, 500) ?? '',
+          title: headerText((c as Record<string, unknown>).title, 200) ?? ''
+        }
+      : null
+  if (!id && !custom) return null
+  return { ...(id ? { appSignature: id } : {}), ...(custom ? { appSignatureCustom: custom } : {}) }
+}

@@ -151,6 +151,48 @@ test('transcribeAudio: endpoint local (localhost) sem chave → request sem Auth
   assert.equal(headers.Authorization, undefined)
 })
 
+test('transcribeAudio: assinatura de app do pedido (`api.appHeaders`) vai no /audio/transcriptions — como nas requests do chat', async (t) => {
+  // bug (uso real, 2026-11-14): a transcrição pelo OpenRouter aparecia como app "Unknown" na
+  // atividade — as requests de voz não levavam o HTTP-Referer/X-Title das requests do chat
+  const { appSignatureHeadersOf } = await import('../src/shared/appSignatures.ts')
+  const m = mockFetch(async () => jsonRes(200, { text: 'ok' }))
+  t.after(m.restore)
+  await transcribeAudio(INPUT, {
+    settings: sttSettings({}, { appHeaders: appSignatureHeadersOf({ appSignature: 'cline' }) })
+  })
+  await transcribeAudio(INPUT, {
+    settings: sttSettings({}, { appHeaders: appSignatureHeadersOf() })
+  })
+  await transcribeAudio(INPUT, {
+    settings: sttSettings(
+      {},
+      // nunca sobrescreve a chave nem o Accept
+      { appHeaders: { 'X-Title': 'X', Authorization: 'Bearer roubada', Accept: 'text/html' } }
+    )
+  })
+  const h = (i: number): Record<string, string> => m.calls[i].init.headers as Record<string, string>
+  assert.equal(h(0)['HTTP-Referer'], 'https://cline.bot')
+  assert.equal(h(0)['X-Title'], 'Cline')
+  assert.equal(h(0).Authorization, 'Bearer sk-test')
+  assert.equal(
+    h(1)['HTTP-Referer'],
+    'https://github.com/ezenere/clearchat',
+    'sem contexto: a padrão'
+  )
+  assert.equal(h(1)['X-Title'], 'ClearChat')
+  assert.equal(h(2).Authorization, 'Bearer sk-test')
+  assert.equal(h(2).Accept, 'application/json')
+  // 'none' = nada (e sem o campo, nada)
+  await transcribeAudio(INPUT, {
+    settings: sttSettings({}, { appHeaders: appSignatureHeadersOf({ appSignature: 'none' }) })
+  })
+  await transcribeAudio(INPUT, { settings: sttSettings() })
+  for (const i of [3, 4]) {
+    assert.equal(h(i)['HTTP-Referer'], undefined)
+    assert.equal(h(i)['X-Title'], undefined)
+  }
+})
+
 test('transcribeAudio: language vira ISO-639-1; ausente não envia o campo; baseUrl com barra final', async (t) => {
   const m = mockFetch(async () => jsonRes(200, { text: '' }))
   t.after(m.restore)

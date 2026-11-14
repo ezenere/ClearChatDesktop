@@ -141,6 +141,13 @@ export function VoiceChoiceSections({
     [scope, voiceKey, personaKey]
   )
   const res = useVoiceResolution(voiceApi ? layers : null)
+  // assinatura de app desta persona/chat: as prévias e os clipes gerados aqui levam os mesmos
+  // headers de atribuição das requests do chat
+  const signatureKey = JSON.stringify({
+    appSignature: cfg.appSignature ?? null,
+    appSignatureCustom: cfg.appSignatureCustom ?? null
+  })
+  const signature = useMemo(() => JSON.parse(signatureKey) as unknown, [signatureKey])
   if (!voiceApi) return null
 
   const where = scope === 'chat' ? 'deste chat' : 'desta persona'
@@ -174,6 +181,7 @@ export function VoiceChoiceSections({
         where={where}
         scope={scope}
         defaultOpen={defaultOpen}
+        signature={signature}
         onChange={(tts) => set({ tts })}
       />
       <SttChoiceSection
@@ -211,6 +219,8 @@ interface ChoiceProps<C, S> {
   where: string
   scope: 'chat' | 'persona'
   defaultOpen: boolean
+  /** Assinatura de app desta persona/chat (prévias/clipes da fala — headers de atribuição). */
+  signature?: unknown
   onChange: (c: C | null) => void
 }
 
@@ -268,7 +278,7 @@ function TtsChoiceSection(p: ChoiceProps<VoiceTtsChoice, TtsSettings>): React.JS
               providers={providers}
               models={p.models}
               runtime={p.runtime}
-              choice={{ where: p.where }}
+              choice={{ where: p.where, signature: p.signature }}
               onCommit={async (next) => {
                 const c = ttsChoiceFromSettings(next)
                 if (c) p.onChange(c)

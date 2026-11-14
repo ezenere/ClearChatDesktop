@@ -521,6 +521,12 @@ export type VoiceSettingsView = VoiceSettingsMap
 export interface VoiceLayersInput {
   chat?: unknown
   persona?: unknown
+  /**
+   * Assinatura de app do chat/persona dessas camadas (`{ appSignature, appSignatureCustom }` da
+   * config): os pedidos de voz (ditado) levam os mesmos headers de atribuição do chat. Ausente = a
+   * padrão. A resolução da voz não usa.
+   */
+  signature?: unknown
 }
 
 /**
@@ -653,6 +659,8 @@ export interface VoiceApi {
       text?: string
       /** `VoiceTtsChoice` de uma persona/chat: o teste/prévia sai com ela (não com a deste dispositivo). */
       tts?: unknown
+      /** Assinatura de app dessa persona/chat (headers de atribuição da request; ausente = a padrão). */
+      signature?: unknown
     }): Promise<TtsSynthResult>
     clips: {
       /**
@@ -660,15 +668,25 @@ export interface VoiceApi {
        * emitindo `voice:tts:clips:progress` a cada clipe. Cache válido (mesma voz/definição) é
        * reutilizado; voz muda → gera no diretório da voz nova.
        */
-      generate(input?: { tts?: unknown; call?: boolean }): Promise<TtsClipsView>
+      generate(input?: {
+        tts?: unknown
+        call?: boolean
+        signature?: unknown
+      }): Promise<TtsClipsView>
       /**
        * Cache de clipes da voz atual (null = ainda não gerados). `input.tts` (gerar/listar) = a voz
        * de uma persona/chat (`VoiceTtsChoice`) em vez da deste dispositivo — "Gerar clipes desta
        * voz" (nunca gerados sozinhos: uma API paga só com o clique do usuário); `input.call: true`
        * = a voz da chamada em andamento (a da persona/chat decidida no início dela — o dock confere
-       * e gera os clipes que a chamada toca; sem chamada = a deste dispositivo).
+       * e gera os clipes que a chamada toca; sem chamada = a deste dispositivo). `signature` (gerar)
+       * = a assinatura de app da persona/chat do editor (headers de atribuição; a chamada usa a do
+       * chat dela; ausente = a padrão).
        */
-      list(input?: { tts?: unknown; call?: boolean }): Promise<TtsClipsView | null>
+      list(input?: {
+        tts?: unknown
+        call?: boolean
+        signature?: unknown
+      }): Promise<TtsClipsView | null>
     }
     /** Vozes do motor local atual (com estado de instalação) + sugestões livres para a API. */
     voices(): Promise<TtsVoicesView>

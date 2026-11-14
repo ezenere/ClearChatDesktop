@@ -330,6 +330,8 @@ async function requestSpeech(
   const timeout = AbortSignal.timeout(timeoutMs)
   const signal = opts.signal ? AbortSignal.any([opts.signal, timeout]) : timeout
   const headers: Record<string, string> = {
+    // assinatura de app do chat/persona do pedido (HTTP-Referer/X-Title — as mesmas do chat)
+    ...(api.appHeaders ?? {}),
     'Content-Type': 'application/json',
     Accept: 'audio/*'
   }

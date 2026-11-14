@@ -56,6 +56,12 @@ const apiSettings = (over: Partial<TtsSettings['api']> = {}): TtsSettings => {
   return { ...stored, api: { ...stored.api, baseUrl: api.baseUrl, apiKey: api.apiKey } }
 }
 
+/** `apiSettings` com a assinatura de app resolvida pelo main (`api.appHeaders`). */
+const withAppHeaders = (s: TtsSettings, appHeaders: Record<string, string>): TtsSettings => ({
+  ...s,
+  api: { ...s.api, appHeaders }
+})
+
 const localSettings = (): TtsSettings =>
   normalizeTtsSettings({
     backend: 'local',
@@ -604,6 +610,56 @@ function chunkedFetch(parts: Uint8Array[], contentType: string, gapMs = 0): type
     return new Response(body, { status: 200, headers: { 'content-type': contentType } })
   }) as typeof fetch
 }
+
+test('tts api: assinatura de app do pedido (`api.appHeaders`) vai no /audio/speech (síntese, stream e bloco) — como nas requests do chat', async () => {
+  // bug (uso real, 2026-11-14): a fala do Fish Audio pelo OpenRouter (clipes e frases da chamada)
+  // aparecia como app "Unknown" na atividade — as requests de voz não levavam HTTP-Referer/X-Title
+  const { appSignatureHeadersOf } = await import('../src/shared/appSignatures.ts')
+  const { synthesizeBlock } = await import('../src/main/voice/tts.ts')
+  const pcm = new Uint8Array([1, 0, 2, 0])
+  const { calls, fetch } = mockFetch(() => ({ body: pcm, contentType: 'audio/pcm;rate=24000' }))
+  const cline = withAppHeaders(apiSettings(), appSignatureHeadersOf({ appSignature: 'cline' }))
+  await withFetch(fetch, async () => {
+    await synthesize({ text: 'oi', settings: cline, format: 'wav' })
+    const st = await synthesizeStream({ text: 'oi', settings: cline })
+    if (st.streaming) for await (const c of st.chunks) void c
+    await synthesizeBlock({ text: 'oi', settings: cline })
+    // sem contexto: a padrão; 'none' e sem o campo: nada
+    await synthesize({
+      text: 'oi',
+      settings: withAppHeaders(apiSettings(), appSignatureHeadersOf())
+    })
+    await synthesize({
+      text: 'oi',
+      settings: withAppHeaders(apiSettings(), appSignatureHeadersOf({ appSignature: 'none' }))
+    })
+    await synthesize({ text: 'oi', settings: apiSettings() })
+    // nunca sobrescreve a chave nem o Content-Type
+    await synthesize({
+      text: 'oi',
+      settings: withAppHeaders(apiSettings(), {
+        'X-Title': 'X',
+        Authorization: 'Bearer roubada',
+        'Content-Type': 'text/plain'
+      })
+    })
+  })
+  const h = (i: number): Record<string, string> => calls[i].init?.headers as Record<string, string>
+  for (const i of [0, 1, 2]) {
+    assert.equal(calls[i].url, 'https://tts.example/v1/audio/speech')
+    assert.equal(h(i)['HTTP-Referer'], 'https://cline.bot', `request ${i}`)
+    assert.equal(h(i)['X-Title'], 'Cline')
+    assert.equal(h(i).Authorization, 'Bearer sk-test')
+  }
+  assert.equal(h(3)['X-Title'], 'ClearChat')
+  assert.equal(h(3)['HTTP-Referer'], 'https://github.com/ezenere/clearchat')
+  for (const i of [4, 5]) {
+    assert.equal(h(i)['HTTP-Referer'], undefined)
+    assert.equal(h(i)['X-Title'], undefined)
+  }
+  assert.equal(h(6).Authorization, 'Bearer sk-test')
+  assert.equal(h(6)['Content-Type'], 'application/json')
+})
 
 test('synthesizeStream: PCM progressivo sai em pedaços alinhados (cortes no meio da amostra) + WAV completo', async () => {
   resetTtsPcmEndpoints()
