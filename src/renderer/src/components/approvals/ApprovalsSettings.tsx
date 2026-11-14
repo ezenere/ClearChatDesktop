@@ -47,6 +47,40 @@ const ITEM_DESC: Record<ApprovalItem, string> = {
   memory_delete: 'Tool memory_delete — apaga uma memória de uma coleção gravável.'
 }
 
+/** (?) ao lado do título "Aprovações" (era a linha de introdução da página). */
+export function ApprovalsHelp(): React.JSX.Element {
+  return (
+    <HelpTip label="Aprovações" wide>
+      <p>Modo padrão de cada item em todos os chats.</p>
+      <p>
+        Cada chat (aba Tools) e cada persona pode ajustar; lá a opção igual ao padrão daqui aparece
+        com ★, e quem não ajustou segue este padrão.{' '}
+        <strong className="text-fg/90">process_stop</strong> nunca pede confirmação: o agente só
+        enxerga e para processos do próprio chat. As demais tools (leitura, apresentar arquivos,
+        histórico, controle de subagentes, perguntas ao usuário) também nunca pedem.
+      </p>
+      <p>
+        <strong className="text-fg/80">Sempre permitir</strong>: roda sem perguntar (a blacklist não
+        vale).
+      </p>
+      <p>
+        <strong className="text-fg/80">Smart-Approve</strong>: o modelo juiz escolhido no chat (aba
+        Tools → Smart-Approve) aprova ou pergunta; em Comandos/Processos/Páginas ele só complementa
+        as listas (blacklist bloqueia, o que a whitelist libera roda sem ele); sem modelo →
+        pergunta.
+      </p>
+      <p>
+        <strong className="text-fg/80">Listas</strong> (Comandos, Processos, Páginas): blacklist
+        bloqueia (tem precedência), whitelist libera, o resto pergunta.
+      </p>
+      <p>
+        <strong className="text-fg/80">Perguntar</strong> (demais itens): cada chamada pede sua
+        confirmação.
+      </p>
+    </HelpTip>
+  )
+}
+
 export function ApprovalsSettings(): React.JSX.Element {
   const settings = useStore((s) => s.approvalSettings)
   const update = useStore((s) => s.updateApprovalSettings)
@@ -55,36 +89,6 @@ export function ApprovalsSettings(): React.JSX.Element {
     void update({ modes: { ...settings.modes, [item]: mode } })
   return (
     <div className="space-y-5" data-testid="approvals-settings">
-      <div className="flex items-center gap-1.5 text-xs leading-relaxed text-subtle">
-        Modo padrão de cada item em todos os chats.
-        <HelpTip label="Modo padrão de cada item" wide>
-          <p>
-            Cada chat (aba Tools) e cada persona pode ajustar; lá a opção igual ao padrão daqui
-            aparece com ★, e quem não ajustou segue este padrão.{' '}
-            <strong className="text-fg/90">process_stop</strong> nunca pede confirmação: o agente só
-            enxerga e para processos do próprio chat. As demais tools (leitura, apresentar arquivos,
-            histórico, controle de subagentes, perguntas ao usuário) também nunca pedem.
-          </p>
-          <p>
-            <strong className="text-fg/80">Sempre permitir</strong>: roda sem perguntar (a blacklist
-            não vale).
-          </p>
-          <p>
-            <strong className="text-fg/80">Smart-Approve</strong>: o modelo juiz escolhido no chat
-            (aba Tools → Smart-Approve) aprova ou pergunta; em Comandos/Processos/Páginas ele só
-            complementa as listas (blacklist bloqueia, o que a whitelist libera roda sem ele); sem
-            modelo → pergunta.
-          </p>
-          <p>
-            <strong className="text-fg/80">Listas</strong> (Comandos, Processos, Páginas): blacklist
-            bloqueia (tem precedência), whitelist libera, o resto pergunta.
-          </p>
-          <p>
-            <strong className="text-fg/80">Perguntar</strong> (demais itens): cada chamada pede sua
-            confirmação.
-          </p>
-        </HelpTip>
-      </div>
       {APPROVAL_ITEM_GROUPS.map((g) => (
         <div key={g.title} className="settings-section space-y-3">
           <div className="border-b border-border/50 pb-1 text-[11.5px] text-subtle">{g.title}</div>

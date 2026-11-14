@@ -43,6 +43,7 @@ import type { LocalModelAction } from '../../lib/voice/modelList'
 import { ToggleRow } from '../panel/fields'
 import { Button, Kbd, Label } from '../ui/controls'
 import { Select } from '../ui/Select'
+import { Chip } from '../ui/Chip'
 import { HelpTip } from '../ui/Tooltip'
 import { AudioSection, NumberRow, SubHeading, WarnNote } from './audioUi'
 import { SttSettingsSection } from './SttSettingsSection'
@@ -72,15 +73,22 @@ export function AudioTitleAside(): React.JSX.Element {
   const setView = useStore((s) => s.setAudioSettingsView)
   if (view === 'local')
     return (
-      <span
-        className="text-[15px] font-semibold tracking-tight text-subtle"
-        data-testid="audio-title-crumb"
-      >
-        › Modelos locais
+      <span className="flex items-center gap-1.5">
+        <span
+          className="text-[15px] font-semibold tracking-tight text-subtle"
+          data-testid="audio-title-crumb"
+        >
+          › Modelos locais
+        </span>
+        <HelpTip label="Modelos locais">
+          Transcrição e fala que rodam no seu computador — sem internet na hora de usar e sem o
+          áudio/texto sair daqui. Os instalados aparecem no seletor de Modelo de Transcrição e de
+          Fala (grupos “Local (CPU)” e “Local (GPU)”).
+        </HelpTip>
       </span>
     )
   return (
-    <span className="flex items-center gap-1.5">
+    <span className="flex min-w-0 flex-1 items-center gap-1.5">
       <Button
         size="sm"
         variant="secondary"
@@ -95,6 +103,27 @@ export function AudioTitleAside(): React.JSX.Element {
         Kokoro (fala) — baixar, remover, vozes; na GPU, o Modo avançado (hardware, runtime, motores
         de voz e transcrição, parâmetros e as suas vozes). Os instalados aparecem no seletor de
         Modelo desta página, nos grupos “Local (CPU)” e “Local (GPU)”.
+      </HelpTip>
+      {/* "padrões deste dispositivo" virou indicador ao lado do título (era uma linha solta) */}
+      <Chip
+        testId="audio-device-note"
+        tip="Padrões deste dispositivo (não sincronizam) — cada persona pode ter a própria voz e transcrição."
+      >
+        este dispositivo
+        <span className="sr-only">
+          {' '}
+          — Padrões deste dispositivo (não sincronizam) — cada persona pode ter a própria voz e
+          transcrição.
+        </span>
+      </Chip>
+      <HelpTip label="Áudio">
+        Ditado, transcrição, fala e chamada de voz deste computador: valem para os chats sem voz
+        própria e não vão para os seus outros dispositivos (cada um tem os motores, modelos e o
+        microfone dele). Cada persona/chat pode escolher a própria voz e transcrição (Configurações
+        → Personas → Voz, ou painel do chat → aba Voz — essa escolha sincroniza; onde ela não
+        existir, vale o padrão daquele dispositivo), ligar/desligar a chamada e ter modelo, tools e
+        prompt próprios. Os provedores de transcrição e fala são os de Configurações → Provedores;
+        os modelos que rodam no computador ficam em “Modelos locais”.
       </HelpTip>
     </span>
   )
@@ -364,23 +393,6 @@ export function AudioSettings(): React.JSX.Element | null {
 
   return (
     <div className="space-y-5" data-testid="audio-settings" data-view="main">
-      <div
-        className="flex items-center gap-1.5 text-xs leading-relaxed text-subtle"
-        data-testid="audio-device-note"
-      >
-        Padrões deste dispositivo (não sincronizam) — cada persona pode ter a própria voz e
-        transcrição.
-        <HelpTip label="Áudio">
-          Ditado, transcrição, fala e chamada de voz deste computador: valem para os chats sem voz
-          própria e não vão para os seus outros dispositivos (cada um tem os motores, modelos e o
-          microfone dele). Cada persona/chat pode escolher a própria voz e transcrição
-          (Configurações → Personas → Voz, ou painel do chat → aba Voz — essa escolha sincroniza;
-          onde ela não existir, vale o padrão daquele dispositivo), ligar/desligar a chamada e ter
-          modelo, tools e prompt próprios. Os provedores de transcrição e fala são os de
-          Configurações → Provedores; os modelos que rodam no computador ficam em “Modelos locais”
-          (botão ao lado do título).
-        </HelpTip>
-      </div>
       {saveErrorBox}
 
       {/* ---- ditado: microfone, idioma, push-to-talk, silêncio ---- */}
@@ -489,14 +501,12 @@ export function AudioSettings(): React.JSX.Element | null {
             help={
               'Segure a tecla para falar e solte para parar e transcrever. Só funciona com a janela do ClearChat em foco e fica desligada enquanto o ditado não está disponível (chamada de voz, pergunta pendente, Configurações abertas).\nA tecla precisa ser F1–F24 ou ter Ctrl/Alt/Meta — uma tecla que digita deixaria de funcionar no app.\nO clique no microfone do composer funciona com ou sem push-to-talk.'
             }
-            status={
-              !input.pttKey ? (
-                <span data-testid="ptt-inactive-hint">inativo — defina uma tecla</span>
-              ) : undefined
-            }
           />
           <div className="flex flex-wrap items-center gap-2">
-            <Kbd>{input.pttKey ? formatHotkeyLabel(input.pttKey) : 'sem tecla'}</Kbd>
+            {/* "sem tecla" já diz que o push-to-talk está inativo (sem linha extra) */}
+            <span data-testid={input.pttKey ? undefined : 'ptt-inactive-hint'}>
+              <Kbd>{input.pttKey ? formatHotkeyLabel(input.pttKey) : 'sem tecla'}</Kbd>
+            </span>
             <KeyCaptureField
               value={input.pttKey}
               // tecla nova liga o push-to-talk (definir a tecla é a intenção de usar)
@@ -537,7 +547,6 @@ export function AudioSettings(): React.JSX.Element | null {
           step={100}
           unit="ms"
           disabled={!input.silenceStopEnabled}
-          status={input.silenceStopMs === 0 ? '0 = sem limite' : undefined}
           testId="silence-stop-ms"
           ariaLabel="Silêncio que encerra a gravação (ms)"
           onCommit={(silenceStopMs) => saveInput({ silenceStopMs: Math.round(silenceStopMs) })}
@@ -578,6 +587,11 @@ export function AudioSettings(): React.JSX.Element | null {
             <p>
               Precisa da transcrição (STT) e da fala (TTS) configuradas acima; o que faltar é
               avisado ao tentar entrar na chamada.
+            </p>
+            <p data-testid="voice-call-no-hidden-prompt">
+              O app não acrescenta prompt próprio na chamada: o único texto a mais é o “Prompt do
+              modo voz” de cada persona/chat (aba Voz — vazio por padrão) e, com as tags de voz
+              ligadas, a instrução delas.
             </p>
           </>
         }
@@ -730,11 +744,6 @@ export function AudioSettings(): React.JSX.Element | null {
           onChange={(v) => saveCallDefaults({ audioTags: v ?? false })}
           onPromptChange={(audioTagsPrompt) => saveCallDefaults({ audioTagsPrompt })}
         />
-        <p className="text-[11.5px] text-subtle" data-testid="voice-call-no-hidden-prompt">
-          O app não acrescenta prompt próprio na chamada: o único texto a mais é o “Prompt do modo
-          voz” de cada persona/chat (aba Voz — vazio por padrão) e, com as tags de voz ligadas, a
-          instrução delas.
-        </p>
         <DelayPhrasesSettings
           value={callDefaults.delayPhrases}
           onChange={(delayPhrases) => saveCallDefaults({ delayPhrases })}

@@ -147,7 +147,7 @@ export function SkillsSettings(): React.JSX.Element {
         <div className="rounded-xl border border-border bg-surface/50 px-3.5 py-3">
           <ToggleRow
             label="Incluir .claude/skills do diretório raiz do chat"
-            help="Skills de projeto, resolvidas por chat (depois das pastas acima na precedência)"
+            help="Skills de projeto, resolvidas por chat (depois das pastas acima na precedência). Com um chat aberto, a lista abaixo mostra as do diretório raiz dele."
             checked={settings.projectSkills}
             onChange={(projectSkills) => void update({ projectSkills })}
           />
@@ -159,11 +159,6 @@ export function SkillsSettings(): React.JSX.Element {
               </p>
               <SkillList scan={project} open={open} onOpen={setOpen} />
             </div>
-          )}
-          {settings.projectSkills && !chat && (
-            <p className="mt-2 text-[11px] text-faint">
-              Abra um chat para ver as skills de projeto do diretório raiz dele.
-            </p>
           )}
         </div>
         <CloudSkillsSection />

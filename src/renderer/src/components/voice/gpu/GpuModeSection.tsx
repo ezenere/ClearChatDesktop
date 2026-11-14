@@ -58,7 +58,8 @@ import {
   useGpuStore
 } from '../../../lib/voice/gpu/useGpuStatus'
 import { Button, IconButton } from '../../ui/controls'
-import { C, HelpTip } from '../../ui/Tooltip'
+import { C, HelpTip, Tip } from '../../ui/Tooltip'
+import { Chip } from '../../ui/Chip'
 import { Badge, GpuError, GpuProgress } from './gpuParts'
 import { GpuEngineCard } from './GpuEngineCard'
 import { GpuUserVoices } from './GpuUserVoices'
@@ -162,12 +163,6 @@ export function GpuModeSection({
           </p>
         </HelpTip>
       </div>
-      {!expanded && (
-        <p className="mt-1 pl-5 text-[11.5px] text-subtle" data-testid="gpu-mode-summary">
-          Voz e transcrição na sua placa de vídeo, sem internet na hora de usar. Download grande;
-          opcional.
-        </p>
-      )}
       {expanded && (
         <div id="gpu-mode-body" className="mt-3 space-y-3" data-testid="gpu-mode-body">
           {!available ? (
@@ -352,9 +347,7 @@ function GpuModeBody({
               </p>
             </HelpTip>
             {!runtimeInstalled && verdict.level !== 'blocked' && (
-              <span className="text-[11.5px] text-subtle">
-                instalar um motor baixa o runtime junto
-              </span>
+              <Chip tip="Instalar um motor baixa o runtime junto.">+ runtime</Chip>
             )}
           </div>
           {ttsList.map(card)}
@@ -718,12 +711,16 @@ function ServerLine({ status }: { status: GpuStatus }): React.JSX.Element {
     >
       <span className={cn('size-2 shrink-0 rounded-full', SERVER_DOT[sv.state])} aria-hidden />
       <span className="text-fg/85">Servidor local:</span>
-      <span data-testid="gpu-server-state" className="text-fg/85">
-        {line.text}
-      </span>
-      <span className="text-[11.5px] text-subtle" data-testid="gpu-server-hint">
-        — {line.hint}
-      </span>
+      {/* o detalhe do estado ("desliga após 15 min sem uso") vai no tooltip do próprio estado */}
+      <Tip label={line.hint}>
+        <span data-testid="gpu-server-state" tabIndex={0} className="text-fg/85 outline-none">
+          {line.text}
+          <span className="sr-only" data-testid="gpu-server-hint">
+            {' '}
+            — {line.hint}
+          </span>
+        </span>
+      </Tip>
       <HelpTip label="Servidor local da GPU">
         <p>
           Processo local (só em <C>127.0.0.1</C>, com chave por sessão) que carrega os motores na

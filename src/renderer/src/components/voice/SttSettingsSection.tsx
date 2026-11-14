@@ -10,6 +10,7 @@
 // settings deste dispositivo com a escolha aplicada, `onCommit` grava a escolha; o que é do
 // dispositivo (parciais ao vivo, final rápida, parâmetros do whisper da GPU) fica de fora e o
 // idioma da escolha entra em `extra`.
+import { TriangleAlert } from 'lucide-react'
 import { useCallback, type ReactNode } from 'react'
 import type { VoiceModelInfo, VoiceRuntimeStatus } from '@shared/ipc'
 import type { ModelRef } from '@shared/models'
@@ -20,7 +21,8 @@ import { apiParamsToSend } from '@shared/voiceParams'
 import { useVoiceCatalogs } from '../../lib/voice/useVoiceCatalogs'
 import { useStore } from '../../store'
 import { ToggleRow } from '../panel/fields'
-import { Label } from '../ui/controls'
+import { Chip } from '../ui/Chip'
+import { Button } from '../ui/controls'
 import { ApiInfo, C } from '../ui/Tooltip'
 import { AudioSection, WarnNote } from './audioUi'
 import { VoiceModelField } from './voiceSettingsParts'
@@ -129,10 +131,8 @@ export function SttSettingsSection({
       }
     >
       <div>
-        <Label help="Um seletor para tudo: os modelos de transcrição de cada provedor cadastrado (o endpoint e a chave vêm de Configurações → Provedores) e, quando houver algo instalado em “Modelos locais”, os grupos Local (CPU) e Local (GPU). Escolher um modelo já define o provedor/motor. Um id sem o prefixo do OpenRouter (ex.: whisper-large-v3-turbo) é corrigido sozinho para o id listado. Os lentos para a chamada têm o badge “lento”.">
-          Modelo
-        </Label>
         <VoiceModelField
+          help="Um seletor para tudo: os modelos de transcrição de cada provedor cadastrado (o endpoint e a chave vêm de Configurações → Provedores) e, quando houver algo instalado em “Modelos locais”, os grupos Local (CPU) e Local (GPU). Escolher um modelo já define o provedor/motor. Um id sem o prefixo do OpenRouter (ex.: whisper-large-v3-turbo) é corrigido sozinho para o id listado. Os lentos para a chamada têm o badge “lento”."
           capability="stt"
           catalogs={catalogs}
           providers={providers}
@@ -140,6 +140,17 @@ export function SttSettingsSection({
           onChange={pickModel}
           testId="stt-model"
           localGroups={localGroups}
+          chips={
+            mode === 'local' && local?.installed && localModel ? (
+              <Chip
+                testId="stt-local-current"
+                tone="success"
+                tip={`No computador (CPU) com ${localModel.name} — o áudio nunca sai daqui.`}
+              >
+                CPU · {localModel.name}
+              </Chip>
+            ) : undefined
+          }
         />
       </div>
 
@@ -164,7 +175,6 @@ export function SttSettingsSection({
             void onCommit({ ...stt, api: params ? { ...rest, params } : rest })
           }}
           testId="stt-api-params"
-          persona={!!choice}
         />
       )}
 
@@ -173,24 +183,19 @@ export function SttSettingsSection({
       )}
 
       {mode === 'local' && (
-        <div className="space-y-1.5" data-testid="stt-local">
-          <p
-            className={`text-[11.5px] ${local?.installed && localModel ? 'text-subtle' : 'text-warning'}`}
-            data-testid="stt-local-current"
-          >
-            {local?.installed && localModel
-              ? `No computador (CPU) com ${localModel.name} — o áudio nunca sai daqui.`
-              : 'Nenhum modelo local instalado — '}
-            {!(local?.installed && localModel) && (
-              <button
-                type="button"
-                className="underline underline-offset-2"
-                onClick={() => setSettingsOpen(true, 'audio:local')}
-              >
-                instale em Modelos locais
-              </button>
-            )}
-          </p>
+        <div className="space-y-1.5 empty:hidden" data-testid="stt-local">
+          {!(local?.installed && localModel) && (
+            <Button
+              size="sm"
+              variant="warning"
+              data-testid="stt-local-current"
+              icon={<TriangleAlert className="size-3.5" />}
+              title="Nenhum modelo local de transcrição instalado neste computador"
+              onClick={() => setSettingsOpen(true, 'audio:local')}
+            >
+              Nenhum modelo local instalado · Instalar
+            </Button>
+          )}
           {runtimeProblem && (
             <WarnNote testId="stt-runtime-warning">
               Motor local não está pronto: {runtimeProblem}
@@ -205,16 +210,23 @@ export function SttSettingsSection({
           checked={mode === 'hybrid'}
           onChange={(v) => void onCommit(setHybrid(stt, v, models))}
           help="Híbrido: a API faz a transcrição final; o modelo local (CPU) faz as parciais ao vivo e a transcrição especulativa do fim de turno da chamada, e transcreve quando a API falha por rede/cota/5xx. Um modelo pequeno (base) basta. Aparece com um modelo local de transcrição instalado em Modelos locais."
-          status={
+          info={
             mode === 'hybrid' ? (
               hybridModel ? (
-                <span data-testid="stt-hybrid-model">
-                  Modelo local: {hybridModel.name} (parciais, especulação e reserva)
-                </span>
+                <Chip
+                  testId="stt-hybrid-model"
+                  tip={`Modelo local: ${hybridModel.name} (parciais, especulação e reserva)`}
+                >
+                  {hybridModel.name}
+                </Chip>
               ) : (
-                <span className="text-warning" data-testid="stt-hybrid-missing">
-                  Nenhum modelo local instalado — as parciais vão pela API e não há reserva.
-                </span>
+                <Chip
+                  testId="stt-hybrid-missing"
+                  tone="warning"
+                  tip="Nenhum modelo local instalado — as parciais vão pela API e não há reserva (instale em Modelos locais)."
+                >
+                  sem modelo local
+                </Chip>
               )
             ) : undefined
           }
@@ -233,12 +245,15 @@ export function SttSettingsSection({
                 ? 'Melhor-esforço enquanto você fala: o motor local transcreve em janelas (só modelos até o base).'
                 : 'Melhor-esforço enquanto você fala: o texto parcial aparece no composer (fora do texto editável) e a transcrição final entra no rascunho ao parar. Só pela API, cada parcial é uma request extra ao provedor; com o motor local como reserva, elas vêm dele quando pronto.'
           }
-          status={
+          info={
             mode === 'local' && stt.livePartials && localPartialsOff && localModel ? (
-              <span className="text-warning" data-testid="stt-partials-off">
-                Desligadas para {localModel.name}: grande demais para transcrever enquanto você fala
-                — o texto aparece nas pausas. Use o ggml-base ou o ggml-tiny para ver ao vivo.
-              </span>
+              <Chip
+                testId="stt-partials-off"
+                tone="warning"
+                tip={`Desligadas para ${localModel.name}: grande demais para transcrever enquanto você fala — o texto aparece nas pausas. Use o ggml-base ou o ggml-tiny para ver ao vivo.`}
+              >
+                desligadas neste modelo
+              </Chip>
             ) : undefined
           }
         />

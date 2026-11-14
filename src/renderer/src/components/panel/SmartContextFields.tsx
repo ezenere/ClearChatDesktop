@@ -31,6 +31,7 @@ import { api } from '../../lib/api'
 import { cn, formatCost, relativeTime } from '../../lib/format'
 import { useStore } from '../../store'
 import { AutoTextarea, Button, Switch } from '../ui/controls'
+import { Chip } from '../ui/Chip'
 import { ModelPicker } from '../ui/ModelPicker'
 import { C, HelpTip, Tip } from '../ui/Tooltip'
 import { PlaceholderList } from '../ui/PlaceholderList'
@@ -393,6 +394,21 @@ export function SmartContextSection({
       <div className="border-t border-border/60 pt-2.5">
         <div className="mb-1.5 flex items-center gap-2">
           <span className="text-[12.5px] font-medium text-fg/90">Coleta de contexto</span>
+          {/* estado da coleta neste chat: chip ao lado do título (o porquê no tooltip) */}
+          <Chip
+            testId="capture-status"
+            data={{ active: active ? 'true' : 'false' }}
+            tone={active ? 'success' : 'neutral'}
+            tip={
+              active
+                ? 'Ativa neste chat.'
+                : capture.enabled && capture.model && !inUse
+                  ? 'Inativa: ative o Smart-Approve em algum item (com modelo do juiz).'
+                  : 'Inativa.'
+            }
+          >
+            {active ? 'ativa' : 'inativa'}
+          </Chip>
           <label className="ml-auto inline-flex cursor-pointer items-center gap-1.5 text-[11px] text-subtle">
             <Switch
               size="sm"
@@ -416,20 +432,6 @@ export function SmartContextSection({
             {capture.enabled && capture.model ? `ligada · ${capture.model}` : 'desligada'}
           </p>
         )}
-        <p
-          data-testid="capture-status"
-          data-active={active ? 'true' : 'false'}
-          className={cn(
-            'mt-1.5 text-[11px] leading-snug',
-            active ? 'text-success/90' : 'text-faint'
-          )}
-        >
-          {active
-            ? 'Ativa neste chat.'
-            : capture.enabled && capture.model && !inUse
-              ? 'Inativa: ative o Smart-Approve em algum item (com modelo do juiz).'
-              : 'Inativa.'}
-        </p>
       </div>
 
       <CollapsibleSection

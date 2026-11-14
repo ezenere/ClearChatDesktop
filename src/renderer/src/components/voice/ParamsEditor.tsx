@@ -77,8 +77,8 @@ export function ParamsEditor({
   extra?: ReactNode
   extraChanged?: boolean
   defaultOpen?: boolean
-  /** Nota ao lado do "Restaurar padrão" (quando vale). */
-  note: ReactNode
+  /** Nota curta ao lado do "Restaurar padrão" — só o que não é óbvio (o "vale na próxima fala" é). */
+  note?: ReactNode
   /** Botão ↺ por linha alterada. */
   rowReset?: boolean
 }): React.JSX.Element | null {
@@ -280,10 +280,12 @@ export function ParamsEditor({
             >
               Restaurar padrão
             </Button>
-            <span className="text-[10.5px] text-subtle">
-              {restartRows.length ? 'Os marcados aplicam ao reiniciar o servidor. ' : ''}
-              {note}
-            </span>
+            {(restartRows.length > 0 || note) && (
+              <span className="text-[10.5px] text-subtle">
+                {restartRows.length ? 'Os marcados aplicam ao reiniciar o servidor. ' : ''}
+                {note}
+              </span>
+            )}
           </div>
         </div>
       )}

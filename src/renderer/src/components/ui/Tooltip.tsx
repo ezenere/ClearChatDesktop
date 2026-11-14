@@ -126,9 +126,14 @@ function paragraphs(children: ReactNode): ReactNode {
 }
 
 /**
- * Ícone (?) com a ajuda de uma opção/campo/seção: o que ela faz (descrição estática). Fica logo
- * depois do rótulo (antes do </> do `ApiInfo`, se houver). Estados, avisos e erros NÃO vão aqui —
- * ficam visíveis. Texto com "\n" vira parágrafos.
+ * Ícone (?) com a ajuda de uma opção/campo/seção: o que ela faz e como funciona (descrição estática
+ * — também listas de modelos aceitos, limites, de onde vem uma lista, o que acontece por baixo).
+ * Fica logo depois do rótulo (antes do </> do `ApiInfo`, se houver). Texto com "\n" vira
+ * parágrafos. Regra das telas de configuração (2026-11-14, "texto solto polui"): nada de parágrafo
+ * explicativo à vista — o que repete o campo some; o que explica vai aqui; um fato curto da seleção
+ * atual (capacidade, transporte, idioma, contagem) vira `Chip` (detalhe no tooltip); dica de como
+ * preencher vai no placeholder/lista do controle; estado que pede ação fica à vista NO botão da ação
+ * (`Button variant="warning"`, detalhe no tooltip) e só aviso sem ação fica como linha curta.
  */
 export function HelpTip({
   title,

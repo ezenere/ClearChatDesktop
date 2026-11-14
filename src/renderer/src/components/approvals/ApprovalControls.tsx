@@ -13,7 +13,7 @@ import {
 import type { ApprovalItem, ApprovalListItem, ApprovalMode } from '@shared/types'
 import { cn } from '../../lib/format'
 import { Button } from '../ui/controls'
-import { Tip } from '../ui/Tooltip'
+import { HelpTip, Tip } from '../ui/Tooltip'
 
 export const SMART_NEEDS_MODEL = 'Escolha um modelo de Smart-Approve abaixo'
 export const STAR_HINT =
@@ -197,6 +197,12 @@ export function ListEntryEditor({
           onKeyDown={(e) => e.key === 'Escape' && onCancel()}
           className="field h-7 min-w-0 flex-1 px-2 py-0 font-mono text-[11.5px]"
         />
+        {/* como escrever o padrão: no (?) (sem a linha de dica embaixo) */}
+        <HelpTip label="Como escrever o padrão">
+          {item === 'pages'
+            ? 'Domínio (github.com), subdomínios (*.github.com) ou prefixo de URL (https://github.com/org/).'
+            : '“*” sozinho = qualquer quantidade de palavras; “*” dentro de uma palavra = curinga; sem “*” = exato.'}
+        </HelpTip>
         <Button
           type="submit"
           size="sm"
@@ -211,16 +217,12 @@ export function ListEntryEditor({
       </form>
       {error ? (
         <p className="text-[11px] text-danger/90">{error}</p>
-      ) : warn ? (
-        <p data-testid="broad-warning" className="text-[11px] leading-snug text-warning/90">
-          {warn}
-        </p>
       ) : (
-        <p className="text-[11px] leading-snug text-faint">
-          {item === 'pages'
-            ? 'Domínio (github.com), subdomínios (*.github.com) ou prefixo de URL (https://github.com/org/).'
-            : '“*” sozinho = qualquer quantidade de palavras; “*” dentro de uma palavra = curinga; sem “*” = exato.'}
-        </p>
+        warn && (
+          <p data-testid="broad-warning" className="text-[11px] leading-snug text-warning/90">
+            {warn}
+          </p>
+        )
       )}
     </div>
   )

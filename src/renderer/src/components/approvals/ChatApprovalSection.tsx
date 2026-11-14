@@ -20,6 +20,8 @@ import { useStore } from '../../store'
 import { AutoApproveInfo } from '../apiDocs'
 import type { CfgProps } from '../panel/editors'
 import { CollapsibleSection } from '../panel/fields'
+import { Chip } from '../ui/Chip'
+import { Button } from '../ui/controls'
 import { HelpTip } from '../ui/Tooltip'
 import { ModeSelector, SMART_NEEDS_MODEL } from './ApprovalControls'
 import { InheritMark } from '../panel/inherit'
@@ -154,23 +156,28 @@ export function ChatApprovalSection({
           onChange={(v) => patch({ acceptEditsInRoot: v === globalAccept ? null : v })}
         />
       )}
-      {!judge && (
-        <p data-testid="smart-needs-model" className="text-[11px] leading-snug text-faint">
-          Smart-Approve indisponível:{' '}
-          {chatScope ? (
-            <button
-              type="button"
-              onClick={() => focusConfig('smart-approve')}
-              className="text-accent-strong hover:underline"
-            >
-              escolha um modelo na seção Smart-Approve
-            </button>
-          ) : (
-            'escolha um modelo na seção Smart-Approve'
-          )}
-          .
-        </p>
-      )}
+      {/* sem juiz: o aviso mora no botão que leva à seção do modelo (persona: chip com o porquê) */}
+      {!judge &&
+        (chatScope ? (
+          <Button
+            size="sm"
+            variant="warning"
+            data-testid="smart-needs-model"
+            icon={<AlertTriangle className="size-3.5" />}
+            title="Smart-Approve indisponível: escolha um modelo na seção Smart-Approve"
+            onClick={() => focusConfig('smart-approve')}
+          >
+            Smart-Approve sem modelo · Escolher
+          </Button>
+        ) : (
+          <Chip
+            testId="smart-needs-model"
+            tone="warning"
+            tip="Smart-Approve indisponível: escolha um modelo na seção Smart-Approve."
+          >
+            Smart-Approve sem modelo
+          </Chip>
+        ))}
       <button
         type="button"
         onClick={() => setSettingsOpen(true, 'approvals')}

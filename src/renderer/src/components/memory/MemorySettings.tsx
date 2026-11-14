@@ -47,6 +47,7 @@ import { useStore, type MemoryFocus } from '../../store'
 import { IconPicker } from '../presets/PresetIcon'
 import { AutoTextarea, Button, Switch } from '../ui/controls'
 import { Select } from '../ui/Select'
+import { Chip } from '../ui/Chip'
 import { HelpTip, Tip } from '../ui/Tooltip'
 import { useMemoryCollections } from './hooks'
 import { CATEGORY_ICON, CollectionIcon } from './MemoryIcon'
@@ -74,6 +75,17 @@ function useAllMemories(): { all: Memory[]; loaded: boolean; reload: () => void 
     }
   }, [tick, nonce])
   return { all, loaded, reload: () => setNonce((n) => n + 1) }
+}
+
+/** (?) ao lado do título "Memórias" (era a linha de introdução da página). */
+export function MemoryHelp(): React.JSX.Element {
+  return (
+    <HelpTip label="Memórias">
+      Coleções globais, cada uma de uma categoria. Os chats e as personas escolhem quais o modelo lê
+      e em qual ele grava (aba <strong className="text-fg/85">Memória</strong> do painel). Tudo o
+      que você edita aqui vale para todos.
+    </HelpTip>
+  )
 }
 
 export function MemorySettings(): React.JSX.Element {
@@ -240,14 +252,6 @@ function Home({
 
   return (
     <div data-testid="memory-settings" className="animate-fade-in space-y-5">
-      <div className="flex items-center gap-1.5 text-xs leading-relaxed text-subtle">
-        Coleções globais, cada uma de uma categoria.
-        <HelpTip label="Memórias">
-          Os chats e as personas escolhem quais o modelo lê e em qual ele grava (aba{' '}
-          <strong className="text-fg/85">Memória</strong> do painel). Tudo o que você edita aqui
-          vale para todos.
-        </HelpTip>
-      </div>
       <SearchBox value={query} onChange={setQuery} placeholder="Buscar em todas as memórias" />
 
       {results ? (
@@ -1235,8 +1239,8 @@ function MemoryDetail({
             <div className="flex items-center gap-1.5 text-[13px] text-fg/90">
               Coleção
               <HelpTip label="Coleção">Mover só entre coleções da mesma categoria.</HelpTip>
+              <Chip tip="Categoria da memória">{MEMORY_CATEGORY_LABELS[m.category]}</Chip>
             </div>
-            <p className="mt-0.5 text-[11.5px] text-subtle">{MEMORY_CATEGORY_LABELS[m.category]}</p>
           </div>
           <Select<string>
             label="Mover para a coleção"

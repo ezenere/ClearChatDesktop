@@ -29,6 +29,7 @@ import { useStore } from '../../store'
 import { CollapsibleSection, ToggleRow } from '../panel/fields'
 import { PhoneToolsGroup } from '../panel/PhoneToolsGroup'
 import { AutoTextarea, Button, Switch } from '../ui/controls'
+import { Chip } from '../ui/Chip'
 import { InheritChoice } from '../ui/InheritChoice'
 import { AudioTagsField } from './AudioTagsField'
 import { DEFAULT_AUDIO_TAGS_PROMPT } from '@shared/audioTags'
@@ -132,16 +133,23 @@ export function VoiceCallConfigSection({
             }
             onChange={(v) => set({ enabled: v })}
           />
+          {/* o efeito (a ação é a escolha ao lado) — chip curto, o porquê no tooltip */}
+          {!enabled && (
+            <Chip
+              testId="voice-call-disabled-note"
+              tone="warning"
+              tip={
+                source === 'persona' && scope === 'chat'
+                  ? `A persona “${persona?.name ?? ''}” desliga a chamada: o telefone fica desabilitado neste chat. Escolha “Ligada” para usar mesmo assim.`
+                  : source === 'global'
+                    ? 'Desligada em Configurações → Áudio: o telefone some dos chats sem override.'
+                    : `O telefone fica desabilitado ${scope === 'chat' ? 'neste chat' : 'nos chats desta persona (um chat pode religar)'}.`
+              }
+            >
+              {source === 'global' ? 'desligada no global' : 'telefone desabilitado'}
+            </Chip>
+          )}
         </div>
-        {!enabled && (
-          <p data-testid="voice-call-disabled-note" className="text-[11.5px] text-warning">
-            {source === 'persona' && scope === 'chat'
-              ? `A persona “${persona?.name ?? ''}” desliga a chamada: o telefone fica desabilitado neste chat. Escolha “Ligada” para usar mesmo assim.`
-              : source === 'global'
-                ? 'Desligada em Configurações → Áudio: o telefone some dos chats sem override.'
-                : `O telefone fica desabilitado ${scope === 'chat' ? 'neste chat' : 'nos chats desta persona (um chat pode religar)'}.`}
-          </p>
-        )}
         {enabled && (
           <>
             <VoiceCallModelEditor
@@ -377,7 +385,6 @@ function VoicePromptModeField({
   inheritedFrom: string
   onChange: (mode: VoiceCallPromptMode | null) => void
 }): React.JSX.Element {
-  const effective = value ?? inherited
   return (
     <div>
       <div className="mb-1.5 flex items-center gap-1.5">
@@ -399,6 +406,7 @@ function VoicePromptModeField({
           </p>
         </ApiInfo>
       </div>
+      {/* o que cada modo faz: no tooltip de cada opção e no </> (sem a linha que repetia a escolha) */}
       <InheritChoice
         label="Prompt na chamada"
         testId="voice-call-prompt-mode"
@@ -413,7 +421,6 @@ function VoicePromptModeField({
         inheritedFrom={inheritedFrom}
         onChange={onChange}
       />
-      <p className="mt-1 text-[11px] text-subtle">{PROMPT_MODE_HELP[effective]}</p>
     </div>
   )
 }
@@ -433,11 +440,23 @@ function VoiceToolsList({
       data-testid="voice-call-tools"
       className="-mx-1.5 max-h-[220px] space-y-px overflow-y-auto rounded-lg border border-border/60 py-1"
     >
-      <p className="px-2.5 pb-1 text-[11px] leading-snug text-faint">
-        {compactToolsOn(cfg)
-          ? 'Vão compactas como no chat (aba Tools → “Enviar tools compactadas”); o </> mostra o que vai.'
-          : 'Vão completas como no chat (aba Tools → “Enviar tools compactadas” desligado).'}
-      </p>
+      <div className="flex justify-end px-2 pb-0.5">
+        <Chip
+          testId="voice-call-tools-mode"
+          tip={
+            compactToolsOn(cfg)
+              ? 'Vão compactas como no chat (aba Tools → “Enviar tools compactadas”); o </> mostra o que vai.'
+              : 'Vão completas como no chat (aba Tools → “Enviar tools compactadas” desligado).'
+          }
+        >
+          {compactToolsOn(cfg) ? 'compactas' : 'completas'}
+          <span className="sr-only">
+            {compactToolsOn(cfg)
+              ? ' — Vão compactas como no chat (aba Tools → “Enviar tools compactadas”).'
+              : ' — Vão completas como no chat (aba Tools → “Enviar tools compactadas” desligado).'}
+          </span>
+        </Chip>
+      </div>
       {TOOL_NAMES.map((t) => {
         const on = tools.includes(t)
         return (

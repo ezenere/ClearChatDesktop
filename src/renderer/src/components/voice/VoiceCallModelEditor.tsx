@@ -55,7 +55,7 @@ export function VoiceCallModelEditor({
           <p>
             Opcional: um modelo (e parâmetros) só para os turnos de voz — ex.: um modelo mais
             rápido, ou o mesmo com raciocínio desligado. Vazio = herda (chat → persona → padrão
-            global → o modelo do próprio chat).
+            global → o modelo do próprio chat), com o raciocínio desligado/mínimo na chamada.
           </p>
           <p className="mt-2">
             Raciocínio em &quot;auto&quot;: a chamada desliga o raciocínio (ou usa o esforço mínimo,
@@ -88,11 +88,6 @@ export function VoiceCallModelEditor({
           })
         }
       />
-      {!value && (
-        <p data-testid={`voice-call-model-inherit-${scope}`} className="text-[11px] text-subtle">
-          Usando {inherited}, com o raciocínio desligado/mínimo na chamada.
-        </p>
-      )}
       {value && cfg && (
         <NoInheritProvider>
           {providerName === undefined && (

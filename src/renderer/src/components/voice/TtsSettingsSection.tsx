@@ -11,7 +11,7 @@
 // Também é o seletor da VOZ DE UMA PERSONA/CHAT (`choice`, protocolo 1.9.0): `tts` = as settings
 // deste dispositivo com a escolha aplicada, `onCommit` grava a escolha; teste, ▶ prévia e "Gerar
 // clipes desta voz" saem com ela; passos/parâmetros da GPU (do dispositivo) ficam de fora.
-import { Play, Square } from 'lucide-react'
+import { Play, Square, TriangleAlert } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { TtsVoicesView, VoiceModelInfo, VoiceRuntimeStatus } from '@shared/ipc'
 import type { ModelRef } from '@shared/models'
@@ -32,10 +32,11 @@ import { apiParamsToSend, elevenLabsOutputFormat } from '@shared/voiceParams'
 import { api, errorMessage } from '../../lib/api'
 import { useVoiceCatalogs } from '../../lib/voice/useVoiceCatalogs'
 import { useStore } from '../../store'
+import { Chip } from '../ui/Chip'
 import { Button, Label } from '../ui/controls'
 import { Select } from '../ui/Select'
 import { ToggleRow } from '../panel/fields'
-import { ApiInfo, C, HelpTip } from '../ui/Tooltip'
+import { ApiInfo, C, HelpTip, Tip } from '../ui/Tooltip'
 import { AudioSection, WarnNote } from './audioUi'
 import { groupCatalogVoices } from './catalogVoiceGroups'
 import { DismissibleError, VoiceModelField, VoicePicker } from './voiceSettingsParts'
@@ -364,6 +365,16 @@ export function TtsSettingsSection({
       .catch((e) => setClips((c) => ({ ...c, busy: false, error: ipcError(e) })))
   }
 
+  // estado dos clipes da voz atual (vai no botão "Gerar clipes")
+  const clipsState: 'ok' | 'missing' | 'stale' | 'partial' =
+    clips.busy || clips.count === null || clips.count > 0
+      ? 'ok'
+      : clips.staleToolOnly
+        ? 'partial'
+        : clips.stale
+          ? 'stale'
+          : 'missing'
+
   const engine = tts.local?.engine ?? 'kokoro'
   const gpuEngine = gpuStatus?.engines.find((e) => e.id === tts.gpu?.engine) ?? null
   const currentVoiceLabel = isGpu
@@ -375,6 +386,16 @@ export function TtsSettingsSection({
         ? (voices.find((v) => v.id === tts.api.voice)?.label ?? tts.api.voice)
         : 'voz padrão'
       : (localVoices.find((v) => v.id === tts.local?.voice)?.label ?? tts.local?.voice ?? 'pf_dora')
+  const clipsTip =
+    clipsState === 'partial'
+      ? `Faltam clipes de “${currentVoiceLabel}” (frases de ferramenta/“obrigado por aguardar” — os preâmbulos estão em dia; sem eles, essas frases saem sintetizadas na hora).`
+      : clipsState === 'stale'
+        ? `Os clipes de “${currentVoiceLabel}” estão desatualizados (as frases ou o modelo mudaram).`
+        : clipsState === 'missing'
+          ? `Sem clipes para “${currentVoiceLabel}”: os preâmbulos da chamada não tocam e as frases de ferramenta são sintetizadas na hora.`
+          : clips.count
+            ? `${clips.count} clipes gerados para “${currentVoiceLabel}” — gere de novo depois de trocar a voz ou as frases.`
+            : 'Gera os preâmbulos e as frases de ferramenta com esta voz.'
 
   return (
     <AudioSection
@@ -408,10 +429,23 @@ export function TtsSettingsSection({
       }
     >
       <div>
-        <Label help="Um seletor para tudo: os modelos de fala de cada provedor cadastrado (o endpoint e a chave vêm de Configurações → Provedores) e, quando houver algo instalado em “Modelos locais”, os grupos Local (CPU) (Kokoro) e Local (GPU). Escolher um modelo já define o provedor/motor. Nos provedores, só os testados para a chamada de voz: 1º áudio em até ~0,9 s numa frase curta e pt-BR aceitável (o badge mostra o tempo medido). Para mais qualidade: Eleven v4 Turbo pela ElevenLabs direta (~0,29 s até o 1º áudio medido, mais expressivo que o Flash; na chamada vai por HTTP frase a frase — o WebSocket não aceita o v4). Um id livre é aceito, com o aviso de que não foi testado.">
-          Modelo
-        </Label>
         <VoiceModelField
+          help="Um seletor para tudo: os modelos de fala de cada provedor cadastrado (o endpoint e a chave vêm de Configurações → Provedores) e, quando houver algo instalado em “Modelos locais”, os grupos Local (CPU) (Kokoro) e Local (GPU). Escolher um modelo já define o provedor/motor. Nos provedores, só os testados para a chamada de voz: 1º áudio em até ~0,9 s numa frase curta e pt-BR aceitável (o badge mostra o tempo medido). Para mais qualidade: Eleven v4 Turbo pela ElevenLabs direta (~0,29 s até o 1º áudio medido, mais expressivo que o Flash; na chamada vai por HTTP frase a frase — o WebSocket não aceita o v4). Um id livre é aceito, com o aviso de que não foi testado. Tags de voz ([risos], [sussurra]…) só funcionam com ElevenLabs v3/v4 e Fish Audio Drama 3/S2 (chip “tags”); com os outros modelos elas são tiradas da fala."
+          chips={
+            isApi && provider && tts.api.model ? (
+              <>
+                {supportsAudioTags(family, tts.api.model) && (
+                  <Chip
+                    testId="tts-audio-tags-note"
+                    tip="Este modelo interpreta tags de voz ([risos], [sussurra]…) — ative em Chamada de voz → Tags de voz."
+                  >
+                    tags
+                  </Chip>
+                )}
+                <TransportChip tts={tts} family={family} />
+              </>
+            ) : undefined
+          }
           capability="tts"
           catalogs={catalogs}
           providers={providers}
@@ -422,13 +456,6 @@ export function TtsSettingsSection({
           recommended={isApi ? recommended : undefined}
           localGroups={localGroups}
         />
-        {isApi && provider && tts.api.model && (
-          <p data-testid="tts-audio-tags-note" className="mt-1 text-[11.5px] text-subtle">
-            {supportsAudioTags(family, tts.api.model)
-              ? 'Este modelo interpreta tags de voz ([risos], [sussurra]…) — ative em Chamada de voz → Tags de voz.'
-              : 'Tags de voz como [risos] funcionam com ElevenLabs v3/v4 e Fish Audio Drama 3/S2 — com este modelo elas são tiradas da fala.'}
-          </p>
-        )}
       </div>
 
       {missing && (
@@ -460,14 +487,22 @@ export function TtsSettingsSection({
               defaultLabel={
                 family === 'openai' || noVoiceList ? 'Voz padrão da API (sem voice)' : undefined
               }
+              // modelo sem lista de vozes: a dica de como preencher fica DENTRO do seletor
+              hint={
+                noVoiceList
+                  ? isFishAudioModel(tts.api.model)
+                    ? 'Este modelo não lista vozes: cole o id (ou o link) de uma voz do Fish Audio, ou use a voz padrão.'
+                    : 'Este modelo não lista vozes: digite o id de uma voz que o provedor aceite, ou use a voz padrão.'
+                  : undefined
+              }
+              searchPlaceholder={
+                noVoiceList
+                  ? isFishAudioModel(tts.api.model)
+                    ? 'Cole o id ou o link de uma voz do Fish Audio…'
+                    : 'Digite o id de uma voz…'
+                  : undefined
+              }
             />
-            {noVoiceList && (
-              <p data-testid="tts-voice-hint" className="mt-1 text-[11.5px] text-subtle">
-                {isFishAudioModel(tts.api.model)
-                  ? 'Este modelo não lista vozes: cole o id (ou o link) de uma voz do Fish Audio, ou use a voz padrão.'
-                  : 'Este modelo não lista vozes: digite o id de uma voz que o provedor aceite, ou use a voz padrão.'}
-              </p>
-            )}
           </div>
           <CallTransport tts={tts} family={family} onCommit={commit} />
           <ApiParamsEditor
@@ -483,7 +518,6 @@ export function TtsSettingsSection({
               void commit({ ...tts, api: params ? { ...rest, params } : rest })
             }}
             testId="tts-api-params"
-            persona={!!choice}
           />
         </div>
       )}
@@ -598,21 +632,34 @@ export function TtsSettingsSection({
               ? 'Parar teste'
               : 'Testar voz'}
         </Button>
-        <Button
-          size="sm"
-          variant="secondary"
-          data-testid="tts-clips-generate"
-          disabled={clips.busy}
-          onClick={runClips}
-        >
-          {choice
-            ? clips.stale || clips.count
-              ? 'Gerar clipes desta voz de novo'
-              : 'Gerar clipes desta voz'
-            : clips.stale || clips.count
-              ? 'Gerar clipes de novo'
-              : 'Gerar clipes de voz'}
-        </Button>
+        {/* estado dos clipes NO botão: faltando/desatualizados → botão de aviso (detalhe no tooltip) */}
+        <Tip label={<span className="block max-w-[300px] leading-snug">{clipsTip}</span>}>
+          <Button
+            size="sm"
+            variant={clipsState === 'ok' ? 'secondary' : 'warning'}
+            data-testid="tts-clips-generate"
+            data-clips={clipsState}
+            disabled={clips.busy}
+            icon={clipsState === 'ok' ? undefined : <TriangleAlert className="size-3.5" />}
+            onClick={runClips}
+          >
+            {clipsState === 'stale'
+              ? 'Clipes desatualizados · Gerar de novo'
+              : clipsState === 'partial'
+                ? 'Faltam clipes · Gerar de novo'
+                : clipsState === 'missing'
+                  ? choice
+                    ? 'Sem clipes · Gerar clipes desta voz'
+                    : 'Sem clipes · Gerar clipes de voz'
+                  : choice
+                    ? clips.count
+                      ? 'Gerar clipes desta voz de novo'
+                      : 'Gerar clipes desta voz'
+                    : clips.count
+                      ? 'Gerar clipes de novo'
+                      : 'Gerar clipes de voz'}
+          </Button>
+        </Tip>
         <HelpTip label="Clipes de voz">
           Os clipes (os preâmbulos da chamada de voz — &quot;Hum, deixa eu ver aqui.&quot; — e as
           frases de ferramenta — &quot;Vou pesquisar isso.&quot;) são gerados com a voz e o provedor
@@ -626,22 +673,18 @@ export function TtsSettingsSection({
           </span>
         )}
         {!clips.busy && clips.count !== null && clips.count > 0 && (
-          <span className="text-[11.5px] text-subtle" data-testid="tts-clips-count">
-            {clips.count} clipes gerados para “{currentVoiceLabel}”
-          </span>
-        )}
-        {!clips.busy && clips.count === 0 && (
-          <span className="text-[11.5px] text-warning" data-testid="tts-clips-missing">
-            {clips.staleToolOnly
-              ? `faltam clipes de “${currentVoiceLabel}” (frases de ferramenta/“obrigado por aguardar” — os preâmbulos estão em dia; sem eles, essas frases saem sintetizadas na hora) — gere de novo`
-              : clips.stale
-                ? `clipes de “${currentVoiceLabel}” desatualizados (frases ou modelo mudaram) — gere de novo`
-                : `sem clipes para “${currentVoiceLabel}”`}
-          </span>
+          <Chip
+            testId="tts-clips-count"
+            tip={`${clips.count} clipes gerados para “${currentVoiceLabel}”`}
+          >
+            {clips.count} clipes
+            <span className="sr-only"> gerados para “{currentVoiceLabel}”</span>
+          </Chip>
         )}
       </div>
       {test.state === 'playing' && (
-        <p className="text-[11.5px] text-subtle" role="status" data-testid="tts-test-playing">
+        // o botão já diz "Parar teste": o que toca só para leitor de tela
+        <p className="sr-only" role="status" data-testid="tts-test-playing">
           Tocando “Olá, isto é um teste.” com{' '}
           {isApi
             ? tts.api.model || 'o modelo'
@@ -673,11 +716,48 @@ export function TtsSettingsSection({
   )
 }
 
+const TRANSPORT_HELP =
+  'WebSocket: o texto da resposta vai para a ElevenLabs enquanto o modelo ainda escreve e o áudio começa a voltar antes de a frase terminar — o 1º som sai mais cedo e a fala flui entre frases. HTTP por frase: o app espera cada frase ficar pronta e faz uma request por frase (um pouco mais de latência, mais simples; é o que os outros provedores usam). "Testar voz" e os clipes usam sempre HTTP.'
+
 /**
- * Como a fala da CHAMADA chega do provedor: "WebSocket (texto em streaming)" na ElevenLabs direta
- * com modelo que aceita (interruptor "Streaming por WebSocket", padrão ligado) ou "HTTP por frase"
- * com o motivo. Mesma decisão do main (`elevenLabsCallOptions` ↔ `ttsCallTransport`). "Testar
- * voz" e os clipes usam sempre o REST.
+ * Como a fala da CHAMADA chega do provedor — chip ao lado do modelo: "WebSocket" (texto em
+ * streaming; ElevenLabs direta com modelo que aceita) ou "HTTP" (por frase), com o motivo e a
+ * explicação no tooltip. Mesma decisão do main (`elevenLabsCallOptions` ↔ `ttsCallTransport`).
+ */
+function TransportChip({
+  tts,
+  family
+}: {
+  tts: TtsSettings
+  family: VoiceProviderSupport | null
+}): React.JSX.Element {
+  const t = ttsCallTransport(tts.api, family)
+  const text = t.ws
+    ? 'Na chamada: WebSocket (texto em streaming)'
+    : `Na chamada: HTTP por frase${t.reason ? ` — ${t.reason}` : ''}`
+  return (
+    <Chip
+      testId="tts-call-transport"
+      data={{ ws: t.ws }}
+      tone={t.ws ? 'success' : 'neutral'}
+      tip={
+        <>
+          <span className="block font-medium text-fg">{text}.</span>
+          <span className="mt-1 block text-subtle">{TRANSPORT_HELP}</span>
+        </>
+      }
+    >
+      {t.ws ? 'WebSocket' : 'HTTP'}
+      <span className="sr-only" data-testid="tts-call-transport-text">
+        {text}
+      </span>
+    </Chip>
+  )
+}
+
+/**
+ * Interruptor "Streaming por WebSocket" (ElevenLabs direta com modelo que aceita; padrão ligado).
+ * O transporte efetivo é o chip ao lado do modelo (`TransportChip`).
  */
 function CallTransport({
   tts,
@@ -687,23 +767,9 @@ function CallTransport({
   tts: TtsSettings
   family: VoiceProviderSupport | null
   onCommit: (next: TtsSettings) => Promise<boolean>
-}): React.JSX.Element {
+}): React.JSX.Element | null {
   const t = ttsCallTransport(tts.api, family)
-  const help =
-    'WebSocket: o texto da resposta vai para a ElevenLabs enquanto o modelo ainda escreve e o áudio começa a voltar antes de a frase terminar — o 1º som sai mais cedo e a fala flui entre frases. HTTP por frase: o app espera cada frase ficar pronta e faz uma request por frase (um pouco mais de latência, mais simples; é o que os outros provedores usam). "Testar voz" e os clipes usam sempre HTTP.'
-  const line = (
-    <span data-testid="tts-call-transport-text">
-      Na chamada:{' '}
-      {t.ws ? (
-        <span className="text-success">WebSocket (texto em streaming)</span>
-      ) : (
-        <>
-          <span className="text-fg/85">HTTP por frase</span>
-          {t.reason ? ` — ${t.reason}` : ''}
-        </>
-      )}
-    </span>
-  )
+  if (!t.toggle) return null
   const setWs = (on: boolean): void => {
     // ligado = sem o campo (padrão); desligado = `false` explícito
     const { elevenLabsWs: _drop, ...api } = tts.api
@@ -711,22 +777,12 @@ function CallTransport({
     void onCommit({ ...tts, api: on ? api : { ...api, elevenLabsWs: false } })
   }
   return (
-    <div data-testid="tts-call-transport" data-ws={t.ws}>
-      {t.toggle ? (
-        <ToggleRow
-          label="Streaming por WebSocket"
-          checked={tts.api.elevenLabsWs !== false}
-          onChange={setWs}
-          help={help}
-          status={line}
-        />
-      ) : (
-        <p className="flex items-center gap-1.5 text-[11.5px] text-subtle">
-          {line}
-          <HelpTip label="Na chamada: WebSocket ou HTTP">{help}</HelpTip>
-        </p>
-      )}
-    </div>
+    <ToggleRow
+      label="Streaming por WebSocket"
+      checked={tts.api.elevenLabsWs !== false}
+      onChange={setWs}
+      help={TRANSPORT_HELP}
+    />
   )
 }
 

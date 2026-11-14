@@ -187,9 +187,6 @@ export function NewChat(): React.JSX.Element {
     >
       <div className="w-full max-w-[600px] animate-slide-up py-[9vh]">
         <h1 className="text-[24px] font-semibold tracking-tight">Novo chat</h1>
-        <p className="mt-1.5 text-[13px] text-muted">
-          Escolha uma persona ou o modelo, ajuste o system prompt e comece.
-        </p>
 
         <div className="mt-8 space-y-5">
           <div>
@@ -380,32 +377,34 @@ export function NewChat(): React.JSX.Element {
                   }
                 ] as const
               ).map((o) => (
-                <button
-                  key={o.v}
-                  type="button"
-                  data-testid={`new-chat-storage-${o.v}`}
-                  aria-pressed={chosenStorage === o.v}
-                  onClick={() => setStorage(o.v)}
-                  className={
-                    'field flex items-start gap-2.5 text-left ' +
-                    (chosenStorage === o.v
-                      ? 'border-accent/60 bg-accent-soft/40 ring-1 ring-accent/40'
-                      : 'text-muted hover:text-fg')
-                  }
-                >
-                  <span
+                // o que cada opção faz: no tooltip do cartão, não em texto à vista
+                <Tip key={o.v} label={o.text}>
+                  <button
+                    type="button"
+                    data-testid={`new-chat-storage-${o.v}`}
+                    aria-pressed={chosenStorage === o.v}
+                    onClick={() => setStorage(o.v)}
                     className={
-                      'mt-0.5 shrink-0 ' +
-                      (chosenStorage === o.v ? 'text-accent-strong' : 'text-subtle')
+                      'field flex items-start gap-2.5 text-left ' +
+                      (chosenStorage === o.v
+                        ? 'border-accent/60 bg-accent-soft/40 ring-1 ring-accent/40'
+                        : 'text-muted hover:text-fg')
                     }
                   >
-                    {o.icon}
-                  </span>
-                  <span className="min-w-0">
-                    <span className="block text-[13px] font-medium text-fg">{o.title}</span>
-                    <span className="block text-[11.5px] leading-snug text-subtle">{o.text}</span>
-                  </span>
-                </button>
+                    <span
+                      className={
+                        'mt-0.5 shrink-0 ' +
+                        (chosenStorage === o.v ? 'text-accent-strong' : 'text-subtle')
+                      }
+                    >
+                      {o.icon}
+                    </span>
+                    <span className="min-w-0 self-center">
+                      <span className="block text-[13px] font-medium text-fg">{o.title}</span>
+                      <span className="sr-only">{o.text}</span>
+                    </span>
+                  </button>
+                </Tip>
               ))}
             </div>
           </div>

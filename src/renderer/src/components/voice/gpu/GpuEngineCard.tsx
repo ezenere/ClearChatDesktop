@@ -315,7 +315,6 @@ export function GpuEngineCard({
         <GpuParamsEditor
           engineId={e.id}
           engineLabel={e.label}
-          kind={e.kind}
           value={params ?? {}}
           onChange={onParams}
           testId={`gpu-engine-params-${e.id}`}

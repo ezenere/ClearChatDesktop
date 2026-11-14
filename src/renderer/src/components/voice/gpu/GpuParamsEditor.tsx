@@ -18,8 +18,7 @@ export function GpuParamsEditor({
   extra,
   extraChanged = false,
   onRestore,
-  defaultOpen = false,
-  kind
+  defaultOpen = false
 }: {
   engineId: GpuEngineId
   engineLabel: string
@@ -37,7 +36,6 @@ export function GpuParamsEditor({
    */
   onRestore?: () => void
   defaultOpen?: boolean
-  kind: 'tts' | 'stt'
 }): React.JSX.Element | null {
   return (
     <ParamsEditor
@@ -55,11 +53,6 @@ export function GpuParamsEditor({
       extra={extra}
       extraChanged={extraChanged}
       defaultOpen={defaultOpen}
-      note={
-        kind === 'tts'
-          ? 'Vale na próxima fala (inclusive no “Testar”) — sem reiniciar o servidor.'
-          : 'Vale na próxima transcrição — sem reiniciar o servidor.'
-      }
     />
   )
 }

@@ -10,6 +10,8 @@ import { useCallTtsTagsSupport } from '../../lib/voice/audioTagsSupport'
 import { InheritChoice } from '../ui/InheritChoice'
 import { Button, Switch } from '../ui/controls'
 import { HelpTip } from '../ui/Tooltip'
+import { Chip } from '../ui/Chip'
+import { WarnNote } from './audioUi'
 
 /** Texto curto do que as tags fazem (o (?) dos editores). */
 const HELP =
@@ -54,9 +56,10 @@ export function AudioTagsField({
     <div className="space-y-1.5" data-testid="voice-call-audio-tags">
       <div className="flex flex-wrap items-center gap-2">
         <span className="flex items-center gap-1 text-[13px] text-fg/90">
-          Tags de voz (ElevenLabs v3/v4 e Fish Audio Drama 3/S2)
+          Tags de voz
           <HelpTip label="Tags de voz">
             <p>{HELP}</p>
+            <p className="mt-1.5">Funcionam com ElevenLabs v3/v4 e Fish Audio Drama 3/S2.</p>
             <p className="mt-1.5">Instrução somada ao prompt da chamada quando ligadas:</p>
             <p className="mt-1 font-mono text-[11px] whitespace-pre-wrap">{effectivePrompt}</p>
           </HelpTip>
@@ -79,14 +82,25 @@ export function AudioTagsField({
         )}
       </div>
       {on && !supported && (
-        <p data-testid="voice-call-audio-tags-unsupported" className="text-[11.5px] text-warning">
-          O modelo de voz atual{model ? ` (${model})` : ''} não interpreta tags — elas serão
-          removidas da fala.
-        </p>
+        <WarnNote testId="voice-call-audio-tags-unsupported" role="note">
+          O modelo de voz atual{model ? ` (${model})` : ''} não interpreta tags — elas saem da fala.
+        </WarnNote>
       )}
       <div className={on ? '' : 'opacity-60'}>
         <div className="mb-1 flex items-center gap-2">
           <span className="text-xs font-medium text-muted">Instrução das tags</span>
+          {prompt == null && (
+            <Chip
+              testId="voice-call-audio-tags-source"
+              tip={
+                inheritedPrompt === DEFAULT_AUDIO_TAGS_PROMPT
+                  ? 'Texto padrão do app.'
+                  : `Herdado (${inheritedFrom.toLowerCase()}).`
+              }
+            >
+              {inheritedPrompt === DEFAULT_AUDIO_TAGS_PROMPT ? 'padrão' : 'herdado'}
+            </Chip>
+          )}
           {prompt != null && (
             <Button
               size="sm"
@@ -114,13 +128,6 @@ export function AudioTagsField({
           onBlur={commit}
           className="field min-h-[72px] resize-y text-[12px] leading-relaxed"
         />
-        {prompt == null && (
-          <p className="mt-0.5 text-[11px] text-subtle">
-            {inheritedPrompt === DEFAULT_AUDIO_TAGS_PROMPT
-              ? 'Texto padrão do app.'
-              : `Herdado (${inheritedFrom.toLowerCase()}).`}
-          </p>
-        )}
       </div>
     </div>
   )

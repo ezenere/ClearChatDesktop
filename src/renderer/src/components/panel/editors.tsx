@@ -72,6 +72,7 @@ import {
 } from '../apiDocs'
 import { AppSignatureField, AppSignatureInfo } from '../AppSignatureField'
 import { AutoTextarea, Switch } from '../ui/controls'
+import { Chip } from '../ui/Chip'
 import { ModelPicker } from '../ui/ModelPicker'
 import { HelpTip } from '../ui/Tooltip'
 import {
@@ -167,7 +168,9 @@ export function ModelInfoLine({
   const m = entry.list.find((x) => x.id === model)
   if (!m) {
     return entry.status === 'ok' ? (
-      <p className="text-[11px] text-subtle">Fora da lista do provedor (ID livre).</p>
+      <div data-testid="model-info" className="flex flex-wrap gap-1">
+        <Chip tip="Fora da lista do provedor: o id vai como digitado.">ID livre</Chip>
+      </div>
     ) : null
   }
   const meta = modelMeta(m)
@@ -397,13 +400,10 @@ export function ParamsSection({
       id={sectionId}
       title={title}
       summary={paramsSummary(cfg.params)}
-      help={help}
+      help={hiddenSome ? `${help} Os que o modelo não aceita ficam ocultos.` : help}
       inherit={NUM_PARAMS.map((p) => `params.${p.key}`)}
       inheritClosed
     >
-      {hiddenSome && (
-        <p className="-mt-1 text-[11.5px] text-subtle">Os que o modelo não aceita ficam ocultos.</p>
-      )}
       <div className="space-y-1">
         {NUM_PARAMS.filter((p) => visible(p.key)).map((p) => {
           const on = cfg.params[p.key] != null
@@ -563,10 +563,12 @@ export function RootOptions({
           inherit={['sandboxBash']}
         />
       ) : (
-        <p className="text-[11.5px] leading-snug text-subtle">
-          Sandbox do shell indisponível: instale o <span className="font-mono">bubblewrap</span>{' '}
-          (bwrap) para isolar o terminal na raiz.
-        </p>
+        <div className="flex items-center gap-2 text-[13px] text-fg/50">
+          Shell em sandbox
+          <Chip tip="Sandbox do shell indisponível: instale o bubblewrap (bwrap) para isolar o terminal na raiz.">
+            sem bwrap
+          </Chip>
+        </div>
       )}
       <ToggleRow
         label="Bloco de ambiente"
@@ -731,9 +733,9 @@ function OtherToolsGroup({
         <span className="text-[11px] font-medium tracking-wide text-subtle uppercase">
           Memória e skills
         </span>
-        <span className="min-w-0 flex-1 text-[11px] leading-snug text-faint">
+        <HelpTip label="Memória e skills">
           Vão quando a memória/as skills estão ligadas (seções próprias).
-        </span>
+        </HelpTip>
       </div>
       <div className="-mx-1.5 mt-1 space-y-px">
         {[...MEMORY_TOOL_NAMES, ...SKILL_TOOL_NAMES].map((t) => (
@@ -815,9 +817,13 @@ function ToolSearchLocalMark({
 }): React.JSX.Element | null {
   if (!view || view.mode === 'off' || isNativeMode(view.mode)) return null
   return (
-    <span data-testid="tool-search-local-mark" className="text-warning/90">
-      Versão local do app — este endpoint não tem busca nativa (detalhes no ?).
-    </span>
+    <Chip
+      testId="tool-search-local-mark"
+      tone="warning"
+      tip="Versão local do app — este endpoint não tem busca nativa (detalhes no ?)."
+    >
+      versão local
+    </Chip>
   )
 }
 
@@ -878,13 +884,15 @@ export function ToolsListSection({
           }
           checked={compact}
           onChange={(toolsCompact) => patch({ toolsCompact })}
-          info={<CompactToolsInfo view={view} />}
-          inherit={['toolsCompact']}
-          status={
-            compact && view && view.mode !== 'off' && !native ? (
-              <ToolSearchLocalMark view={view} />
-            ) : undefined
+          info={
+            <span className="inline-flex items-center gap-1.5">
+              <CompactToolsInfo view={view} />
+              {compact && view && view.mode !== 'off' && !native && (
+                <ToolSearchLocalMark view={view} />
+              )}
+            </span>
           }
+          inherit={['toolsCompact']}
         />
       </div>
       <div className="-mx-1.5 space-y-px">
@@ -962,11 +970,13 @@ export function ToolsPromptSection({ cfg, patch }: CfgProps): React.JSX.Element 
       />
       {cfg.toolsInPrompt && (
         <div className="animate-fade-in">
-          <div className="mb-1 flex items-center text-[11px] text-subtle">
-            {cfg.toolsPromptText == null
-              ? 'Texto padrão (gerado das tools habilitadas)'
-              : 'Texto personalizado'}
-            <InheritMark units={['toolsPromptText']} className="ml-1.5" />
+          <div className="mb-1 flex items-center gap-1.5">
+            {cfg.toolsPromptText == null ? (
+              <Chip tip="Gerado das tools habilitadas">texto padrão</Chip>
+            ) : (
+              <Chip tone="accent">personalizado</Chip>
+            )}
+            <InheritMark units={['toolsPromptText']} />
             {cfg.toolsPromptText != null && (
               <span className="ml-auto">
                 <RestoreButton onClick={() => patch({ toolsPromptText: null })} />
@@ -1081,10 +1091,12 @@ export function LimitsSection({ cfg, patch }: CfgProps): React.JSX.Element {
     >
       <div className="flex items-center gap-2.5">
         <div className="min-w-0 flex-1">
-          <div className="text-[13px] text-fg/90">Saída máx. por ferramenta</div>
-          <p className="mt-0.5 text-[11.5px] text-subtle">
-            caracteres · ≈ {formatTokens(approxTokens(max))} tokens por resultado
-          </p>
+          <div className="flex items-center gap-1.5 text-[13px] text-fg/90">
+            Saída máx. por ferramenta
+            <Chip tip="Caracteres; o equivalente aproximado em tokens por resultado de tool.">
+              ≈ {formatTokens(approxTokens(max))} tokens
+            </Chip>
+          </div>
         </div>
         <NumberInput
           value={cfg.maxToolOutputChars ?? LIMITS.maxToolOutputChars}
@@ -1126,16 +1138,16 @@ function SpillField({ max }: { max: number }): React.JSX.Element {
         <div className="flex items-center gap-1.5 text-[13px] text-fg/90">
           Salvar em arquivo acima de
           <HelpTip label="Salvar em arquivo acima de">
-            Acima disso o modelo recebe um trecho e o caminho do arquivo com a saída completa. Vale
-            para todos os chats.
+            Acima disso (em caracteres) o modelo recebe um trecho e o caminho do arquivo com a saída
+            completa. Vale para todos os chats.
           </HelpTip>
+          <Chip tip="Setting global: vale para todos os chats.">global</Chip>
+          {effective < (value ?? LIMITS.spillThresholdChars) && (
+            <Chip tone="warning" tip="Limitado pela saída máx. por ferramenta deste chat.">
+              aqui {effective.toLocaleString('pt-BR')}
+            </Chip>
+          )}
         </div>
-        <p className="mt-0.5 text-[11.5px] text-subtle">
-          caracteres · global (todos os chats)
-          {effective < (value ?? LIMITS.spillThresholdChars)
-            ? ` · neste chat vale ${effective.toLocaleString('pt-BR')} (saída máx.)`
-            : ''}
-        </p>
       </div>
       <NumberInput
         value={value ?? LIMITS.spillThresholdChars}

@@ -42,7 +42,8 @@ import {
   type LocalModelAction
 } from '../../lib/voice/modelList'
 import { useStore } from '../../store'
-import { Button, IconButton } from '../ui/controls'
+import { Chip } from '../ui/Chip'
+import { Button, IconButton, Label } from '../ui/controls'
 import { Popover } from '../ui/layers'
 import { ModelPicker, type ModelPickerSource } from '../ui/ModelPicker'
 import { WarnNote } from './audioUi'
@@ -100,8 +101,14 @@ export function VoiceModelField({
   testId,
   family = null,
   recommended,
-  localGroups = []
+  localGroups = [],
+  help,
+  chips
 }: {
+  /** Ajuda estática do campo (o (?) do rótulo "Modelo"; a origem da lista entra junto). */
+  help?: ReactNode
+  /** Chips com fatos do modelo escolhido (tags, transporte…) à direita do rótulo. */
+  chips?: ReactNode
   capability: VoiceCapability
   catalogs: VoiceCatalogs
   /** Provedores cadastrados (filtrados pela capacidade aqui). */
@@ -202,8 +209,56 @@ export function VoiceModelField({
   const fail = local ? null : (state.error ?? catalog?.error ?? null)
   const localSel = local ? localByKey.get(`${pid}\u0000${cur}`) : undefined
 
+  // de onde vem a lista (fato estático da fonte) → dentro do (?) do campo, não uma linha à vista
+  const listFact =
+    !state.loading && catalog && models.length > 0
+      ? `${models.length} modelos${
+          catalog.source === 'static'
+            ? ' (lista embutida)'
+            : catalog.source !== 'none'
+              ? ` listados pelo ${FAMILY_LABEL[catalog.source]}`
+              : ''
+        }${curated ? ' · só os testados para a chamada' : ''}.`
+      : null
+  const listHint = catalog?.hint && !state.loading ? catalog.hint : null
   return (
     <div>
+      <Label
+        help={
+          help || listFact || listHint ? (
+            <>
+              {help && <p>{help}</p>}
+              {listFact && <p data-testid="voice-catalog-count">{listFact}</p>}
+              {listHint && <p data-testid="voice-catalog-hint">{listHint}</p>}
+              {!usable.length && (
+                <p>
+                  Provedores que servem {what}: OpenRouter, OpenAI, Groq
+                  {capability === 'tts' ? ', ElevenLabs' : ''} ou um servidor local
+                  OpenAI-compatível (Configurações → Provedores).
+                </p>
+              )}
+            </>
+          ) : undefined
+        }
+        hint={
+          (state.loading || chips) && (
+            <span className="flex items-center gap-1" data-testid={`${testId}-chips`}>
+              {state.loading && (
+                <Chip
+                  testId="voice-catalog-loading"
+                  icon={<LoaderCircle aria-hidden className="size-3 animate-spin" />}
+                  tip="Buscando a lista de modelos no provedor"
+                >
+                  buscando
+                </Chip>
+              )}
+              {chips}
+            </span>
+          )
+        }
+      >
+        Modelo
+      </Label>
       <ModelPicker
         value={pid && cur ? { providerId: pid, model: cur } : null}
         onChange={(ref) => {
@@ -246,20 +301,16 @@ export function VoiceModelField({
       />
       <div className="mt-1.5 space-y-1 empty:hidden">
         {!usable.length && (
-          <p
-            className="flex flex-wrap items-center gap-x-1.5 text-[11.5px] text-subtle"
+          <Button
+            size="sm"
+            variant="warning"
             data-testid={`${testId}-empty`}
+            icon={<Settings2 className="size-3.5" />}
+            title={`Cadastre um provedor que sirva ${what} em Configurações → Provedores`}
+            onClick={() => setSettingsOpen(true, 'providers')}
           >
-            Nenhum provedor cadastrado serve {what}. Cadastre o OpenRouter, a OpenAI, o Groq
-            {capability === 'tts' ? ', o ElevenLabs' : ''} ou um servidor local OpenAI-compatível em
-            <button
-              type="button"
-              onClick={() => setSettingsOpen(true, 'providers')}
-              className="inline-flex items-center gap-1 text-accent-strong hover:underline"
-            >
-              <Settings2 className="size-3" /> Provedores
-            </button>
-          </p>
+            Nenhum provedor serve {what} · Cadastrar
+          </Button>
         )}
         {localSel && !localSel.installed && (
           <WarnNote testId={`${testId}-local-missing`}>
@@ -274,32 +325,8 @@ export function VoiceModelField({
             .
           </WarnNote>
         )}
-        {state.loading && (
-          <p
-            className="flex items-center gap-1 text-[11.5px] text-subtle"
-            data-testid="voice-catalog-loading"
-          >
-            <LoaderCircle className="size-3 animate-spin" /> buscando modelos no provedor…
-          </p>
-        )}
-        {!state.loading && catalog && models.length > 0 && (
-          <p className="text-[11.5px] text-subtle" data-testid="voice-catalog-count">
-            {models.length} modelos
-            {catalog.source === 'static'
-              ? ' (lista embutida)'
-              : catalog.source !== 'none'
-                ? ` listados pelo ${FAMILY_LABEL[catalog.source]}`
-                : ''}
-            {curated ? ' · só os testados para a chamada' : ''}
-          </p>
-        )}
         {fail && !state.loading && (
           <WarnNote testId="voice-catalog-error">Não foi possível listar modelos: {fail}</WarnNote>
-        )}
-        {catalog?.hint && !state.loading && (
-          <p className="text-[11.5px] text-subtle" data-testid="voice-catalog-hint">
-            {catalog.hint}
-          </p>
         )}
         {untested && (
           <WarnNote testId={`${testId}-untested`} role="note">
@@ -404,8 +431,14 @@ export function VoicePicker({
   optionTestId = 'voice-option',
   previewTestId = 'voice-preview',
   label = 'Voz da fala',
-  placeholder = 'Escolha uma voz…'
+  placeholder = 'Escolha uma voz…',
+  hint,
+  searchPlaceholder
 }: {
+  /** Dica de como preencher (ex.: modelo sem lista de vozes) — no topo da lista, não abaixo do campo. */
+  hint?: string
+  /** Placeholder da busca (padrão: buscar por nome/idioma/sotaque). */
+  searchPlaceholder?: string
   groups: VoicePickerGroup[]
   value: string | null
   onChange: (voice: string | null) => void
@@ -501,7 +534,17 @@ export function VoicePicker({
                 {current.badges}
               </>
             ) : value ? (
-              <span className="truncate font-mono text-[12px]">{value}</span>
+              <>
+                <span className="truncate font-mono text-[12px]">{value}</span>
+                {all.length > 0 && (
+                  <Chip
+                    testId={`${testId}-custom-note`}
+                    tip="Voz por id (fora da lista do provedor)."
+                  >
+                    id
+                  </Chip>
+                )}
+              </>
             ) : (
               <span className="text-subtle">{defaultLabel ?? placeholder}</span>
             )}
@@ -516,11 +559,6 @@ export function VoicePicker({
         {(current || value) &&
           previewBtn(current?.id ?? value!, current?.label ?? value!, `${testId}-preview-current`)}
       </div>
-      {value && !current && all.length > 0 && (
-        <p className="mt-1 text-[11.5px] text-subtle" data-testid={`${testId}-custom-note`}>
-          Voz por id (fora da lista do provedor).
-        </p>
-      )}
       <Popover
         open={open}
         onClose={() => setOpen(false)}
@@ -537,9 +575,10 @@ export function VoicePicker({
               aria-label="Buscar voz"
               data-testid={`${testId}-search`}
               placeholder={
-                allowFree
+                searchPlaceholder ??
+                (allowFree
                   ? 'Buscar por nome, idioma ou sotaque — ou digitar um ID…'
-                  : 'Buscar por nome, idioma ou sotaque…'
+                  : 'Buscar por nome, idioma ou sotaque…')
               }
               onChange={(e) => setQuery(e.target.value)}
               onKeyDown={(e) => {
@@ -553,6 +592,14 @@ export function VoicePicker({
               className="h-10 min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-subtle"
             />
           </div>
+          {hint && !q && (
+            <p
+              data-testid={`${testId}-hint`}
+              className="shrink-0 border-b border-border/60 px-3 py-2 text-[11.5px] leading-snug text-subtle"
+            >
+              {hint}
+            </p>
+          )}
           <div role="listbox" aria-label="Vozes" className="min-h-0 flex-1 overflow-y-auto pb-1">
             {defaultLabel && !q && (
               <button

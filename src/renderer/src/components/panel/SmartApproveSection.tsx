@@ -29,9 +29,10 @@ import { cn } from '../../lib/format'
 import { useStore } from '../../store'
 import { SmartApproveLine } from '../chat/SmartApprove'
 import { AutoTextarea, Button } from '../ui/controls'
+import { Chip } from '../ui/Chip'
 import { ModelPicker } from '../ui/ModelPicker'
 import { Select } from '../ui/Select'
-import { ApiInfo, C, Tip } from '../ui/Tooltip'
+import { ApiInfo, C, HelpTip, Tip } from '../ui/Tooltip'
 import { PlaceholderList } from '../ui/PlaceholderList'
 import { smartAdvancedSummary, smartApproveSummary } from '../../lib/configSummary'
 import type { CfgProps } from './editors'
@@ -242,7 +243,9 @@ export function SmartApproveSection({
         <ModelPicker
           className="min-w-0 flex-1"
           value={hasModel ? { providerId: sa.providerId!, model: sa.model! } : null}
-          placeholder="Nenhum"
+          placeholder={
+            smartItems.length ? 'Nenhum' : 'Escolha um modelo para poder usar o modo Smart-Approve'
+          }
           onChange={(ref) => set({ providerId: ref.providerId, model: ref.model })}
         />
         {hasModel && (
@@ -259,26 +262,33 @@ export function SmartApproveSection({
         )}
       </div>
 
-      <div
-        data-testid="smart-approve-hint"
-        className={cn(
-          'flex items-start gap-1.5 text-[11.5px] leading-snug',
-          !hasModel && smartItems.length ? 'text-warning/90' : 'text-subtle'
-        )}
-      >
-        {!hasModel && smartItems.length > 0 && (
+      {/* sem modelo e com itens em Smart: aviso curto (a ação é o seletor acima); com modelo, o
+          que o juiz decide vira chip; sem itens, a dica fica no placeholder do seletor */}
+      {!hasModel && smartItems.length > 0 ? (
+        <div
+          data-testid="smart-approve-hint"
+          className="flex items-start gap-1.5 text-[11.5px] leading-snug text-warning/90"
+        >
           <AlertTriangle className="mt-px size-3.5 shrink-0" />
-        )}
-        <span data-testid="smart-items">
-          {!hasModel
-            ? smartItems.length
-              ? `Escolha um modelo: sem ele, ${joinItems(smartItems)} ${smartItems.length > 1 ? 'pedem' : 'pede'} sua confirmação.`
-              : 'Escolha um modelo para poder usar o modo Smart-Approve nos itens acima.'
-            : smartItems.length
-              ? `Decide: ${joinItems(smartItems)}.`
-              : 'Nenhum item está no modo Smart-Approve (seção Aprovações acima).'}
-        </span>
-      </div>
+          <span data-testid="smart-items">
+            {`Escolha um modelo: sem ele, ${joinItems(smartItems)} ${smartItems.length > 1 ? 'pedem' : 'pede'} sua confirmação.`}
+          </span>
+        </div>
+      ) : (
+        hasModel && (
+          <div data-testid="smart-approve-hint">
+            <Chip
+              testId="smart-items"
+              tone={smartItems.length ? 'accent' : 'neutral'}
+              tip="Itens que estão no modo Smart-Approve (seção Aprovações acima)."
+            >
+              {smartItems.length
+                ? `Decide: ${joinItems(smartItems)}.`
+                : 'Nenhum item está no modo Smart-Approve.'}
+            </Chip>
+          </div>
+        )
+      )}
 
       <SideThinkingField
         providerId={sa.providerId}
@@ -502,11 +512,14 @@ export function SmartApproveSection({
               >
                 Testar
               </Button>
-              <span className="text-[11px] text-faint">
-                {argsError
-                  ? 'JSON inválido'
-                  : 'Contexto de exemplo: “As dependências do projeto estão quebradas, reinstale.”'}
-              </span>
+              {argsError ? (
+                <span className="text-[11px] text-danger/90">JSON inválido</span>
+              ) : (
+                <HelpTip label="Testar">
+                  Manda a chamada de exemplo ao juiz com o contexto de exemplo “As dependências do
+                  projeto estão quebradas, reinstale.”
+                </HelpTip>
+              )}
             </div>
             {testError && <p className="text-[11.5px] text-danger/90">{testError}</p>}
             {testResult && (

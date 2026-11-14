@@ -349,6 +349,9 @@ async function main(): Promise<void> {
   writeFileSync(
     mainJs,
     `const { app, BrowserWindow } = require('electron')
+// nunca o microfone real: dispositivo falso do Chromium
+app.commandLine.appendSwitch('use-fake-device-for-media-stream')
+app.commandLine.appendSwitch('use-fake-ui-for-media-stream')
 app.setPath('userData', ${JSON.stringify(join(BASE, 'user-data'))})
 app.whenReady().then(() => {
   const win = new BrowserWindow({ width: 1280, height: 820, useContentSize: true, backgroundColor: '#0d0d10', show: true })

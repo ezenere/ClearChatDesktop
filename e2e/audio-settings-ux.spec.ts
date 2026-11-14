@@ -201,7 +201,12 @@ app.on('window-all-closed', () => app.quit())
         await page.getByTestId('stt-model').innerText(),
         /Groq[\s\S]*whisper-large-v3-turbo/
       )
-      await waitFor(async () => (await count('voice-catalog-count')) > 0, 3000, 'modelos do Groq')
+      // a origem da lista ("N modelos listados pelo …") mora no (?) do campo Modelo
+      await waitFor(
+        async () => (await count('voice-catalog-loading')) === 0,
+        3000,
+        'modelos do Groq'
+      )
       const groups = await pickerGroups('stt-model')
       const joined = groups.join(' | ')
       for (const want of ['OpenRouter', 'Groq'])
@@ -390,7 +395,8 @@ app.on('window-all-closed', () => app.quit())
         .getByRole('listbox', { name: 'Modelos' })
         .locator('[role=option][data-provider="Local (CPU)"][data-model="mock-whisper-tiny"]')
         .click()
-      await page.getByTestId('stt-local').waitFor()
+      // modelo local instalado: chip "CPU · <modelo>" ao lado do rótulo Modelo (sem linha solta)
+      await page.getByTestId('stt-local-current').waitFor()
       assert.match(await page.getByTestId('stt-local-current').innerText(), /Whisper tiny \(mock\)/)
       assert.equal(await count('stt-api-params'), 0, 'sem parâmetros remotos no local')
       assert.equal(await hybrid.count(), 0, 'sem híbrido com modelo local escolhido')
@@ -556,7 +562,8 @@ app.on('window-all-closed', () => app.quit())
     assert.equal(await count('tts-error'), 0)
     await page.getByTestId('tts-clips-generate').click()
     await page.getByTestId('tts-clips-count').waitFor({ timeout: 6000 })
-    const t = await page.getByTestId('tts-clips-count').innerText()
+    // chip "42 clipes"; a voz fica no tooltip/leitor de tela
+    const t = ((await page.getByTestId('tts-clips-count').textContent()) ?? '').replace(/\s+/g, ' ')
     // 12 preâmbulos + 26 frases de ferramenta + 4 "obrigado por aguardar"
     assert.match(t, /42 clipes gerados para “minha-voz-clonada”/)
     return t
@@ -895,18 +902,22 @@ app.on('window-all-closed', () => app.quit())
       // escolher uma voz própria: os mesmos seletores de Áudio (modo da persona)
       await dialog().getByTestId('tts-choice-custom').click()
       await dialog().getByTestId('tts-choice-section').waitFor()
-      assert.match(await cur.innerText(), /^Voz própria desta persona: Kokoro · pf_dora/)
+      // com voz própria os campos dizem qual é (sem a linha "Voz própria desta persona: …")
+      assert.equal(await count('tts-choice-current'), 0, 'sem linha repetindo a escolha')
+      assert.match(await dialog().getByTestId('tts-model').innerText(), /Kokoro/)
       assert.equal(await count('tts-gpu-steps'), 0, 'passos da GPU são do dispositivo')
       // a voz da persona: ElevenLabs Flash pelo OpenRouter (provedor cadastrado aqui)
       await pickModel(page, dialog().getByTestId('tts-model'), 'elevenlabs/eleven-flash-v2.5', {
         provider: 'OpenRouter'
       })
       await waitFor(
-        async () => /OpenRouter/.test(await cur.innerText()),
+        async () =>
+          /OpenRouter[\s\S]*Eleven/i.test(await dialog().getByTestId('tts-model').innerText()),
         3000,
         'voz própria na API'
       )
-      assert.match(await cur.innerText(), /Voz própria desta persona: OpenRouter · .*eleven/i)
+      // com voz própria, os campos já dizem qual é: sem a linha "Voz própria desta persona: …"
+      assert.equal(await count('tts-choice-current'), 0, 'sem linha repetindo a escolha')
       // "Gerar clipes desta voz" (só com o clique — nunca sozinho)
       const gen = dialog().getByTestId('tts-clips-generate')
       assert.match(await gen.innerText(), /Gerar clipes desta voz/)
@@ -924,9 +935,10 @@ app.on('window-all-closed', () => app.quit())
         .click()
       await dialog().getByTestId('stt-choice-language').waitFor()
       assert.match(
-        await dialog().getByTestId('stt-choice-current').innerText(),
-        /Transcrição própria desta persona: .* · en-US/
+        await dialog().getByRole('button', { name: 'Idioma da transcrição' }).innerText(),
+        /Inglês \(EUA\)/
       )
+      assert.equal(await count('stt-choice-current'), 0, 'sem linha repetindo a escolha')
       // voltar a herdar
       await dialog().getByTestId('tts-choice-inherit').click()
       assert.match(await cur.innerText(), /^Usando a voz padrão deste dispositivo/)
@@ -971,7 +983,13 @@ app.on('window-all-closed', () => app.quit())
       await openAudio('chat')
       const call = dialog().getByTestId('voice-call-settings')
       await call.getByTestId('voice-call-audio-tags').waitFor()
-      await call.getByTestId('voice-call-no-hidden-prompt').waitFor()
+      // a nota de transparência mora no (?) da seção (não é mais uma linha solta)
+      await call.getByRole('button', { name: 'Ajuda: Chamada de voz' }).first().hover()
+      await page
+        .getByTestId('help-tip-content')
+        .getByTestId('voice-call-no-hidden-prompt')
+        .waitFor()
+      await page.mouse.move(2, 2)
       assert.equal(await count('voice-call-prompt-preview'), 0, 'sem a prévia no global')
       await page.keyboard.press('Escape')
       await dialog()
@@ -990,13 +1008,11 @@ app.on('window-all-closed', () => app.quit())
         3000,
         'fallback'
       )
+      // chip curto no cabeçalho ("usa o padrão daqui"), o motivo no tooltip/leitor de tela
+      assert.match(await av.innerText(), /usa o padrão daqui/)
       assert.match(
         await av.innerText(),
         /Não disponível neste dispositivo — usa o padrão deste dispositivo \(Kokoro · pf_dora\): o provedor escolhido não existe neste dispositivo/
-      )
-      assert.match(
-        await dialog().getByTestId('tts-choice-current').innerText(),
-        /Voz própria desta persona: provedor que não existe aqui · elevenlabs\/eleven-flash-v2.5 · sarah/
       )
       assert.equal(
         await dialog().getByTestId('stt-choice-availability').getAttribute('data-state'),
@@ -1042,7 +1058,7 @@ app.on('window-all-closed', () => app.quit())
       )
       await panel.getByTestId('tts-choice-custom').click()
       await panel.getByTestId('tts-choice-section').waitFor()
-      assert.match(await cur.innerText(), /^Voz própria deste chat:/)
+      assert.equal(await panel.getByTestId('tts-choice-current').count(), 0, 'sem linha repetida')
       assert.match(
         await panel.getByTestId('tts-choice-inherit').innerText(),
         /Voltar a usar a voz da persona/

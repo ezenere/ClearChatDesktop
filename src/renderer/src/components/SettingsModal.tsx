@@ -7,7 +7,7 @@ import type { Provider } from '@shared/types'
 import { api, errorMessage } from '../lib/api'
 import { shortPath } from '../lib/format'
 import { useStore, type SettingsTab, type SettingsTarget } from '../store'
-import { PresetEditor, PresetsList } from './presets/PresetsSettings'
+import { PresetEditor, PresetsHelp, PresetsList } from './presets/PresetsSettings'
 import { PresetIcon } from './presets/PresetIcon'
 import { ModelFieldInfo, SystemPromptInfo } from './apiDocs'
 import { ProviderFields, TestButton, TestResult } from './ProviderForm'
@@ -18,9 +18,9 @@ import { ModelPicker } from './ui/ModelPicker'
 import { Select } from './ui/Select'
 import { HelpTip } from './ui/Tooltip'
 import { ModelInfoLine } from './panel/editors'
-import { ApprovalsSettings } from './approvals/ApprovalsSettings'
+import { ApprovalsHelp, ApprovalsSettings } from './approvals/ApprovalsSettings'
 import { WebSearchSettings } from './web/WebSearchSettings'
-import { MemorySettings } from './memory/MemorySettings'
+import { MemoryHelp, MemorySettings } from './memory/MemorySettings'
 import { SkillsSettings } from './skills/SkillsSettings'
 import { AccountSettings } from './sync/AccountSettings'
 import { VersionFooter } from './UpdateNotice'
@@ -207,17 +207,16 @@ function DefaultsSection(): React.JSX.Element {
       <div className="flex items-center gap-1.5 text-xs leading-relaxed text-subtle">
         Padrões de chats novos
         <HelpTip label="Padrões de chats novos">
-          Valem para os campos que a persona não define (a persona “Padrão” não define nenhum) e
-          quando não há persona.
+          <p>
+            Valem para os campos que a persona não define (a persona “Padrão” não define nenhum) e
+            quando não há persona.
+          </p>
+          <p data-testid="defaults-inherit-note">
+            Personas que não definem um campo usam estes padrões — e os chats delas também, ao vivo:
+            mudar aqui muda esses chats (menos os campos que um chat mudou para si).
+          </p>
         </HelpTip>
       </div>
-      <p
-        data-testid="defaults-inherit-note"
-        className="-mt-2 text-[11.5px] leading-snug text-subtle"
-      >
-        Personas que não definem um campo usam estes padrões — e os chats delas também, ao vivo:
-        mudar aqui muda esses chats (menos os campos que um chat mudou para si).
-      </p>
       <div>
         <Label info={<ModelFieldInfo />}>Modelo padrão</Label>
         <ModelPicker
@@ -354,6 +353,17 @@ export function SettingsModal(): React.JSX.Element {
             >
               {item.label}
             </h3>
+            {/* a introdução de cada página mora no (?) ao lado do título (sem linha solta) */}
+            {tab === 'providers' && (
+              <HelpTip label="Provedores">
+                Endpoints compatíveis com a API da OpenAI (chat/completions), OpenRouter ou a API
+                nativa da Anthropic — e provedores só de voz (ElevenLabs), usados em Configurações →
+                Áudio.
+              </HelpTip>
+            )}
+            {tab === 'presets' && !editingPreset && <PresetsHelp />}
+            {tab === 'approvals' && <ApprovalsHelp />}
+            {tab === 'memory' && <MemoryHelp />}
             {tab === 'audio' && <AudioTitleAside />}
           </div>
           <SettingsPanel
@@ -393,10 +403,6 @@ function SettingsPanel({
         <AccountSettings />
       ) : tab === 'providers' ? (
         <div className="space-y-2.5">
-          <p className="mb-3 text-xs text-subtle">
-            Endpoints compatíveis com a API da OpenAI (chat/completions), OpenRouter ou a API nativa
-            da Anthropic — e provedores só de voz (ElevenLabs), usados em Configurações → Áudio.
-          </p>
           {providers.map((p) =>
             editing === p.id ? (
               <ProviderEditor key={p.id} provider={p} onDone={() => setEditing(null)} />

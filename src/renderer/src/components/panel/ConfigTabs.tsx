@@ -11,6 +11,7 @@ import { isBusy, useStore } from '../../store'
 import { ContextWindowInfo, RootInfo } from '../apiDocs'
 import { PresetIcon } from '../presets/PresetIcon'
 import { SavePresetDialog } from '../presets/SavePresetDialog'
+import { Chip } from '../ui/Chip'
 import { Button } from '../ui/controls'
 import { Select } from '../ui/Select'
 import { ChatInheritProvider } from './inherit'
@@ -124,6 +125,13 @@ function ChatInfoSection({ chat }: { chat: Chat }): React.JSX.Element {
       description: 'Congela os valores atuais; não acompanha nenhuma persona'
     }
   ]
+  const inheritTip = inh
+    ? `Segue “${inh.personaName}” ao vivo: o que você não mudou aqui acompanha a persona (e, onde ela não define, “Novos chats”). Os campos deste chat ficam marcados com “neste chat”.`
+    : legacy
+      ? `Cópia de “${origin?.name ?? ''}” feita na criação — passa a herdar ao vivo na próxima sincronização.`
+      : presetId && !origin
+        ? 'A persona deste chat não existe neste dispositivo: valem os valores do próprio chat.'
+        : 'Sem persona: todos os valores são deste chat. Escolha uma para herdar dela ao vivo (os campos que você mudou continuam deste chat).'
   const pick = (v: string): void => {
     if (v === (presetId ?? NO_PERSONA)) return
     if (v === NO_PERSONA) {
@@ -202,47 +210,38 @@ function ChatInfoSection({ chat }: { chat: Chat }): React.JSX.Element {
           </div>
         </div>
       ) : (
-        <p data-testid="persona-inherit-note" className="text-[11.5px] leading-snug text-subtle">
-          {inh ? (
+        // estado da herança como chip (explicação no tooltip); à vista só o que pede ação
+        <div data-testid="persona-inherit-note" className="flex flex-wrap items-center gap-2">
+          <Chip
+            tone={inh ? 'accent' : presetId && !origin ? 'warning' : 'neutral'}
+            tip={inheritTip + (viewer ? ' A troca é feita no dispositivo que guarda o chat.' : '')}
+          >
+            {inh
+              ? 'segue ao vivo'
+              : legacy
+                ? 'cópia da criação'
+                : presetId && !origin
+                  ? 'persona ausente'
+                  : 'sem persona'}
+            <span className="sr-only"> — {inheritTip}</span>
+          </Chip>
+          {inh && own.length > 0 && (
             <>
-              Segue “{inh.personaName}” ao vivo: o que você não mudou aqui acompanha a persona (e,
-              onde ela não define, “Novos chats”).{' '}
-              {own.length ? (
-                <>
-                  <span className="text-accent-strong">
-                    {own.length === 1 ? '1 campo é' : `${own.length} campos são`} deste chat
-                  </span>{' '}
-                  (marcados com <RotateCcw aria-hidden className="inline size-2.5" /> neste chat).{' '}
-                  <button
-                    type="button"
-                    data-testid="inherit-revert-all"
-                    onClick={() => inh.revert(own)}
-                    className="text-accent-strong hover:underline"
-                  >
-                    Voltar a herdar tudo
-                  </button>
-                </>
-              ) : (
-                'Nenhum campo próprio deste chat.'
-              )}
-            </>
-          ) : legacy ? (
-            <>
-              Cópia de “{origin?.name}” feita na criação — passa a herdar ao vivo na próxima
-              sincronização.
-            </>
-          ) : presetId && !origin ? (
-            <>
-              A persona deste chat não existe neste dispositivo: valem os valores do próprio chat.
-            </>
-          ) : (
-            <>
-              Sem persona: todos os valores são deste chat. Escolha uma para herdar dela ao vivo (os
-              campos que você mudou continuam deste chat).
+              <span className="text-[11.5px] text-accent-strong">
+                {own.length === 1 ? '1 campo é' : `${own.length} campos são`} deste chat
+              </span>
+              <button
+                type="button"
+                data-testid="inherit-revert-all"
+                onClick={() => inh.revert(own)}
+                className="inline-flex items-center gap-1 text-[11.5px] text-accent-strong hover:underline"
+              >
+                <RotateCcw aria-hidden className="size-3" />
+                Voltar a herdar tudo
+              </button>
             </>
           )}
-          {viewer && ' A troca é feita no dispositivo que guarda o chat.'}
-        </p>
+        </div>
       )}
       <SavePresetDialog
         open={saveOpen}
@@ -357,17 +356,14 @@ function ContextSection({ chat }: { chat: Chat }): React.JSX.Element {
           icon={<Layers className="size-3.5 text-accent-strong" />}
           onClick={() => session && void compact(session.id)}
         >
-          {compacting?.state === 'scheduled'
-            ? 'Compactação agendada'
-            : session && isBusy(session.status)
-              ? 'Compactar no próximo passo'
-              : 'Compactar agora'}
+          {isSub
+            ? 'Subagentes compactam sozinhos'
+            : compacting?.state === 'scheduled'
+              ? 'Compactação agendada'
+              : session && isBusy(session.status)
+                ? 'Compactar no próximo passo'
+                : 'Compactar agora'}
         </Button>
-        {isSub && (
-          <p className="-mt-1 text-center text-[11px] text-subtle">
-            Subagentes compactam sozinhos ao atingir o limite.
-          </p>
-        )}
       </CollapsibleSection>
       <ContextSettingsSection cfg={c} patch={patch} knownWindow={info.window} info={false} />
     </>

@@ -58,11 +58,6 @@ export function LocalModelsScreen({
         >
           <ArrowLeft className="size-3.5" /> Áudio
         </button>
-        <p className="text-xs leading-relaxed text-subtle">
-          Transcrição e fala que rodam no seu computador — sem internet na hora de usar e sem o
-          áudio/texto sair daqui. Os instalados aparecem no seletor de Modelo de Transcrição e de
-          Fala (grupos “Local (CPU)” e “Local (GPU)”).
-        </p>
       </div>
 
       <AudioSection

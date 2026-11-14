@@ -16,7 +16,7 @@ import type { Chat } from '@shared/types'
 import { cn } from '../../lib/format'
 import { inheritEnvFrom, unitLabel, unitValueText } from '../../lib/inherit'
 import { useStore } from '../../store'
-import { Tip } from '../ui/Tooltip'
+import { HelpTip, Tip } from '../ui/Tooltip'
 import { InheritContext as Ctx, useInherit, type InheritCtx } from './inheritContext'
 
 /** Provê a herança do chat aos editores de dentro (só quando ela vale aqui). */
@@ -65,13 +65,16 @@ export function ChatInheritProvider({
         >
           <span className="min-w-0 flex-1">
             Campos sem marca seguem <span className="text-fg/85">“{value.personaName}”</span> ao
-            vivo;{' '}
+            vivo
+          </span>
+          <HelpTip label="Herança da persona">
+            Os campos que você mudou neste chat ficam marcados com{' '}
             <span className="inline-flex -translate-y-px items-center gap-0.5 rounded border border-accent/25 bg-accent-soft/60 px-1 text-[10px] text-accent-strong align-middle">
               <RotateCcw aria-hidden className="size-2" />
               neste chat
             </span>{' '}
-            = deste chat (clique para voltar a herdar).
-          </span>
+            — clique na marca para voltar a herdar.
+          </HelpTip>
         </div>
       )}
       {children}

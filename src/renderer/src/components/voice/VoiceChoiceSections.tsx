@@ -1,9 +1,9 @@
 // Voz da persona/chat (protocolo 1.9.0 — `config.voice.tts`/`.stt`): as seções "Fala" e
 // "Transcrição" da aba Voz (painel do chat e editor de personas). Sem opção "herdar/padrão"
-// duplicada: cada seção diz o que está valendo ("Usando a voz padrão deste dispositivo: Kokoro ·
-// pf_dora" / "Usando a voz da persona “X”: …"), se funciona AQUI ("Disponível aqui" / "Não
-// disponível neste dispositivo — usa o padrão deste dispositivo: <motivo>") e oferece "Escolher uma
-// voz…" — que abre os MESMOS seletores de Configurações → Áudio (`TtsSettingsSection`/
+// duplicada: sem escolha própria, a seção diz o que está valendo ("Usando a voz padrão deste
+// dispositivo: Kokoro · pf_dora" / "Usando a voz da persona “X”: …" — com escolha própria os campos
+// já dizem); se funciona AQUI é um chip no cabeçalho ("disponível" / "usa o padrão daqui" / "não
+// funciona aqui", motivo no tooltip) e oferece "Escolher uma voz…" — que abre os MESMOS seletores de Configurações → Áudio (`TtsSettingsSection`/
 // `SttSettingsSection` no modo `choice`: modelo/provedor/motor, voz com ▶, parâmetros; idioma da
 // transcrição) — e "Voltar a usar …" (a escolha sai e o nível volta a herdar, ao vivo). A
 // disponibilidade vem do main (`useVoiceResolution` → `voice.resolve`). Instalar modelos continua
@@ -29,7 +29,6 @@ import {
   type VoiceTtsChoice
 } from '@shared/voice'
 import { api } from '../../lib/api'
-import { cn } from '../../lib/format'
 import { DICTATION_LANGUAGES, languageLabel } from '../../lib/voice/languages'
 import { sttVoiceLabel, ttsVoiceLabel } from '../../lib/voice/voiceChoice'
 import { useVoiceResolution } from '../../lib/voice/voiceResolution'
@@ -37,6 +36,7 @@ import { loadVoiceSettings, useVoiceSettings } from '../../lib/voice/voiceSettin
 import type { ProviderOption } from '../../lib/voice/voiceSettingsHelpers'
 import { useStore } from '../../store'
 import { CollapsibleSection } from '../panel/fields'
+import { Chip } from '../ui/Chip'
 import { Button, Label } from '../ui/controls'
 import { Select } from '../ui/Select'
 import { SttSettingsSection } from './SttSettingsSection'
@@ -64,7 +64,11 @@ function useLocalVoiceState(): { models: VoiceModelInfo[]; runtime: VoiceRuntime
   return { models, runtime }
 }
 
-/** Linha de disponibilidade NESTE dispositivo da voz que está valendo neste nível. */
+/**
+ * Disponibilidade NESTE dispositivo da voz que está valendo neste nível — chip no cabeçalho da
+ * seção (visível mesmo fechada): "disponível" (ok) ou o aviso curto ("usa o padrão daqui" / "não
+ * funciona aqui"), com o motivo no tooltip.
+ */
 function Availability({
   r,
   deviceLabel,
@@ -77,30 +81,33 @@ function Availability({
 }): React.JSX.Element | null {
   if (!r) return null
   const state = !r.available ? 'unavailable' : r.fallback ? 'fallback' : 'ok'
+  const tip =
+    state === 'ok'
+      ? 'Funciona neste dispositivo.'
+      : state === 'fallback'
+        ? `Não disponível neste dispositivo — usa o padrão deste dispositivo (${deviceLabel}): ${r.fallback?.reason ?? ''}`
+        : `${r.unconfigured ? 'Não configurada' : 'Não funciona'} neste dispositivo: ${r.reason ?? 'indisponível'} (Configurações → Áudio)`
   return (
-    <p
-      data-testid={testId}
-      data-state={state}
-      className={cn(
-        'flex items-start gap-1.5 text-[11.5px] leading-snug',
-        state === 'ok' && 'text-success',
-        state === 'fallback' && 'text-warning',
-        state === 'unavailable' && 'text-danger'
-      )}
+    <Chip
+      testId={testId}
+      data={{ state }}
+      tone={state === 'ok' ? 'success' : state === 'fallback' ? 'warning' : 'danger'}
+      icon={
+        state === 'ok' ? (
+          <Check aria-hidden className="size-3" />
+        ) : (
+          <TriangleAlert aria-hidden className="size-3" />
+        )
+      }
+      tip={tip}
     >
-      {state === 'ok' ? (
-        <Check className="mt-px size-3.5 shrink-0" />
-      ) : (
-        <TriangleAlert className="mt-px size-3.5 shrink-0" />
-      )}
-      <span>
-        {state === 'ok'
-          ? 'Disponível aqui'
-          : state === 'fallback'
-            ? `Não disponível neste dispositivo — usa o padrão deste dispositivo (${deviceLabel}): ${r.fallback?.reason ?? ''}`
-            : `${r.unconfigured ? 'Não configurada' : 'Não funciona'} neste dispositivo: ${r.reason ?? 'indisponível'} (Configurações → Áudio)`}
-      </span>
-    </p>
+      {state === 'ok'
+        ? 'disponível'
+        : state === 'fallback'
+          ? 'usa o padrão daqui'
+          : 'não funciona aqui'}
+      <span className="sr-only"> — {tip}</span>
+    </Chip>
   )
 }
 
@@ -224,8 +231,9 @@ function TtsChoiceSection(p: ChoiceProps<VoiceTtsChoice, TtsSettings>): React.JS
   const inheritedLabel = inherited
     ? ttsVoiceLabel(applyTtsChoice(device, inherited), providers)
     : p.deviceLabel
+  // com voz própria os campos abaixo já dizem qual é; sem, a linha diz o que está valendo
   const current = own
-    ? `Voz própria ${p.where}: ${ttsVoiceLabel(applyTtsChoice(device, own), providers)}`
+    ? null
     : inherited
       ? `Usando a voz da persona “${p.personaName}”: ${inheritedLabel}`
       : `Usando a voz padrão deste dispositivo: ${p.deviceLabel}`
@@ -245,13 +253,7 @@ function TtsChoiceSection(p: ChoiceProps<VoiceTtsChoice, TtsSettings>): React.JS
         text: own ? 'voz própria' : inherited ? 'da persona' : 'padrão do dispositivo',
         changed: !!own
       }}
-      warning={
-        p.r && !p.r.available
-          ? 'Nenhuma voz funciona neste dispositivo'
-          : p.r?.fallback
-            ? 'A voz escolhida não está disponível neste dispositivo'
-            : undefined
-      }
+      aside={<Availability r={p.r} deviceLabel={p.deviceLabel} testId="tts-choice-availability" />}
       help={
         'Com que voz o agente FALA na chamada de voz (e nas prévias e clipes) — motor ou provedor, modelo, voz e parâmetros. ' +
         (p.scope === 'chat'
@@ -261,10 +263,11 @@ function TtsChoiceSection(p: ChoiceProps<VoiceTtsChoice, TtsSettings>): React.JS
       }
     >
       <div className="space-y-2.5" data-testid={`tts-choice-${p.scope}`}>
-        <p className="text-[12.5px] text-fg/90" data-testid="tts-choice-current">
-          {current}
-        </p>
-        <Availability r={p.r} deviceLabel={p.deviceLabel} testId="tts-choice-availability" />
+        {current && (
+          <p className="text-[12.5px] text-fg/90" data-testid="tts-choice-current">
+            {current}
+          </p>
+        )}
         {own ? (
           <div className="space-y-2.5">
             <TtsSettingsSection
@@ -313,7 +316,7 @@ function SttChoiceSection(
   const label = (c: VoiceSttChoice): string =>
     sttVoiceLabel(applySttChoice(device, c), providers, c.language || p.deviceLanguage)
   const current = own
-    ? `Transcrição própria ${p.where}: ${label(own)}`
+    ? null
     : inherited
       ? `Usando a transcrição da persona “${p.personaName}”: ${label(inherited)}`
       : `Usando a transcrição padrão deste dispositivo: ${p.deviceLabel}`
@@ -348,13 +351,7 @@ function SttChoiceSection(
         text: own ? 'própria' : inherited ? 'da persona' : 'padrão do dispositivo',
         changed: !!own
       }}
-      warning={
-        p.r && !p.r.available
-          ? 'Nenhuma transcrição funciona neste dispositivo'
-          : p.r?.fallback
-            ? 'A transcrição escolhida não está disponível neste dispositivo'
-            : undefined
-      }
+      aside={<Availability r={p.r} deviceLabel={p.deviceLabel} testId="stt-choice-availability" />}
       help={
         'Com que motor/modelo e em que idioma o app OUVE você na chamada de voz e no ditado do composer dos chats ' +
         (p.scope === 'chat' ? 'deste chat. ' : 'desta persona. ') +
@@ -364,10 +361,11 @@ function SttChoiceSection(
       }
     >
       <div className="space-y-2.5" data-testid={`stt-choice-${p.scope}`}>
-        <p className="text-[12.5px] text-fg/90" data-testid="stt-choice-current">
-          {current}
-        </p>
-        <Availability r={p.r} deviceLabel={p.deviceLabel} testId="stt-choice-availability" />
+        {current && (
+          <p className="text-[12.5px] text-fg/90" data-testid="stt-choice-current">
+            {current}
+          </p>
+        )}
         {own ? (
           <div className="space-y-2.5">
             <SttSettingsSection
@@ -384,7 +382,20 @@ function SttChoiceSection(
               }}
               extra={
                 <div>
-                  <Label help="Idioma pedido à transcrição nos chats desta voz (melhora a precisão). A opção com ★ é o idioma do ditado deste dispositivo: escolhida, a transcrição segue o dispositivo.">
+                  <Label
+                    help="Idioma pedido à transcrição nos chats desta voz (melhora a precisão) — o ditado dos chats desta voz também usa este idioma. A opção com ★ é o idioma do ditado deste dispositivo: escolhida, a transcrição segue o dispositivo."
+                    hint={
+                      own.language &&
+                      own.language !== p.deviceLanguage && (
+                        <Chip
+                          testId="stt-choice-language"
+                          tip={`${languageLabel(own.language)} — o ditado dos chats desta voz também usa este idioma.`}
+                        >
+                          também no ditado
+                        </Chip>
+                      )
+                    }
+                  >
                     Idioma
                   </Label>
                   <Select
@@ -397,12 +408,6 @@ function SttChoiceSection(
                     }}
                     options={langOptions}
                   />
-                  {own.language && own.language !== p.deviceLanguage && (
-                    <p className="mt-1 text-[11.5px] text-subtle" data-testid="stt-choice-language">
-                      {languageLabel(own.language)} — o ditado dos chats desta voz também usa este
-                      idioma.
-                    </p>
-                  )}
                 </div>
               }
             />

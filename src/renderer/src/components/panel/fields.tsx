@@ -368,15 +368,12 @@ export function ExtraBodyEditor({
           error && 'border-danger/50 focus:border-danger/60'
         )}
       />
-      <div className="mt-1 h-4 text-[11px]">
-        {error ? (
+      {/* só o erro fica à vista; vazio/válido é o próprio campo (o (?)/</> da seção explica) */}
+      {error && (
+        <div className="mt-1 text-[11px]">
           <span className="text-danger">{error} — não salvo</span>
-        ) : text.trim() ? (
-          <span className="text-success/80">JSON válido · mesclado no body</span>
-        ) : (
-          <span className="text-subtle">Vazio · nada é mesclado</span>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   )
 }

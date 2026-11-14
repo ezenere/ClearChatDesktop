@@ -25,6 +25,7 @@ import { api, errorMessage } from '../../lib/api'
 import { cn, relativeTime } from '../../lib/format'
 import { useStore } from '../../store'
 import { Button, Label, Spinner, Switch } from '../ui/controls'
+import { Chip } from '../ui/Chip'
 import { HelpTip, Tip } from '../ui/Tooltip'
 import { SecretInput } from '../ProviderForm'
 import { AccountFlow } from './AccountFlow'
@@ -407,10 +408,14 @@ export function AccountSettings(): React.JSX.Element {
         <div className="rounded-2xl border border-border bg-bg/30 p-4">
           <AccountFlow />
         </div>
-        <p className="text-[11.5px] leading-relaxed text-subtle">
-          Zero-knowledge: tudo é cifrado (AES-256-GCM) neste computador com uma chave que só existe
-          nos seus dispositivos. O servidor guarda apenas dados cifrados e o e-mail da conta.
-        </p>
+        <div className="flex items-center gap-1.5">
+          <Chip
+            tone="success"
+            tip="Zero-knowledge: tudo é cifrado (AES-256-GCM) neste computador com uma chave que só existe nos seus dispositivos. O servidor guarda apenas dados cifrados e o e-mail da conta."
+          >
+            cifrado ponta a ponta
+          </Chip>
+        </div>
       </div>
     )
 
@@ -499,9 +504,9 @@ export function AccountSettings(): React.JSX.Element {
               </HelpTip>
             </div>
             {!status.push.available && (
-              <p className="mt-0.5 text-[11.5px] leading-snug text-subtle">
-                Este servidor não tem notificações push configuradas.
-              </p>
+              <Chip tip="Este servidor não tem notificações push configuradas.">
+                indisponível neste servidor
+              </Chip>
             )}
           </div>
           <div className="pt-0.5">
@@ -525,11 +530,17 @@ export function AccountSettings(): React.JSX.Element {
           <PasswordChange />
           <RecoveryKey />
         </div>
-        <p className="text-[11px] text-subtle">
-          {status.remember
-            ? 'A chave de decifragem está guardada no chaveiro deste computador.'
-            : 'A chave de decifragem fica só na memória: o app pede a senha a cada abertura.'}
-        </p>
+        <div>
+          <Chip
+            tip={
+              status.remember
+                ? 'A chave de decifragem está guardada no chaveiro deste computador.'
+                : 'A chave de decifragem fica só na memória: o app pede a senha a cada abertura.'
+            }
+          >
+            {status.remember ? 'chave no chaveiro' : 'chave só na memória'}
+          </Chip>
+        </div>
       </Section>
 
       <Section title="Skills">

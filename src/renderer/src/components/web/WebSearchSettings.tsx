@@ -610,6 +610,8 @@ function IntervalField(): React.JSX.Element {
             conta uma vez só — se o primeiro buscador falhar, o próximo é tentado na hora, sem
             esperar de novo. O botão Testar não entra no intervalo. Espaçar as buscas evita o
             bloqueio anti-robô do DuckDuckGo e do Brave (site).
+            <br />0 = desligado · máx. {SEARCH_INTERVAL_MAX_S} s · padrão{' '}
+            {SEARCH_INTERVAL_DEFAULT_S} s.
           </>
         }
       >
@@ -633,9 +635,6 @@ function IntervalField(): React.JSX.Element {
         }}
         className="field h-8 w-[110px] px-2 py-0 text-right font-mono text-[12.5px] tabular-nums"
       />
-      <p className="mt-2 text-xs leading-relaxed text-subtle">
-        0 = desligado · máx. {SEARCH_INTERVAL_MAX_S} s · padrão {SEARCH_INTERVAL_DEFAULT_S} s.
-      </p>
     </section>
   )
 }

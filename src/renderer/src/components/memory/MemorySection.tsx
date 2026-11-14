@@ -60,7 +60,6 @@ import {
 } from '../apiDocs'
 import { PresetIcon } from '../presets/PresetIcon'
 import { AutoTextarea, Button, Switch } from '../ui/controls'
-import { ModelLabel } from '../ui/ModelLabel'
 import { ModelPicker } from '../ui/ModelPicker'
 import { Select } from '../ui/Select'
 import { Tip } from '../ui/Tooltip'
@@ -68,6 +67,7 @@ import type { CfgProps } from '../panel/editors'
 import { CollapsibleSection, RestoreButton, ToggleRow } from '../panel/fields'
 import { useMemoryCollections, useMemoryPreview } from './hooks'
 import { CollectionIcon } from './MemoryIcon'
+import { Chip } from '../ui/Chip'
 import { useInherit } from '../panel/inheritContext'
 
 const NONE = '__none__'
@@ -294,7 +294,7 @@ function PersonaLine({
   )
 }
 
-/** Resumo do que vai (ou não) para a API, com a regra de envio. */
+/** O que vai (ou não) para a API — chip compacto; o detalhe (e o porquê) no tooltip. */
 function SendStatus({
   mem,
   cols,
@@ -304,19 +304,24 @@ function SendStatus({
   cols: MemoryCollection[]
   willSend: boolean
 }): React.JSX.Element {
-  if (!willSend)
+  if (!willSend) {
+    const why = !mem.enabled
+      ? 'A memória está desligada.'
+      : 'Ative ao menos uma coleção numa categoria ligada.'
     return (
-      <p
-        data-testid="memory-status"
-        data-active="false"
-        className="rounded-lg border border-border bg-bg/40 px-3 py-2 text-[11.5px] leading-snug text-subtle"
-      >
-        <strong className="font-medium text-fg/85">Nada de memória vai para a API.</strong>{' '}
-        {!mem.enabled
-          ? 'A memória está desligada.'
-          : 'Ative ao menos uma coleção numa categoria ligada.'}
-      </p>
+      <div>
+        <Chip
+          testId="memory-status"
+          data={{ active: 'false' }}
+          tone={mem.enabled ? 'warning' : 'neutral'}
+          tip={`Nada de memória vai para a API. ${why}`}
+        >
+          nada vai para a API
+          <span className="sr-only"> — Nada de memória vai para a API. {why}</span>
+        </Chip>
+      </div>
     )
+  }
   const active = mem.categories.flatMap((c) => activeInCategory(mem, cols, c))
   const writes = MEMORY_CATEGORIES.filter(
     (c) => mem.categories.includes(c) && mem.writeTo[c] && !writeTargetIssue(mem, cols, c)
@@ -329,14 +334,17 @@ function SendStatus({
     mem.helpPrompt.enabled ? 'instruções' : ''
   ].filter(Boolean)
   return (
-    <p
-      data-testid="memory-status"
-      data-active="true"
-      className="flex items-start gap-1.5 rounded-lg border border-accent/20 bg-accent-soft/30 px-3 py-2 text-[11.5px] leading-snug text-muted"
-    >
-      <BrainCircuit className="mt-px size-3.5 shrink-0 text-accent-strong" />
-      <span>Vai para a API: {parts.join(' · ')}.</span>
-    </p>
+    <div>
+      <Chip
+        testId="memory-status"
+        data={{ active: 'true' }}
+        tone="accent"
+        icon={<BrainCircuit aria-hidden className="size-3" />}
+        tip={`Vai para a API: ${parts.join(' · ')}.`}
+      >
+        {parts.join(' · ')}
+      </Chip>
+    </div>
   )
 }
 
@@ -696,17 +704,6 @@ function ExtractionSection({
             </Tip>
           )}
         </div>
-        {hasModel && (
-          <p className="mt-1 text-[11px] text-faint">
-            Extração com{' '}
-            <ModelLabel
-              providerId={ex.providerId!}
-              model={ex.model!}
-              short
-              className="text-subtle"
-            />
-          </p>
-        )}
       </div>
       <PromptEditor
         id="memory-extraction-prompt"
@@ -727,13 +724,12 @@ function ExtractionSection({
             icon={<BrainCircuit className="size-3.5 text-accent-strong" />}
             onClick={() => void extractNow()}
           >
-            {running ? 'Extraindo memórias…' : 'Extrair memórias agora'}
+            {running
+              ? 'Extraindo memórias…'
+              : willSend
+                ? 'Extrair memórias agora'
+                : 'Ligue a memória e uma coleção para extrair'}
           </Button>
-          {!willSend && (
-            <p className="-mt-1 text-center text-[11px] text-subtle">
-              Ligue a memória e ative uma coleção para extrair.
-            </p>
-          )}
         </>
       )}
     </CollapsibleSection>
@@ -770,16 +766,24 @@ function SnapshotSection({
       aside={<MemoryRefreshInfo />}
     >
       <div className="flex items-center gap-2.5">
-        <p
-          data-testid="memory-snapshot"
-          className="min-w-0 flex-1 text-[11.5px] leading-snug text-subtle"
-        >
-          {!willSend
-            ? 'Sem índice — a memória não está ativa.'
-            : snapshotAt
-              ? `Índice congelado desde ${formatTime(snapshotAt)} — mudanças feitas fora deste chat entram ao atualizar.`
-              : 'O índice é tirado na próxima request desta sessão.'}
-        </p>
+        <span className="min-w-0 flex-1">
+          <Chip
+            testId="memory-snapshot"
+            tip={
+              !willSend
+                ? 'Sem índice — a memória não está ativa.'
+                : snapshotAt
+                  ? `Índice congelado desde ${formatTime(snapshotAt)} — mudanças feitas fora deste chat entram ao atualizar.`
+                  : 'O índice é tirado na próxima request desta sessão.'
+            }
+          >
+            {!willSend
+              ? 'sem índice'
+              : snapshotAt
+                ? `congelado desde ${formatTime(snapshotAt)}`
+                : 'na próxima request'}
+          </Chip>
+        </span>
         <Button
           size="sm"
           variant="secondary"

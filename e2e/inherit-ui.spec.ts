@@ -290,7 +290,16 @@ async function main(): Promise<void> {
       await expand('tools-list')
       const grp = panel().getByTestId('tools-device-phone')
       await grp.scrollIntoViewIfNeeded()
-      await grp.getByText(/Não vão ao modelo quando o chat roda neste computador/).waitFor()
+      // a nota do grupo mora no (?) ao lado do título
+      await grp
+        .getByRole('button', { name: /^Ajuda: / })
+        .first()
+        .hover()
+      await page
+        .getByTestId('help-tip-content')
+        .getByText(/Não vão ao modelo quando o chat roda neste computador/)
+        .waitFor()
+      await page.mouse.move(5, 5)
       const loc = grp.getByRole('switch', { name: 'Localização' })
       assert((await loc.getAttribute('aria-checked')) === 'true', 'ligada (padrão do app, herdado)')
       assert((await mark('enabledTools.get_location').count()) === 0, 'herdada (sem marca)')

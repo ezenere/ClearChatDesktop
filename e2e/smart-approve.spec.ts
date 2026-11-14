@@ -440,10 +440,12 @@ async function main(): Promise<void> {
       await expand(panel, 'smart-approve')
       const sec = section()
       await sec.scrollIntoViewIfNeeded()
+      // sem modelo e sem itens em Smart: a dica é o placeholder do seletor (sem linha solta)
       await sec
-        .getByTestId('smart-approve-hint')
+        .getByTestId('smart-approve-model')
         .getByText(/Escolha um modelo para poder usar o modo Smart-Approve/)
         .waitFor()
+      assert((await sec.getByTestId('smart-approve-hint').count()) === 0, 'sem linha de dica')
       // o único switch visível é o "Cache do prompt" (não há liga/desliga do juiz)
       assert(
         (await sec.getByRole('switch').count()) ===

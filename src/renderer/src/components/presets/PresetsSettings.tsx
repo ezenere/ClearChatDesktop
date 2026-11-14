@@ -31,6 +31,7 @@ import {
   type CfgProps
 } from '../panel/editors'
 import { CollapsibleSection, ToggleRow } from '../panel/fields'
+import { Chip } from '../ui/Chip'
 import { baseName, rootSummary } from '../../lib/configSummary'
 import { Button, IconButton, Label } from '../ui/controls'
 import { ModelLabel } from '../ui/ModelLabel'
@@ -139,6 +140,16 @@ function PresetRow({ preset, onEdit }: { preset: Preset; onEdit: () => void }): 
   )
 }
 
+/** (?) ao lado do título "Personas" (era a linha de introdução da lista). */
+export function PresetsHelp(): React.JSX.Element {
+  return (
+    <HelpTip label="Personas">
+      Presets de chat: modelo, system prompt, parâmetros, tools e ajustes. Escolha uma no Novo chat;
+      a estrela define a que vem selecionada.
+    </HelpTip>
+  )
+}
+
 export function PresetsList({
   onEdit
 }: {
@@ -147,12 +158,6 @@ export function PresetsList({
   const presets = useStore((s) => s.presets)
   return (
     <div className="space-y-2.5">
-      <div className="mb-3 flex items-center gap-1.5 text-xs leading-relaxed text-subtle">
-        Presets de chat: modelo, system prompt, parâmetros, tools e ajustes.
-        <HelpTip label="Personas">
-          Escolha uma no Novo chat; a estrela define a que vem selecionada.
-        </HelpTip>
-      </div>
       {presets.map((p) => (
         <PresetRow key={p.id} preset={p} onEdit={() => onEdit(p.id)} />
       ))}
@@ -268,16 +273,23 @@ export function PresetEditor({
   const providers = useStore((s) => s.providers)
   const missing = presetProviderMissing({ config: draft }, providers)
   const ownModel = !!draft.model?.trim() && !missing
+  // de onde vem o modelo: chip (o porquê no tooltip) + "Usar o padrão" quando é desta persona
   const modelNote = (
-    <p className="flex items-center gap-1.5 text-[11.5px] text-subtle">
+    <div className="flex items-center gap-1.5 text-[11.5px]">
       {missing ? (
-        <span data-testid="preset-provider-missing" className="text-warning/85">
-          O provedor desta persona não existe mais — usando o modelo padrão.
-        </span>
+        <Chip
+          testId="preset-provider-missing"
+          tone="warning"
+          tip="O provedor desta persona não existe mais — usando o modelo padrão."
+        >
+          provedor ausente
+        </Chip>
       ) : ownModel ? (
-        'Definido nesta persona.'
+        <Chip tone="accent" tip="Definido nesta persona.">
+          desta persona
+        </Chip>
       ) : (
-        'Segue o modelo padrão de “Novos chats”.'
+        <Chip tip="Segue o modelo padrão de “Novos chats”.">padrão de “Novos chats”</Chip>
       )}
       {(ownModel || missing) && (
         <button
@@ -295,7 +307,7 @@ export function PresetEditor({
           Usar o padrão
         </button>
       )}
-    </p>
+    </div>
   )
 
   const save = async (): Promise<void> => {
@@ -380,10 +392,16 @@ export function PresetEditor({
               </button>
             ))}
           </div>
-          <span className="ml-auto truncate text-[11px] text-subtle">
-            Campos não alterados seguem “Novos chats”
-            {following > 0 &&
-              ` · ${following === 1 ? '1 chat segue' : `${following} chats seguem`} esta persona ao vivo`}
+          <span className="ml-auto flex items-center gap-1.5">
+            {following > 0 && (
+              <Chip
+                tone="accent"
+                tip={`${following === 1 ? '1 chat segue' : `${following} chats seguem`} esta persona ao vivo`}
+              >
+                {following === 1 ? '1 chat ao vivo' : `${following} chats ao vivo`}
+              </Chip>
+            )}
+            <HelpTip label="Campos da persona">Campos não alterados seguem “Novos chats”.</HelpTip>
           </span>
         </div>
         {tab === 'model' ? (

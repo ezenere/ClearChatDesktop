@@ -10,7 +10,7 @@ import {
 import { cn } from '../../lib/format'
 import { HelpTip, Tip } from './Tooltip'
 
-type Variant = 'primary' | 'secondary' | 'ghost' | 'danger'
+type Variant = 'primary' | 'secondary' | 'ghost' | 'danger' | 'warning'
 
 const variants: Record<Variant, string> = {
   primary:
@@ -18,7 +18,9 @@ const variants: Record<Variant, string> = {
   secondary:
     'border border-border bg-elevated text-fg hover:border-border-strong hover:bg-hover active:bg-active',
   ghost: 'text-muted hover:bg-hover hover:text-fg active:bg-active',
-  danger: 'border border-danger/30 bg-danger/10 text-danger hover:bg-danger/15'
+  danger: 'border border-danger/30 bg-danger/10 text-danger hover:bg-danger/15',
+  // estado que pede ação mora no próprio botão da ação ("⚠ Clipes desatualizados · Gerar de novo")
+  warning: 'border border-warning/40 bg-warning/[0.08] text-warning hover:bg-warning/15'
 }
 
 export const Button = forwardRef<

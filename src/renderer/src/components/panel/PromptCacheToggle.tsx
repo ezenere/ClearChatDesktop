@@ -4,6 +4,7 @@
 import { providerKind } from '@shared/providerKinds'
 import { sideCacheable } from '@shared/sideCache'
 import { useStore } from '../../store'
+import { Chip } from '../ui/Chip'
 import { C } from '../ui/Tooltip'
 import { ToggleRow } from './fields'
 
@@ -28,10 +29,12 @@ export function PromptCacheToggle({
       label="Cache do prompt"
       checked={checked}
       onChange={onChange}
-      status={
-        checked && auto
-          ? 'Este provedor/modelo faz cache automático do prefixo — nada é marcado.'
-          : null
+      info={
+        checked && auto ? (
+          <Chip tip="Este provedor/modelo faz cache automático do prefixo — nada é marcado.">
+            automático
+          </Chip>
+        ) : undefined
       }
       help={
         <>

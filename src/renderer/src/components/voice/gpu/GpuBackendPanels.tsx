@@ -307,7 +307,6 @@ export function GpuTtsPanel({
         <GpuParamsEditor
           engineId={engine.id}
           engineLabel={engine.label}
-          kind="tts"
           value={savedGpuParams(engine.id, g, null)}
           onChange={(next) =>
             void onCommit(fromGpuTts(ttsWithGpuParams(g, engine.id as GpuTtsEngineId, next)))
@@ -370,7 +369,6 @@ export function GpuSttPanel({
         <GpuParamsEditor
           engineId="whisper-large-v3-turbo"
           engineLabel={engine.label}
-          kind="stt"
           value={savedGpuParams('whisper-large-v3-turbo', null, s)}
           onChange={(next) => void onCommit(sttWithGpuParams(s, next))}
           testId="stt-gpu-params"

@@ -38,13 +38,11 @@ export function PhoneToolsGroup({
 }): React.JSX.Element {
   return (
     <div data-testid="tools-device-phone" className="mt-2 border-t border-border/60 pt-2">
-      <div className="flex items-baseline gap-2 px-0.5">
+      <div className="flex items-center gap-1.5 px-0.5">
         <span className="text-[11px] font-medium tracking-wide text-subtle uppercase">
           {DEVICE_ONLY_TITLE.phone}
         </span>
-        <span className="min-w-0 flex-1 text-[11px] leading-snug text-faint">
-          {DEVICE_ONLY_NOTE.phone}
-        </span>
+        <HelpTip label={DEVICE_ONLY_TITLE.phone}>{DEVICE_ONLY_NOTE.phone}</HelpTip>
       </div>
       <div className="-mx-1.5 mt-1 space-y-px">
         {PHONE_TOOL_NAMES.map((t) => {
