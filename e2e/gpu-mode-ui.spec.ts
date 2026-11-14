@@ -605,7 +605,7 @@ app.on('window-all-closed', () => app.quit())
   )
 
   await step(
-    'pré-checagem da chamada: motor da fala removido → toast aponta Modelos locais',
+    'pré-checagem da chamada: motor da fala removido → telefone esmaecido com o motivo',
     async () => {
       await pickGpu('tts-model', 'omnivoice')
       await tid('tts-gpu').waitFor()
@@ -631,15 +631,24 @@ app.on('window-all-closed', () => app.quit())
         .first()
         .click()
       await page.waitForTimeout(400)
-      await tid('voice-call-button').click()
-      const toast = page.getByTestId('toast').filter({ hasText: 'Chamada de voz indisponível' })
-      await toast.waitFor({ timeout: 4000 })
-      const text = await toast.innerText()
-      assert.match(
-        text,
-        /Fala \(GPU local\): instale o motor OmniVoice em Configurações → Áudio → Modelos locais/
+      // com `voice.resolve` (protocolo 1.9.0) a pré-checagem acontece antes do clique: nada
+      // funcionando aqui → telefone esmaecido e desabilitado, o motivo no tooltip (o toast da
+      // pré-checagem ficou só para builds sem `voice.resolve`)
+      await page.waitForFunction(
+        () =>
+          document.querySelector('[data-testid=voice-call-button]')?.getAttribute('data-voice') ===
+          'unavailable'
       )
-      await shot('12-call-readiness-toast')
+      const phone = tid('voice-call-button')
+      assert(await phone.isDisabled(), 'telefone habilitado com o motor da fala removido')
+      await phone.hover()
+      const tip = page.getByText(/^Chamada de voz não funciona neste dispositivo/)
+      await tip.waitFor({ timeout: 4000 })
+      const text = await tip.innerText()
+      assert.match(text, /fala: o motor OmniVoice não está instalado neste dispositivo/)
+      await shot('12-call-readiness-tip')
+      await page.mouse.move(5, 5)
+      await page.keyboard.press('Escape')
       return text.slice(0, 160)
     }
   )
