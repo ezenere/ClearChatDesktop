@@ -77,7 +77,7 @@ export function VoiceGroup({
       role="group"
       aria-label="Voz: chamada, ditado e microfone"
       data-testid="voice-group"
-      className="flex h-8 shrink-0 items-stretch divide-x divide-border overflow-hidden rounded-lg border border-border bg-elevated/40"
+      className="flex h-[30px] shrink-0 items-stretch divide-x divide-border overflow-hidden rounded-lg border border-border bg-elevated/40"
     >
       <VoiceCallButton session={session} segment />
       <Tip

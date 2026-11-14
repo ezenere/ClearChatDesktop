@@ -34,12 +34,16 @@ import { useHostInfo } from '../sync/hooks'
 import { Tip } from '../ui/Tooltip'
 
 /**
- * Largura do telefone e do mic no grupo `[ telefone | mic | ˅ ]`: quase quadrados na altura do
- * grupo (h-8, a do botão de enviar — 30 px por dentro da borda), um pouco mais largos que altos.
+ * Largura do telefone e do mic no grupo `[ telefone | mic | ˅ ]` (30 px de altura, 28 por dentro da
+ * borda): quase quadrados — antes eram `w-7` (~24 px), estreitos e altos.
  */
-export const VOICE_SEGMENT_WIDTH = 'w-[34px]'
-/** Telefone com o mesmo peso visual do Mic (size-4, traço 2): caixa menor, traço compensado. */
-const PHONE_ICON = 'size-[14px] translate-x-[0.5px] -translate-y-[0.5px]'
+export const VOICE_SEGMENT_WIDTH = 'w-[30px]'
+/**
+ * O telefone do lucide ocupa a caixa inteira (o mic, ~⅔ da largura) e parecia maior: caixa de
+ * ⅞ da do mic (size-3.5 × size-4) com o traço compensado (mesma espessura na tela) e meio pixel
+ * para a direita/cima (a curva do fone puxa o desenho para baixo/esquerda).
+ */
+const PHONE_ICON = 'size-3.5 translate-x-[0.5px] -translate-y-[0.5px]'
 const PHONE_STROKE = 2.25
 
 export function VoiceCallButton({
@@ -166,7 +170,8 @@ export function VoiceCallButton({
       }
     >
       {/* span: o tooltip continua funcionando com o botão desabilitado */}
-      <span className="flex shrink-0">
+      {/* no grupo, a largura fica no span (é ele que leva a borda do divisor, como o mic) */}
+      <span className={cn('flex shrink-0', segment && VOICE_SEGMENT_WIDTH)}>
         <button
           type="button"
           data-testid="voice-call-button"
@@ -181,15 +186,12 @@ export function VoiceCallButton({
           }}
           className={cn(
             'flex shrink-0 items-center justify-center text-subtle transition-colors hover:bg-hover hover:text-fg',
-            segment ? `h-full ${VOICE_SEGMENT_WIDTH}` : 'size-7 rounded-lg',
+            segment ? 'h-full w-full' : 'size-7 rounded-lg',
             mine && 'voice-call-button-active bg-accent/15 text-accent-strong hover:bg-accent/25',
             (busy || remote || off || unavailable) && 'opacity-40',
             className
           )}
         >
-          {/* o telefone do lucide ocupa a caixa toda (o mic, ~⅔ da largura): menor e com traço
-              compensado para pesar igual ao mic, e meio pixel para a direita/cima (a curva do fone
-              puxa o desenho para baixo/esquerda) — centralizado no segmento */}
           {mine ? (
             <PhoneOff className={PHONE_ICON} strokeWidth={PHONE_STROKE} />
           ) : (
