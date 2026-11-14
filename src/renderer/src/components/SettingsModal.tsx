@@ -5,7 +5,7 @@ import { defaultModelRef } from '@shared/models'
 import { inferProviderKind, PROVIDER_KIND_LABEL, providerKind } from '@shared/providerKinds'
 import type { Provider } from '@shared/types'
 import { api, errorMessage } from '../lib/api'
-import { shortPath } from '../lib/format'
+import { cn, shortPath } from '../lib/format'
 import { useStore, type SettingsTab, type SettingsTarget } from '../store'
 import { PresetEditor, PresetsHelp, PresetsList } from './presets/PresetsSettings'
 import { PresetIcon } from './presets/PresetIcon'
@@ -344,7 +344,11 @@ export function SettingsModal(): React.JSX.Element {
           aria-labelledby="settings-panel-title"
           data-testid="settings-content"
           data-tab={tab}
-          className="min-h-0 flex-1 overflow-y-auto px-5 pt-4 pb-5"
+          className={cn(
+            'min-h-0 flex-1 overflow-y-auto px-5 pt-4 pb-5',
+            // editor de persona: coluna que ocupa a altura toda — o rodapé (Cancelar/Salvar) fica no fim
+            tab === 'presets' && editingPreset && 'flex flex-col'
+          )}
         >
           <div className="mb-3 flex items-center gap-2">
             <h3

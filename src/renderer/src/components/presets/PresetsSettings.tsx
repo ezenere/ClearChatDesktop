@@ -324,7 +324,7 @@ export function PresetEditor({
   }
 
   return (
-    <div data-testid="preset-editor" className="animate-fade-in">
+    <div data-testid="preset-editor" className="flex flex-1 animate-fade-in flex-col">
       <button
         type="button"
         onClick={onDone}
@@ -430,7 +430,9 @@ export function PresetEditor({
         )}
       </div>
 
-      <div className="sticky -bottom-5 -mx-5 -mb-5 mt-4 flex items-center justify-end gap-2 border-t border-border bg-surface/95 px-5 py-3 backdrop-blur">
+      <div aria-hidden className="h-4 shrink-0" />
+      {/* rodapé no fim da área (conteúdo curto) e grudado no fundo ao rolar (conteúdo longo) */}
+      <div className="sticky -bottom-5 -mx-5 -mb-5 mt-auto flex items-center justify-end gap-2 border-t border-border bg-surface/95 px-5 py-3 backdrop-blur">
         <Button variant="ghost" onClick={onDone}>
           Cancelar
         </Button>
