@@ -1440,8 +1440,8 @@ function stubRunner(log: any[]): RunnerAdapter {
   }
   return {
     busyChats: () => new Set(),
-    send: async (sid, text) => {
-      log.push({ sid, text })
+    send: async (sid, text, _atts, _skills, _meta, extra) => {
+      log.push(extra?.openFile ? { sid, text, openFile: extra.openFile } : { sid, text })
       return { queued: false }
     },
     forceSend: () => {},
@@ -1497,6 +1497,28 @@ test('host: comando remoto executado no host, stream ao vivo, queda → host off
   })
   assert.equal(r.status, 'accepted')
   assert.deepEqual(logA, [{ sid: sessionId, text: 'do notebook' }])
+  // arquivo selecionado (1.13.0): `meta.openFile` chega ao runner; inválido → ignorado (aceito)
+  for (const [text, openFile] of [
+    ['com arquivo', { path: 'src/a.ts' }],
+    ['arquivo inválido', { path: 'a\u0000b' }],
+    ['arquivo longo', { path: 'x'.repeat(1025) }]
+  ] as const) {
+    const rr = await B.eng.host.sendCommand(chatId, 'send', {
+      sessionId,
+      text,
+      attachments: [],
+      skills: [],
+      createdAt: Date.now(),
+      meta: { openFile }
+    })
+    assert.equal(rr.status, 'accepted')
+  }
+  assert.deepEqual(logA.slice(1), [
+    { sid: sessionId, text: 'com arquivo', openFile: { path: 'src/a.ts' } },
+    { sid: sessionId, text: 'arquivo inválido' },
+    { sid: sessionId, text: 'arquivo longo' }
+  ])
+  logA.length = 1
   // dedupe por cmd_id não é reenvio automático; comando inválido → rejeitado legível
   await assert.rejects(
     B.eng.host.sendCommand(chatId, 'send', { sessionId: 'outra', text: 'x' }),

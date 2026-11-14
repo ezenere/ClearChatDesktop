@@ -7,6 +7,7 @@
 import { DEFAULT_APP_SIGNATURE, resolveAppSignatureHeaders } from '@shared/appSignatures'
 import { activeHistory, isDisplayOnly } from '@shared/context'
 import { contentText } from '@shared/attachments'
+import { withStoredOpenFile } from '@shared/openFile'
 import { DEFAULT_MEMORY_EXTRACTION_PROMPT } from '@shared/defaults'
 import { MEMORY_LIMITS as ML } from '@shared/limits'
 import type { MemoryExtractionResult } from '@shared/memory'
@@ -63,7 +64,8 @@ export function extractionConversation(
     }
     if (m.seq <= lastSeq) continue
     if (msg.role === 'user') {
-      const t = contentText(msg.content).trim()
+      // o que o modelo viu: com o texto do arquivo selecionado (1.13.0), se houver
+      const t = contentText(withStoredOpenFile(m).message.content as never).trim()
       if (t) blocks.push(`${m.meta.synthetic ? '[app]' : 'Usuário'}: ${t}`)
     } else if (msg.role === 'assistant') {
       const t = (msg.content ?? '').trim()

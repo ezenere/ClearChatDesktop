@@ -785,6 +785,13 @@ export interface MessageMeta {
   voice?: VoiceMessageMeta
   /** kind 'voice-call': marcador de início/fim da chamada (duração, quem encerrou, custos). */
   voiceCall?: VoiceCallMark
+  /**
+   * Mensagem do usuário (desde 1.13.0, SYNC §4.3.8): o arquivo selecionado ao enviar (aberto na
+   * pré-visualização ou "Mencionar no chat"). `path` relativo à raiz do chat no host (dentro dela)
+   * ou absoluto, ≤ 1024. O `content` fica só com o texto do usuário; o texto fixo de
+   * `@shared/openFile` → `openFileText` é acrescentado na CÓPIA enviada ao modelo.
+   */
+  openFile?: { path: string }
 }
 
 /** Tipo de visualização de um arquivo no painel (SPEC → "Visualizador de arquivos"). */

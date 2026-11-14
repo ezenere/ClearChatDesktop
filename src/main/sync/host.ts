@@ -21,6 +21,7 @@ import type { MemoryExtractionResult } from '@shared/memory'
 import { isBranchEditable, toBranchSel } from '@shared/branches'
 import type { ApprovalItemDecision } from '@shared/approvalPolicy'
 import { parseInterChatSendMeta, type InterChatSendMeta } from '@shared/interChat'
+import { parseOpenFile, type OpenFileMeta } from '@shared/openFile'
 import type { ChatHostInfo, ChatHostMode, HostStatus, TakeoverOptions } from '@shared/sync'
 import {
   REMOTE_FS_LIMITS,
@@ -65,13 +66,17 @@ import {
 export interface RunnerAdapter {
   /** Chats com sessões rodando/esperando ou aprovação/questionário/retry pendente. */
   busyChats(): Set<string>
-  /** `meta` = origem entre chats (§8.6, ≥ 1.6.0): grava como mensagem entre chats. */
+  /**
+   * `meta` = origem entre chats (§8.6, ≥ 1.6.0): grava como mensagem entre chats. `extra.openFile`
+   * = arquivo selecionado (1.13.0, §4.3.8) — já validado; o runner normaliza pela raiz do chat.
+   */
   send(
     sessionId: string,
     text: string,
     attachments: AttachmentInfo[],
     skills: string[],
-    meta?: InterChatSendMeta | null
+    meta?: InterChatSendMeta | null,
+    extra?: { openFile?: OpenFileMeta }
   ): Promise<{ queued: boolean }>
   forceSend(queuedId: string): void
   removeQueued(queuedId: string): void
@@ -987,7 +992,14 @@ export class HostController {
       this.handoverOut.delete(chatId)
       for (const it of h.items)
         void this.runner
-          ?.send(it.sessionId, it.text, it.attachments ?? [], skillNames(it))
+          ?.send(
+            it.sessionId,
+            it.text,
+            it.attachments ?? [],
+            skillNames(it),
+            null,
+            it.meta?.openFile ? { openFile: it.meta.openFile } : undefined
+          )
           .catch(() => undefined)
     }
   }
@@ -1043,7 +1055,8 @@ export class HostController {
             text: it.text,
             attachments: it.attachments ?? [],
             skills: skillNames(it),
-            createdAt: it.createdAt
+            createdAt: it.createdAt,
+            ...(it.meta?.openFile ? { meta: { openFile: it.meta.openFile } } : {})
           })
         })
       }
@@ -1642,12 +1655,16 @@ export class HostController {
             if (!(await this.engine.ensureAttachment(a.file))) throw new Error('attachment_missing')
           }
         const skills = Array.isArray(p.skills) ? (p.skills as string[]) : []
+        // arquivo selecionado (1.13.0): `meta.openFile` em qualquer `meta` (sem `kind` no envio do
+        // composer); inválido → a mensagem segue sem ele (nunca recusada por isso)
+        const openFile = sendOpenFile(p.meta)
         const r = await runner.send(
           sid,
           String(p.text ?? ''),
           atts,
           skills,
-          parseInterChatSendMeta(p.meta)
+          parseInterChatSendMeta(p.meta),
+          openFile ? { openFile } : undefined
         )
         if (kind === 'force' && r.queued) {
           const q = runner.getQueue(sid)
@@ -2488,6 +2505,16 @@ export class HostController {
         if (q.some((x) => x.id === id)) return { chatId, sessionId: sid }
     return null
   }
+}
+
+/**
+ * `payload.meta.openFile` de um `send`/`force` remoto (1.13.0): string ≤ 1024 sem caracteres de
+ * controle → válido (o runner normaliza pela raiz do chat); senão null. Vale em qualquer `meta`
+ * (o composer manda `{ openFile }` sem `kind`; `inter-chat` não leva arquivo).
+ */
+export function sendOpenFile(meta: unknown): OpenFileMeta | null {
+  if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return null
+  return parseOpenFile((meta as { openFile?: unknown }).openFile)
 }
 
 function skillNames(it: QueuedMessage): string[] {

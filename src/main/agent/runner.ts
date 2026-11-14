@@ -74,6 +74,7 @@ import {
   isDisplayOnly,
   resolveContextWindow
 } from '@shared/context'
+import { parseOpenFile } from '@shared/openFile'
 import { emit } from '../events'
 import { chatsRepo, messagesRepo, providersRepo, sessionsRepo, settingsRepo } from '../repo'
 import { getDb, getDbPath } from '../db'
@@ -476,7 +477,10 @@ const pendingUserMeta = new Map<string, { text: string; meta: MessageMeta; at: n
  * leva texto/anexos; expira em 30 s.
  */
 export function stashUserMeta(sessionId: string, text: string, meta: MessageMeta): void {
-  pendingUserMeta.set(sessionId, { text, meta, at: Date.now() })
+  // mesmo texto ainda pendente (ex.: voz + arquivo selecionado): junta os metas
+  const cur = pendingUserMeta.get(sessionId)
+  const base = cur && cur.text === text && Date.now() - cur.at < 30_000 ? cur.meta : {}
+  pendingUserMeta.set(sessionId, { text, meta: { ...base, ...meta }, at: Date.now() })
 }
 function takeUserMeta(sessionId: string, text: string): MessageMeta {
   const p = pendingUserMeta.get(sessionId)
@@ -3317,6 +3321,22 @@ export function send(
   text = typeof text === 'string' ? text : ''
   if (!text.trim() && !attachments.length && !skillParts.length) throw new Error('Mensagem vazia.')
   const meta = takeUserMeta(sessionId, text)
+  if (meta.openFile) {
+    // arquivo selecionado (1.13.0, §4.3.8): relativo à raiz do chat NESTE host quando está dentro
+    // dela, senão absoluto; inválido → a mensagem segue sem ele
+    const { openFile: raw, ...rest } = meta
+    const openFile = parseOpenFile(raw, chatsRepo.get(session.chatId)?.config.cwd)
+    return {
+      queued: !!deliverToSession(
+        session,
+        text,
+        openFile ? { ...rest, openFile } : rest,
+        true,
+        attachments,
+        skillParts
+      ).queuedId
+    }
+  }
   return {
     queued: !!deliverToSession(session, text, meta, true, attachments, skillParts).queuedId
   }
@@ -3576,7 +3596,12 @@ export async function editBranch(messageId: string, message: ApiMessage): Promis
   const abandoned = activePath(tree, now.branchSel).filter((m) => !keep.has(m.id))
   await stopAbandonedSubagents(session, abandoned)
   if (runs.has(session.id)) throw new Error('A sessão voltou a rodar; tente novamente.')
-  const m = messagesRepo.addSibling(cur.id, { role: 'user', content })
+  // a versão nova mantém os anexos (withUserText) e o arquivo selecionado da original (1.13.0)
+  const m = messagesRepo.addSibling(
+    cur.id,
+    { role: 'user', content },
+    cur.meta.openFile ? { openFile: cur.meta.openFile } : {}
+  )
   emit({ type: 'message-added', message: m })
   const s = sessionsRepo.get(session.id) ?? now
   emit({ type: 'session-updated', session: s })

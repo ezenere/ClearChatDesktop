@@ -8,7 +8,8 @@ import { hostname } from 'os'
 import { join } from 'path'
 import { randomBytes } from 'crypto'
 import { IPC } from '@shared/ipc'
-import type { AttachmentInfo, ChatConfig, QueuedMessage } from '@shared/types'
+import type { AttachmentInfo, ChatConfig, MessageMeta, QueuedMessage } from '@shared/types'
+import { parseOpenFile } from '@shared/openFile'
 import type { SyncServerKind, TakeoverOptions } from '@shared/sync'
 import { REMOTE_FS_LIMITS, type RemoteDirResult, type RemoteReadResult } from '@shared/remoteFs'
 import { emit, onAgentEvent } from '../events'
@@ -166,12 +167,14 @@ function runnerAdapter(): RunnerAdapter {
       for (const r of runner.pendingRetries()) out.add(r.chatId)
       return out
     },
-    send: (sid, text, atts, sk, meta) =>
-      meta
-        ? Promise.resolve(runner.deliverInterChat(sid, text, meta))
-        : sk.length
-          ? runner.sendWithSkills(sid, text, atts, sk)
-          : Promise.resolve(runner.send(sid, text, atts)),
+    send: (sid, text, atts, sk, meta, extra) => {
+      if (meta) return Promise.resolve(runner.deliverInterChat(sid, text, meta))
+      // arquivo selecionado (1.13.0): gravado com a mensagem (runner.send normaliza pela raiz)
+      if (extra?.openFile) runner.stashUserMeta(sid, text, { openFile: extra.openFile })
+      return sk.length
+        ? runner.sendWithSkills(sid, text, atts, sk)
+        : Promise.resolve(runner.send(sid, text, atts))
+    },
     forceSend: (id) => runner.forceSend(id),
     removeQueued: (id) => runner.removeQueued(id),
     getQueue: (sid) => runner.getQueue(sid),
@@ -422,26 +425,36 @@ export function chatOfMessage(messageId: string): string | null {
   return engine?.liveViewer.chatOfMessage(messageId) ?? null
 }
 
-/** agent.send com o portão (anexos sobem antes quando vai ao host). */
+/**
+ * agent.send com o portão (anexos sobem antes quando vai ao host). `meta` = meta extra da mensagem
+ * do usuário: local → gravado com ela (`stashUserMeta`: voz, arquivo selecionado); comando remoto
+ * `send` → só `meta.openFile` (1.13.0) vai no payload (o host valida e normaliza contra a raiz dele;
+ * hosts antigos ignoram — o `meta` sem `kind: 'inter-chat'` é descartado por eles, §8.6).
+ */
 export async function gatedSend(
   sessionId: string,
   text: string,
   attachments: AttachmentInfo[] | undefined,
-  skillNames: string[] | undefined
+  skillNames: string[] | undefined,
+  meta?: MessageMeta
 ): Promise<{ queued: boolean }> {
   const chatId = chatOfSession(sessionId)
   const e = engine
-  const local = (): Promise<{ queued: boolean }> =>
-    skillNames?.length
+  const openFile = meta?.openFile ? parseOpenFile(meta.openFile) : null
+  const local = (): Promise<{ queued: boolean }> => {
+    if (meta) runner.stashUserMeta(sessionId, text, meta)
+    return skillNames?.length
       ? runner.sendWithSkills(sessionId, text, attachments, skillNames)
       : Promise.resolve(runner.send(sessionId, text, attachments))
+  }
   if (e && chatId && e.active) {
     // troca de host em andamento (somos o host): a mensagem vai junto para o novo host
     if (
       e.host.forwardOnHandover(chatId, {
         sessionId,
         text,
-        ...(attachments?.length ? { attachments } : {})
+        ...(attachments?.length ? { attachments } : {}),
+        ...(openFile ? { meta: { openFile } } : {})
       })
     )
       return { queued: true }
@@ -457,7 +470,8 @@ export async function gatedSend(
       text,
       attachments: attachments ?? [],
       skills: skillNames ?? [],
-      createdAt: Date.now()
+      createdAt: Date.now(),
+      ...(openFile ? { meta: { openFile } } : {})
     },
     local,
     { remote: (r) => ({ queued: !!r.queued }) }

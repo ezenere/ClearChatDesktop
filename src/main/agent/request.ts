@@ -29,6 +29,7 @@ import {
   type WireApi
 } from '@shared/toolSearch'
 import { activeHistory, isDisplayOnly } from '@shared/context'
+import { withOpenFiles } from '@shared/openFile'
 import { bwrapAvailable, shellLabel } from '../tools/bash'
 import { expandAttachments, hoistToolMedia } from '../attachments'
 import { paramSupport, type ParamSupport } from '@shared/modelParams'
@@ -141,9 +142,14 @@ export function setNativeTestHosts(hosts: string[]): void {
 }
 export const nativeHostsForTests = (): string[] => [...nativeTestHosts]
 
-/** Mensagens que vão na request (fronteira em diante, sem as só de exibição). */
+/**
+ * Mensagens que vão na request (fronteira em diante, sem as só de exibição), com o texto do arquivo
+ * selecionado (1.13.0, `meta.openFile` → @shared/openFile) aplicado na CÓPIA de cada mensagem do
+ * usuário — vale para todo builder que passa por aqui (turno, subagente, chamada de voz,
+ * compactação, pré-visualização da request).
+ */
 const sentMessages = (history: StoredMessage[]): StoredMessage[] =>
-  activeHistory(history).filter((m) => !isDisplayOnly(m.meta))
+  withOpenFiles(activeHistory(history).filter((m) => !isDisplayOnly(m.meta)))
 
 /**
  * Modo de envio das tools para esta sessão/provedor/modelo (@shared/toolSearch →
