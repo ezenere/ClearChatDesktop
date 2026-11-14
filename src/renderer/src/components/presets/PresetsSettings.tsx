@@ -393,15 +393,13 @@ export function PresetEditor({
             ))}
           </div>
           <span className="ml-auto flex items-center gap-1.5">
-            {following > 0 && (
-              <Chip
-                tone="accent"
-                tip={`${following === 1 ? '1 chat segue' : `${following} chats seguem`} esta persona ao vivo`}
-              >
-                {following === 1 ? '1 chat ao vivo' : `${following} chats ao vivo`}
-              </Chip>
-            )}
-            <HelpTip label="Campos da persona">Campos não alterados seguem “Novos chats”.</HelpTip>
+            <HelpTip label="Campos da persona">
+              <span data-testid="persona-following" data-count={following}>
+                Campos não alterados seguem “Novos chats”.
+                {following > 0 &&
+                  ` ${following === 1 ? '1 chat segue' : `${following} chats seguem`} esta persona ao vivo.`}
+              </span>
+            </HelpTip>
           </span>
         </div>
         {tab === 'model' ? (
