@@ -14,6 +14,8 @@
 //   … --dry-run   só monta as requests (nada vai à rede)
 //   … --tool      pede um arquivo (write_file): mede também os argumentos da tool call
 //   … --control   (OpenRouter) também pela Chat Completions, para comparar
+//   … --effort=low|medium|high|xhigh|max   o esforço de raciocínio do chat (padrão: nenhum, como
+//                 um chat novo — o modelo usa o padrão dele)
 // Chaves só por env; nunca imprime chaves nem headers da request. Linha do tempo completa em JSON
 // num diretório temporário (impresso no fim). URLs trocáveis (PROBE_ANTHROPIC_BASE,
 // PROBE_OPENROUTER_BASE) só para testar o script contra um servidor falso local.
@@ -35,6 +37,7 @@ const ANTHROPIC_BASE = process.env.PROBE_ANTHROPIC_BASE || 'https://api.anthropi
 const OPENROUTER_BASE = process.env.PROBE_OPENROUTER_BASE || 'https://openrouter.ai/api/v1'
 const MODEL = opt('model') || 'claude-haiku-4-5'
 const OR_MODEL = opt('or-model') || 'anthropic/claude-haiku-4.5'
+const EFFORT = opt('effort')
 
 const redact = (s: string): string => {
   let out = s
@@ -183,7 +186,8 @@ for (const t of targets) {
         kind: t.provider.kind,
         baseUrl: t.provider.baseUrl
       }),
-      ...(t.config ?? {})
+      ...(t.config ?? {}),
+      ...(EFFORT ? { params: { reasoning_effort: EFFORT } } : {})
     }
   }
   const history: any[] = [
