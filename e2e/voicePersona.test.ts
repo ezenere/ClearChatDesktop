@@ -819,7 +819,7 @@ test('dock da chamada: confere e gera os clipes da voz DA CHAMADA (a da persona/
   // persona/chat — com a da persona sem clipes, o aviso "Gerar clipes" sumia (a do dispositivo
   // tinha), o botão gerava para a voz errada e toda frase de ferramenta saía ao vivo
   const { clipsTtsChoice } = await import('../src/shared/voice.ts')
-  const { generateClips, loadClips, clipVoiceId } = await import('../src/main/voice/clips.ts')
+  const { generateClips, loadVoiceClips, clipVoiceId } = await import('../src/main/voice/clips.ts')
   // `input.call` = a voz da chamada (a da persona/chat decidida no início dela)
   assert.deepEqual(clipsTtsChoice({ call: true }, KOKORO_MALE), KOKORO_MALE)
   assert.equal(clipsTtsChoice({ call: true }, null), null, 'chamada com a voz do dispositivo')
@@ -843,10 +843,11 @@ test('dock da chamada: confere e gera os clipes da voz DA CHAMADA (a da persona/
     await generateClips({ baseDir: base, settings: DEVICE_TTS, local })
     const dock = applyTtsChoice(DEVICE_TTS, clipsTtsChoice({ call: true }, KOKORO_MALE))
     assert.notEqual(clipVoiceId(dock), clipVoiceId(DEVICE_TTS))
-    assert.equal(await loadClips(base, clipVoiceId(dock)), null, 'o dock avisa: faltam clipes')
+    assert.equal(await loadVoiceClips(base, dock), null, 'o dock avisa: faltam clipes')
     // "Gerar clipes" do dock gera para a voz da chamada
     await generateClips({ baseDir: base, settings: dock, local })
-    assert.ok(await loadClips(base, clipVoiceId(dock)))
+    assert.ok(await loadVoiceClips(base, dock))
+    assert.ok(await loadVoiceClips(base, DEVICE_TTS), 'a do dispositivo continua lá')
   } finally {
     rmSync(base, { recursive: true, force: true })
   }

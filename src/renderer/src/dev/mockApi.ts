@@ -2928,7 +2928,10 @@ export function createMockApi(scenario: string): ClearApi {
               ms: 350
             }
           }
-          /** Cache de clipes POR VOZ (como `userData/voice-clips/<voz>`). */
+          /**
+           * Cache de clipes POR CONFIGURAÇÃO de voz (como `userData/voice-clips/<voz>/<variante>`:
+           * a mesma voz com outro modelo/parâmetros tem os clipes dela).
+           */
           const clipsByVoice = new Map<string, TtsClipsView>()
           /** Fala efetiva: a deste dispositivo ou a voz de uma persona/chat (`input.tts`). */
           const ttsFor = (input?: { tts?: unknown }): TtsSettings =>
@@ -2939,6 +2942,15 @@ export function createMockApi(scenario: string): ClearApi {
               : t.backend === 'gpu'
                 ? `gpu-${t.gpu?.engine ?? 'omnivoice'}-${t.gpu?.voice ?? 'padrao'}`
                 : `api-${t.api.voice || 'padrao'}`
+          const clipsKeyOf = (t: TtsSettings): string =>
+            JSON.stringify([
+              voiceIdOf(t),
+              t.backend === 'api'
+                ? [t.api.providerId, t.api.model, t.api.params ?? null]
+                : t.backend === 'gpu'
+                  ? [t.gpu?.steps ?? null, t.gpu?.params ?? null]
+                  : null
+            ])
           return {
             synth: ({ format }) => fakeSynth(format),
             test: async (input) => {
@@ -2985,7 +2997,7 @@ export function createMockApi(scenario: string): ClearApi {
                   generatedAt: new Date().toISOString(),
                   clips: []
                 }
-                clipsByVoice.set(voiceId, view)
+                clipsByVoice.set(clipsKeyOf(t), view)
                 // os preâmbulos, as frases de ferramenta e o "obrigado por aguardar" (pools
                 // configurados): `FILLER_<n>`/`TOOL_<n>`/`THANKS_<n>`
                 const sets = [
@@ -3010,7 +3022,7 @@ export function createMockApi(scenario: string): ClearApi {
                   }
                 return view
               },
-              list: async (input) => clipsByVoice.get(voiceIdOf(ttsFor(input))) ?? null
+              list: async (input) => clipsByVoice.get(clipsKeyOf(ttsFor(input))) ?? null
             },
             voices: async (): Promise<TtsVoicesView> => ({
               local:

@@ -665,8 +665,9 @@ export interface VoiceApi {
     clips: {
       /**
        * Gera os clipes dos preâmbulos da voz atual (cache em `userData/voice-clips`),
-       * emitindo `voice:tts:clips:progress` a cada clipe. Cache válido (mesma voz/definição) é
-       * reutilizado; voz muda → gera no diretório da voz nova.
+       * emitindo `voice:tts:clips:progress` a cada clipe. Cache válido (mesma configuração de
+       * voz/definição) é reutilizado; cada configuração de voz (voz + modelo + parâmetros) tem a
+       * pasta dela — gerar uma nunca invalida a de outra com o mesmo id de voz.
        */
       generate(input?: {
         tts?: unknown
@@ -924,7 +925,7 @@ export interface TtsClipInfo {
 
 /** Cache de clipes de uma voz (`voice:tts:clips:list|generate`). */
 export interface TtsClipsView {
-  /** Voz dona do cache (diretório em `userData/voice-clips`). */
+  /** Voz dona do cache (diretório em `userData/voice-clips`; a configuração é uma subpasta). */
   voiceId: string
   backend: 'api' | 'local' | 'gpu'
   /** Motor local ('kokoro'); null no backend de API. */

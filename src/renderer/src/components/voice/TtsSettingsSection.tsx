@@ -664,8 +664,11 @@ export function TtsSettingsSection({
           Os clipes (os preâmbulos da chamada de voz — &quot;Hum, deixa eu ver aqui.&quot; — e as
           frases de ferramenta — &quot;Vou pesquisar isso.&quot;) são gerados com a voz e o provedor
           atuais (provedor de API, Kokoro ou o motor da GPU) e ficam em cache em{' '}
-          <C>userData/voice-clips</C>, um cache por voz. Ao trocar a voz ou as frases, gere de novo
-          — sem clipes, os preâmbulos não tocam e as frases de ferramenta são sintetizadas na hora.
+          <C>userData/voice-clips</C>, um cache por configuração de voz (voz, modelo e parâmetros —
+          a voz deste dispositivo e a de uma persona convivem, mesmo com a mesma voz). Ao trocar a
+          voz ou as frases, gere de novo — sem clipes, os preâmbulos não tocam e as frases de
+          ferramenta são sintetizadas na hora. Clipes de configurações que nenhuma voz usa saem
+          sozinhos depois de 30 dias sem uso.
         </HelpTip>
         {clips.busy && (
           <span className="text-[11.5px] text-subtle tabular-nums" data-testid="tts-clips-progress">

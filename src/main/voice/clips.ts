@@ -1,19 +1,37 @@
 // Clipes dos preâmbulos (fillers), das frases de ferramenta e do "obrigado por aguardar" da chamada
 // de voz (SPEC → "Áudio → Serviço de TTS (clipes)"): falas curtas pré-geradas pela voz configurada e
-// cacheadas em `<userData>/voice-clips/<voiceId>/<FILLER|TOOL|THANKS>_<n>.wav` (silêncio das pontas aparado), com
-// manifest por voz (id, engine, modelo, hash da definição + um hash POR CLASSE). A Feature B consome
-// via `loadCurrentClipAudio` (latência zero depois de gerados; classe velha = aquele clipe não toca)
-// e a regeneração acontece quando a voz muda (voiceId próprio por voz) ou o hash muda — só as
-// classes que mudaram são sintetizadas de novo (cache só de preâmbulos, de antes das frases de
-// ferramenta: os `FILLER` continuam valendo e o "Gerar clipes" só gera os `TOOL`; idem os `THANKS`,
-// que vieram depois). Caches de
-// versões antigas (com classes de clipe que saíram — `ACK`, `THINKING`…) contam como velhos: gerar
-// de novo apaga os arquivos que não pertencem mais ao conjunto.
+// cacheadas em `<userData>/voice-clips/<voiceId>/<variante>/<FILLER|TOOL|THANKS>_<n>.wav` (silêncio
+// das pontas aparado), com manifest por VARIANTE (id, engine, modelo, hash da definição + um hash
+// POR CLASSE). A variante = os 16 primeiros hex de `clipConfigKey` (sha256 de tudo que muda o SOM
+// além das frases: backend, provedor, modelo, voz, parâmetros do modelo, motor/passos da GPU) —
+// a voz padrão deste dispositivo e a de uma persona/chat com o MESMO id de voz mas outro modelo ou
+// outras instruções convivem (antes a pasta era só por voz: gerar uma sobrescrevia a outra e cada
+// lado via o outro "desatualizado"). A Feature B consome via `loadCurrentClipAudio` (latência zero
+// depois de gerados; classe velha = aquele clipe não toca); só as classes que mudaram são
+// sintetizadas de novo (cache só de preâmbulos, de antes das frases de ferramenta: os `FILLER`
+// continuam valendo e o "Gerar clipes" só gera os `TOOL`; idem os `THANKS`, que vieram depois).
+// Layout antigo (`<voiceId>/manifest.json` direto na pasta da voz): ADOTADO pela configuração que
+// ele casa (um hash por classe igual ao dela — o hash por classe já cobre voz/modelo/parâmetros)
+// na 1ª leitura, sem sintetizar nada; o que não casa fica onde está para a outra configuração (ou
+// para a limpeza). Limpeza (`pruneClips`): variantes que nenhuma voz em uso referencia e sem uso há
+// `CLIP_UNUSED_MAX_AGE_MS` saem; as em uso nunca. Caches de versões antigas (com classes de clipe
+// que saíram — `ACK`, `THINKING`…) contam como velhos: gerar de novo apaga os arquivos que não
+// pertencem mais ao conjunto.
 // Sem Electron/UI/IPC; síntese via `synthesize` de `tts.ts` (motor local injetado ou API).
 import { createSHA256 } from 'hash-wasm'
 import { existsSync } from 'node:fs'
 import { randomUUID } from 'node:crypto'
-import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import {
+  copyFile,
+  link,
+  mkdir,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  stat,
+  writeFile
+} from 'node:fs/promises'
 import { join } from 'node:path'
 import {
   DELAY_PHRASE_POOL_MAX,
@@ -91,10 +109,20 @@ export interface VoiceClip {
   text: string
 }
 
-/** Manifest de clipes de uma voz (`<userData>/voice-clips/<voiceId>/manifest.json`). */
+/**
+ * Manifest de clipes de uma configuração de voz (`<userData>/voice-clips/<voiceId>/<variante>/
+ * manifest.json`; layout antigo, sem variante: `<voiceId>/manifest.json`).
+ */
 export interface ClipsManifest {
   /** Voz dona do cache (mesmo id de `clipVoiceId`). */
   voiceId: string
+  /**
+   * Pasta da configuração dentro da da voz (os 16 primeiros hex de `configKey`); null = layout
+   * antigo (direto na pasta da voz — ainda não adotado).
+   */
+  variant: string | null
+  /** `clipConfigKey` completo da configuração (null no layout antigo). */
+  configKey: string | null
   backend: 'api' | 'local' | 'gpu'
   /** Motor local ('kokoro'); null no backend de API. */
   engine: string | null
@@ -168,9 +196,113 @@ export function clipsRoot(baseDir: string): string {
   return join(baseDir, 'voice-clips')
 }
 
-/** Diretório de cache de uma voz (null quando o id não é um segmento seguro). */
-export function clipsDir(baseDir: string, voiceId: string): string | null {
-  return SAFE_SEGMENT.test(voiceId) ? join(clipsRoot(baseDir), voiceId) : null
+/**
+ * Diretório de cache de uma voz (null quando o id não é um segmento seguro). Com `variant`: a pasta
+ * daquela configuração dentro da da voz (variante fora do formato → null); sem: a pasta da voz
+ * (onde mora o layout antigo).
+ */
+export function clipsDir(baseDir: string, voiceId: string, variant?: string | null): string | null {
+  if (!SAFE_SEGMENT.test(voiceId)) return null
+  if (variant == null) return join(clipsRoot(baseDir), voiceId)
+  return VARIANT_RE.test(variant) ? join(clipsRoot(baseDir), voiceId, variant) : null
+}
+
+// ---------------- configuração de voz (variante) ----------------
+
+/** Nome da pasta de uma variante: 16 hex (prefixo de `clipConfigKey`). */
+const VARIANT_RE = /^[0-9a-f]{16}$/
+
+/** Variante sem uso (e que nenhuma voz em uso referencia) há mais que isto sai na limpeza. */
+export const CLIP_UNUSED_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000
+
+/**
+ * O que muda o SOM dos clipes além das frases (a "configuração de voz"): backend; na API o
+ * provedor (id + tipo), o modelo, a voz e os parâmetros do modelo (`api.params`, sem o `auto_mode`
+ * da ElevenLabs, que só muda a chamada); no local o motor e a voz; na GPU o motor, a voz, os passos
+ * e os parâmetros resolvidos. NÃO entram: endereço/chave/headers (`baseUrl`, `apiKey`,
+ * `appHeaders`, `extraBody` — derivados no main, a assinatura de app varia por chat sem mudar o
+ * som), o transporte da chamada (`elevenLabsWs`) e o `installed`. Puro.
+ */
+export function clipConfigPayload(settings: TtsSettings): Record<string, unknown> {
+  if (settings.backend === 'local')
+    return {
+      backend: 'local',
+      engine: settings.local?.engine ?? 'kokoro',
+      voice: settings.local?.voice ?? null
+    }
+  if (settings.backend === 'gpu') {
+    const g = settings.gpu
+    return {
+      backend: 'gpu',
+      engine: g?.engine ?? null,
+      voice: g?.voice ?? null,
+      steps: g?.steps ?? null,
+      params: g ? resolveGpuParams(g.engine, g.params?.[g.engine]) : null
+    }
+  }
+  const api = settings.api
+  return {
+    backend: 'api',
+    providerId: api.providerId?.trim() || null,
+    providerKind: api.providerKind ?? null,
+    model: api.model.trim(),
+    voice: (api.voice ?? '').trim() || null,
+    params: soundApiParams(api.params) ?? null
+  }
+}
+
+/** `api.params` só com o que muda o som (sem `elevenlabs.auto_mode`, famílias vazias fora). */
+function soundApiParams(params: TtsSettings['api']['params']): Record<string, unknown> | null {
+  if (!params) return null
+  const p = JSON.parse(JSON.stringify(params)) as Record<string, Record<string, unknown>>
+  if (p.elevenlabs) delete p.elevenlabs.auto_mode
+  for (const k of Object.keys(p)) if (!p[k] || !Object.keys(p[k]).length) delete p[k]
+  return Object.keys(p).length ? p : null
+}
+
+/** JSON com as chaves ordenadas (a ordem em que a UI gravou os parâmetros não muda a chave). */
+function stableJson(v: unknown): string {
+  if (Array.isArray(v)) return `[${v.map(stableJson).join(',')}]`
+  if (v && typeof v === 'object')
+    return `{${Object.keys(v)
+      .filter((k) => (v as Record<string, unknown>)[k] !== undefined)
+      .sort()
+      .map((k) => `${JSON.stringify(k)}:${stableJson((v as Record<string, unknown>)[k])}`)
+      .join(',')}}`
+  return JSON.stringify(v ?? null)
+}
+
+/**
+ * Chave (sha256 hex) da configuração de voz — a mesma em todo lugar que resolve a MESMA voz efetiva
+ * (Configurações → Áudio, a aba Voz da persona/chat, o dock e a chamada): todos passam pelas
+ * settings resolvidas do main (`getVoiceSettingsWith`).
+ */
+export async function clipConfigKey(settings: TtsSettings): Promise<string> {
+  const hasher = await createSHA256()
+  return hasher.update(stableJson({ v: 1, ...clipConfigPayload(settings) })).digest('hex')
+}
+
+/** Onde ficam os clipes de uma configuração de voz. */
+export interface ClipsLocation {
+  voiceId: string
+  /** Pasta da configuração (16 hex de `configKey`). */
+  variant: string
+  configKey: string
+  /** `<baseDir>/voice-clips/<voiceId>/<variant>`. */
+  dir: string
+}
+
+/** Pasta (voz + variante) da configuração de voz das settings. */
+export async function clipsLocation(
+  baseDir: string,
+  settings: TtsSettings
+): Promise<ClipsLocation> {
+  const voiceId = clipVoiceId(settings)
+  const configKey = await clipConfigKey(settings)
+  const variant = configKey.slice(0, 16)
+  const dir = clipsDir(baseDir, voiceId, variant)
+  if (!dir) throw new Error(`id de voz inseguro para clipes: ${voiceId}`)
+  return { voiceId, variant, configKey, dir }
 }
 
 // ---------------- manifest/hash ----------------
@@ -283,11 +415,16 @@ function normalizeClip(v: unknown): VoiceClip | null {
 }
 
 /**
- * Lê e valida o manifest de uma voz (null quando ausente/inválido/sem os arquivos — o chamador
- * regenera). Só aceita ids de voz seguros e arquivos da whitelist.
+ * Lê e valida o manifest de uma variante da voz (null quando ausente/inválido/sem os arquivos — o
+ * chamador regenera). Sem `variant`: o layout ANTIGO (manifest direto na pasta da voz). Só aceita
+ * ids de voz seguros, variantes no formato e arquivos da whitelist.
  */
-export async function loadClips(baseDir: string, voiceId: string): Promise<ClipsManifest | null> {
-  const dir = clipsDir(baseDir, voiceId)
+export async function loadClips(
+  baseDir: string,
+  voiceId: string,
+  variant?: string | null
+): Promise<ClipsManifest | null> {
+  const dir = clipsDir(baseDir, voiceId, variant)
   if (!dir) return null
   let raw: string
   try {
@@ -302,7 +439,16 @@ export async function loadClips(baseDir: string, voiceId: string): Promise<Clips
     return null
   }
   const m = parsed as Record<string, unknown>
+  if (!m || typeof m !== 'object') return null
   if (m.voiceId !== voiceId) return null
+  // variante: o manifest diz de qual configuração é (a pasta é o prefixo da chave)
+  let configKey: string | null = null
+  if (variant != null) {
+    if (m.variant !== variant) return null
+    if (typeof m.configKey !== 'string' || !/^[0-9a-f]{64}$/.test(m.configKey)) return null
+    if (!m.configKey.startsWith(variant)) return null
+    configKey = m.configKey
+  }
   if (m.backend !== 'api' && m.backend !== 'local' && m.backend !== 'gpu') return null
   if (typeof m.hash !== 'string' || !/^[0-9a-f]{64}$/.test(m.hash)) return null
   if (typeof m.generatedAt !== 'string') return null
@@ -328,6 +474,8 @@ export async function loadClips(baseDir: string, voiceId: string): Promise<Clips
   }
   return {
     voiceId,
+    variant: variant ?? null,
+    configKey,
     backend: m.backend,
     engine: (m.engine as string | null) ?? null,
     model: m.model,
@@ -340,15 +488,17 @@ export async function loadClips(baseDir: string, voiceId: string): Promise<Clips
 
 /**
  * Caminho do `.wav` de um clipe da voz (null quando a classe/variante não existe no cache).
+ * `configVariant` = a pasta da configuração (`ClipsManifest.variant`; null = layout antigo).
  * A Feature B toca este arquivo direto (latência zero depois de gerados).
  */
 export async function resolveClip(
   baseDir: string,
   voiceId: string,
   cls: string,
-  n: number
+  n: number,
+  configVariant?: string | null
 ): Promise<string | null> {
-  const dir = clipsDir(baseDir, voiceId)
+  const dir = clipsDir(baseDir, voiceId, configVariant)
   if (!dir) return null
   let file: string
   try {
@@ -368,9 +518,10 @@ export async function loadClipAudio(
   baseDir: string,
   voiceId: string,
   cls: string,
-  n: number
+  n: number,
+  configVariant?: string | null
 ): Promise<{ audio: Uint8Array; mime: string } | null> {
-  const path = await resolveClip(baseDir, voiceId, cls, n)
+  const path = await resolveClip(baseDir, voiceId, cls, n, configVariant)
   if (!path) return null
   try {
     return { audio: await readFile(path), mime: 'audio/wav' }
@@ -379,24 +530,17 @@ export async function loadClipAudio(
   }
 }
 
-// ---------------- geração ----------------
+// ---------------- variante: leitura, adoção do layout antigo, uso ----------------
 
 /**
- * Gera (ou reusa) os clipes da voz configurada: cada frase de `clipPhraseSet` é sintetizada pela
- * voz atual (`synthesize` — motor local ou API) e gravada em
- * `<baseDir>/voice-clips/<voiceId>/<CLASSE>_<n>.wav`, com manifest (voz, engine, modelo, hash).
- * Cache: se o manifest da voz tem o mesmo hash e todos os arquivos existem, devolve sem sintetizar
- * (o "Gerar clipes" da UI é idempotente); a classe com o mesmo hash por classe é reaproveitada (só
- * as classes que mudaram são sintetizadas); voz nova = diretório novo = regeneração natural.
+ * Uma operação por pasta de variante por vez (dois cliques/janelas, adoção × geração): a segunda
+ * espera a primeira e reaproveita o resultado em vez de disputar os mesmos `.part`/manifest.
  */
-export async function generateClips(opts: GenerateClipsOptions): Promise<ClipsManifest> {
-  const voiceId = clipVoiceId(opts.settings)
-  const dir = clipsDir(opts.baseDir, voiceId)
-  if (!dir) throw new Error(`id de voz inseguro para clipes: ${voiceId}`)
-  // gerações da MESMA voz em série (dois cliques/janelas): a segunda espera a primeira e reaproveita
-  // o cache dela em vez de disputar os mesmos `.part`/manifest
+const clipLocks = new Map<string, Promise<unknown>>()
+
+async function withClipLock<T>(dir: string, fn: () => Promise<T>): Promise<T> {
   const prev = clipLocks.get(dir) ?? Promise.resolve()
-  const run = prev.catch(() => undefined).then(() => generateClipsLocked(opts, voiceId, dir))
+  const run = prev.catch(() => undefined).then(fn)
   clipLocks.set(dir, run)
   try {
     return await run
@@ -405,13 +549,185 @@ export async function generateClips(opts: GenerateClipsOptions): Promise<ClipsMa
   }
 }
 
-const clipLocks = new Map<string, Promise<unknown>>()
+async function writeManifest(dir: string, manifest: ClipsManifest): Promise<void> {
+  const tmp = join(dir, `${MANIFEST_FILE}.${randomUUID().slice(0, 8)}.tmp`)
+  await writeFile(tmp, JSON.stringify(manifest, null, 2))
+  await rename(tmp, join(dir, MANIFEST_FILE))
+}
+
+/** Marca de uso da variante (`{ lastUsedAt }` — tocada, listada ou gerada; vale para a limpeza). */
+const USAGE_FILE = 'used.json'
+/** A marca é regravada no máximo 1× por isto por pasta (a chamada lê clipes o tempo todo). */
+const USAGE_THROTTLE_MS = 60 * 60 * 1000
+const usageWritten = new Map<string, number>()
+
+async function markClipsUsed(dir: string, force = false): Promise<void> {
+  const now = Date.now()
+  const last = usageWritten.get(dir)
+  if (!force && last !== undefined && now - last < USAGE_THROTTLE_MS) return
+  usageWritten.set(dir, now)
+  try {
+    const tmp = join(dir, `${USAGE_FILE}.${randomUUID().slice(0, 8)}.tmp`)
+    await writeFile(tmp, JSON.stringify({ lastUsedAt: new Date(now).toISOString() }))
+    await rename(tmp, join(dir, USAGE_FILE))
+  } catch {
+    // pasta sumiu (limpeza/remoção) — a marca não é essencial
+  }
+}
+
+const isoMs = (v: unknown): number => {
+  const t = typeof v === 'string' ? Date.parse(v) : NaN
+  return Number.isFinite(t) ? t : 0
+}
+
+/** Último uso da variante: a marca de uso ou a geração (o mais novo); sem nenhum, o mtime da pasta. */
+async function variantLastUsed(dir: string): Promise<number> {
+  const field = async (file: string, key: string): Promise<number> => {
+    try {
+      const o = JSON.parse(await readFile(join(dir, file), 'utf8')) as Record<string, unknown>
+      return isoMs(o?.[key])
+    } catch {
+      return 0
+    }
+  }
+  const best = Math.max(
+    await field(USAGE_FILE, 'lastUsedAt'),
+    await field(MANIFEST_FILE, 'generatedAt')
+  )
+  if (best) return best
+  try {
+    return (await stat(dir)).mtimeMs
+  } catch {
+    return 0
+  }
+}
+
+/**
+ * O cache do layout antigo (manifest direto na pasta da voz) é desta configuração? Casa quando o
+ * hash da definição inteira ou o de ALGUMA classe é igual ao dela — o hash por classe cobre voz,
+ * modelo, parâmetros e motor, então só a configuração que gerou aqueles arquivos casa (classes que
+ * não casam são frases que mudaram depois: ficam "velhas" e são refeitas sozinhas).
+ */
+async function legacyMatches(
+  legacy: ClipsManifest,
+  settings: TtsSettings,
+  fillerPool?: readonly FillerPhrase[] | null,
+  toolPool?: readonly ToolPhrase[] | null,
+  thanksPool?: readonly string[] | null
+): Promise<boolean> {
+  if (legacy.hash === (await clipsHash(settings, fillerPool, toolPool, thanksPool))) return true
+  const hashes = await clipClassHashes(settings, fillerPool, toolPool, thanksPool)
+  return CLIP_CLASSES.some((c) => !!legacy.classHashes[c] && legacy.classHashes[c] === hashes[c])
+}
+
+async function linkOrCopy(src: string, dst: string): Promise<void> {
+  try {
+    await link(src, dst)
+  } catch {
+    await copyFile(src, dst)
+  }
+}
+
+/**
+ * Adota o cache do layout antigo (`<voiceId>/manifest.json` + `.wav`) para a variante desta
+ * configuração quando ele casa com ela: cada arquivo ganha um link (ou cópia) na pasta da
+ * variante, o manifest dela sai por último e só então o antigo é apagado (falhou no meio → o
+ * antigo continua valendo). Não casa (é de outra configuração com o mesmo id de voz) → fica onde
+ * está, para ela. Nada é sintetizado.
+ */
+async function adoptLegacyClips(
+  baseDir: string,
+  loc: ClipsLocation,
+  settings: TtsSettings,
+  fillerPool?: readonly FillerPhrase[] | null,
+  toolPool?: readonly ToolPhrase[] | null,
+  thanksPool?: readonly string[] | null
+): Promise<ClipsManifest | null> {
+  const voiceDir = clipsDir(baseDir, loc.voiceId)
+  if (!voiceDir || !existsSync(join(voiceDir, MANIFEST_FILE))) return null
+  return withClipLock(loc.dir, async () => {
+    const already = await loadClips(baseDir, loc.voiceId, loc.variant)
+    if (already) return already.configKey === loc.configKey ? already : null
+    const legacy = await loadClips(baseDir, loc.voiceId)
+    if (!legacy) return null
+    if (!(await legacyMatches(legacy, settings, fillerPool, toolPool, thanksPool))) return null
+    try {
+      await mkdir(loc.dir, { recursive: true })
+      for (const c of legacy.clips) {
+        const part = join(loc.dir, `${c.file}.${randomUUID().slice(0, 8)}.part`)
+        await linkOrCopy(join(voiceDir, c.file), part)
+        await rename(part, join(loc.dir, c.file))
+      }
+      await writeManifest(loc.dir, { ...legacy, variant: loc.variant, configKey: loc.configKey })
+    } catch {
+      return null
+    }
+    // o antigo sai (o manifest primeiro: `.wav` solto sem manifest é lixo para a limpeza)
+    await rm(join(voiceDir, MANIFEST_FILE), { force: true })
+    for (const c of legacy.clips) await rm(join(voiceDir, c.file), { force: true })
+    return loadClips(baseDir, loc.voiceId, loc.variant)
+  })
+}
+
+/**
+ * Manifest da configuração de voz das settings (null = ainda não gerados): o da variante dela —
+ * ou o do layout antigo da mesma voz quando casa com esta configuração (adotado na hora: os clipes
+ * continuam tocando sem regerar). Lido = usado (marca para a limpeza). É o que a lista/status, a
+ * geração e a chamada usam: a mesma voz efetiva resolve sempre a mesma pasta.
+ */
+export async function loadVoiceClips(
+  baseDir: string,
+  settings: TtsSettings,
+  fillerPool?: readonly FillerPhrase[] | null,
+  toolPool?: readonly ToolPhrase[] | null,
+  thanksPool?: readonly string[] | null
+): Promise<ClipsManifest | null> {
+  const loc = await clipsLocation(baseDir, settings)
+  let m = await loadClips(baseDir, loc.voiceId, loc.variant)
+  if (m && m.configKey !== loc.configKey) return null
+  if (!m) m = await adoptLegacyClips(baseDir, loc, settings, fillerPool, toolPool, thanksPool)
+  if (m) await markClipsUsed(loc.dir)
+  return m
+}
+
+/**
+ * Restos inúteis do layout antigo na pasta da voz quando ele NÃO vale para ninguém (manifest
+ * inválido — classes que saíram, arquivo faltando — ou `.wav` sem manifest): saem na geração. Um
+ * antigo válido nunca é tocado aqui (pode ser de outra configuração com o mesmo id de voz).
+ */
+async function dropBrokenLegacy(baseDir: string, voiceId: string): Promise<void> {
+  const voiceDir = clipsDir(baseDir, voiceId)
+  if (!voiceDir) return
+  const names = (await readdir(voiceDir, { withFileTypes: true }).catch(() => []))
+    .filter((e) => e.isFile() && LEGACY_FILE_RE.test(e.name))
+    .map((e) => e.name)
+  if (!names.length || (await loadClips(baseDir, voiceId))) return
+  for (const name of names) await rm(join(voiceDir, name), { force: true })
+}
+
+// ---------------- geração ----------------
+
+/**
+ * Gera (ou reusa) os clipes da configuração de voz: cada frase de `clipPhraseSet` é sintetizada
+ * pela voz (`synthesize` — motor local ou API) e gravada em
+ * `<baseDir>/voice-clips/<voiceId>/<variante>/<CLASSE>_<n>.wav`, com manifest (voz, variante,
+ * engine, modelo, hashes). Cache: se o manifest da variante tem o mesmo hash e todos os arquivos
+ * existem, devolve sem sintetizar (o "Gerar clipes" da UI é idempotente); a classe com o mesmo hash
+ * por classe é reaproveitada (só as classes que mudaram são sintetizadas); configuração nova =
+ * pasta nova — as outras configurações da MESMA voz ficam intactas.
+ */
+export async function generateClips(opts: GenerateClipsOptions): Promise<ClipsManifest> {
+  const loc = await clipsLocation(opts.baseDir, opts.settings)
+  // o layout antigo desta configuração é adotado antes (as classes em dia não são sintetizadas)
+  await loadVoiceClips(opts.baseDir, opts.settings, opts.fillerPool, opts.toolPool, opts.thanksPool)
+  return withClipLock(loc.dir, () => generateClipsLocked(opts, loc))
+}
 
 async function generateClipsLocked(
   opts: GenerateClipsOptions,
-  voiceId: string,
-  dir: string
+  loc: ClipsLocation
 ): Promise<ClipsManifest> {
+  const { voiceId, dir } = loc
   const hash = await clipsHash(opts.settings, opts.fillerPool, opts.toolPool, opts.thanksPool)
   const classHashes = await clipClassHashes(
     opts.settings,
@@ -419,8 +735,12 @@ async function generateClipsLocked(
     opts.toolPool,
     opts.thanksPool
   )
-  const existing = await loadClips(opts.baseDir, voiceId)
-  if (existing && existing.hash === hash) return existing
+  const loaded = await loadClips(opts.baseDir, voiceId, loc.variant)
+  const existing = loaded && loaded.configKey === loc.configKey ? loaded : null
+  if (existing && existing.hash === hash) {
+    await markClipsUsed(dir, true)
+    return existing
+  }
   // classes ainda em dia no cache: os clipes delas ficam (nada é sintetizado de novo)
   const reuse = new Set(
     CLIP_CLASSES.filter((c) => !!existing && existing.classHashes[c] === classHashes[c])
@@ -431,6 +751,7 @@ async function generateClipsLocked(
   const total = CLIP_CLASSES.reduce((a, c) => a + phrases[c].length, 0)
   let done = 0
   await mkdir(dir, { recursive: true })
+  await dropBrokenLegacy(opts.baseDir, voiceId)
   // conjunto novo: todo `.wav` que não pertence mais a ele sai — variantes que não existem mais
   // (pool menor) e as classes de versões antigas (`ACK_1.wav`, `THINKING_3.wav`…)
   const keep = new Set(
@@ -475,6 +796,8 @@ async function generateClipsLocked(
         : null
   const manifest: ClipsManifest = {
     voiceId,
+    variant: loc.variant,
+    configKey: loc.configKey,
     backend: opts.settings.backend,
     engine,
     model:
@@ -488,9 +811,8 @@ async function generateClipsLocked(
     generatedAt: new Date().toISOString(),
     clips: entries
   }
-  const tmp = join(dir, `${MANIFEST_FILE}.${randomUUID().slice(0, 8)}.tmp`)
-  await writeFile(tmp, JSON.stringify(manifest, null, 2))
-  await rename(tmp, join(dir, MANIFEST_FILE))
+  await writeManifest(dir, manifest)
+  await markClipsUsed(dir, true)
   return manifest
 }
 
@@ -505,7 +827,7 @@ export async function loadCurrentClips(
   toolPool?: readonly ToolPhrase[] | null,
   thanksPool?: readonly string[] | null
 ): Promise<ClipsManifest | null> {
-  const m = await loadClips(baseDir, clipVoiceId(settings))
+  const m = await loadVoiceClips(baseDir, settings, fillerPool, toolPool, thanksPool)
   if (!m) return null
   return m.hash === (await clipsHash(settings, fillerPool, toolPool, thanksPool)) ? m : null
 }
@@ -527,8 +849,8 @@ export async function clipStaleClasses(
 }
 
 /**
- * Bytes de um clipe só quando a CLASSE dele está em dia no cache da voz atual (senão null — nunca
- * toca clipe velho; a frase de ferramenta e o agradecimento caem na síntese ao vivo).
+ * Bytes de um clipe só quando a CLASSE dele está em dia no cache da configuração de voz (senão
+ * null — nunca toca clipe velho; a frase de ferramenta e o agradecimento caem na síntese ao vivo).
  */
 export async function loadCurrentClipAudio(
   baseDir: string,
@@ -540,11 +862,98 @@ export async function loadCurrentClipAudio(
   thanksPool?: readonly string[] | null
 ): Promise<{ audio: Uint8Array; mime: string } | null> {
   if (!(CLIP_CLASSES as readonly string[]).includes(cls)) return null
-  const m = await loadClips(baseDir, clipVoiceId(settings))
+  const m = await loadVoiceClips(baseDir, settings, fillerPool, toolPool, thanksPool)
   if (!m || !m.clips.some((c) => c.class === cls && c.n === n)) return null
   const current = await clipClassHash(settings, cls as ClipClass, fillerPool, toolPool, thanksPool)
   if (m.classHashes[cls as ClipClass] !== current) return null
-  return loadClipAudio(baseDir, m.voiceId, cls, n)
+  return loadClipAudio(baseDir, m.voiceId, cls, n, m.variant)
+}
+
+// ---------------- limpeza (armazenamento limitado) ----------------
+
+/** Arquivos do layout antigo na pasta da voz (nada fora disto é apagado ali). */
+const LEGACY_FILE_RE = /^(?:manifest\.json|[A-Z]+_\d+\.wav|[A-Za-z0-9._-]+\.(?:part|tmp))$/
+
+export interface PruneClipsOptions {
+  baseDir: string
+  /**
+   * Settings RESOLVIDAS (`getVoiceSettingsWith`) de toda voz em uso: a deste dispositivo, as das
+   * personas e dos chats e a da chamada em andamento — as variantes delas nunca saem.
+   */
+  keep: readonly TtsSettings[]
+  fillerPool?: readonly FillerPhrase[] | null
+  toolPool?: readonly ToolPhrase[] | null
+  thanksPool?: readonly string[] | null
+  /** Sem uso há mais que isto (e sem voz em uso) → sai. Padrão `CLIP_UNUSED_MAX_AGE_MS`. */
+  maxAgeMs?: number
+  now?: number
+}
+
+/**
+ * Limpeza do cache de clipes: primeiro as vozes em uso adotam o layout antigo que casa com elas;
+ * depois sai toda variante que nenhuma delas usa e que não foi tocada/listada/gerada há
+ * `maxAgeMs`, e o layout antigo que não casa com nenhuma voz em uso e é mais velho que isso. Nada
+ * de uma configuração em uso é apagado; pasta em geração é pulada; pasta de voz vazia sai.
+ * Devolve o que saiu (`<voiceId>/<variante>` ou `<voiceId>/(antigo)`).
+ */
+export async function pruneClips(opts: PruneClipsOptions): Promise<{ removed: string[] }> {
+  const now = opts.now ?? Date.now()
+  const maxAge = opts.maxAgeMs ?? CLIP_UNUSED_MAX_AGE_MS
+  const pools = [opts.fillerPool, opts.toolPool, opts.thanksPool] as const
+  // pasta de cada voz em uso (falhar aqui = não limpar nada: nunca apagar de uma voz em uso)
+  const keep = new Set<string>()
+  for (const s of opts.keep) keep.add((await clipsLocation(opts.baseDir, s)).dir)
+  for (const s of opts.keep) {
+    try {
+      await loadVoiceClips(opts.baseDir, s, ...pools)
+    } catch {
+      // adoção falhou: o antigo fica (a checagem abaixo o protege)
+    }
+  }
+  const removed: string[] = []
+  const root = clipsRoot(opts.baseDir)
+  const voices = await readdir(root, { withFileTypes: true }).catch(() => [])
+  for (const v of voices) {
+    if (!v.isDirectory() || !SAFE_SEGMENT.test(v.name)) continue
+    const voiceDir = join(root, v.name)
+    const entries = await readdir(voiceDir, { withFileTypes: true }).catch(() => [])
+    for (const e of entries) {
+      if (!e.isDirectory() || !VARIANT_RE.test(e.name)) continue
+      const dir = join(voiceDir, e.name)
+      if (keep.has(dir) || clipLocks.has(dir)) continue
+      if (now - (await variantLastUsed(dir)) <= maxAge) continue
+      await rm(dir, { recursive: true, force: true })
+      usageWritten.delete(dir)
+      removed.push(`${v.name}/${e.name}`)
+    }
+    // layout antigo que nenhuma voz em uso adotou (nem casa com uma delas) e velho
+    const legacyFiles = entries
+      .filter((e) => e.isFile() && LEGACY_FILE_RE.test(e.name))
+      .map((e) => e.name)
+    if (legacyFiles.length) {
+      const legacy = await loadClips(opts.baseDir, v.name)
+      let inUse = false
+      if (legacy)
+        for (const s of opts.keep) if (await legacyMatches(legacy, s, ...pools)) inUse = true
+      let when = legacy ? isoMs(legacy.generatedAt) : 0
+      if (!when)
+        for (const f of legacyFiles)
+          when = Math.max(
+            when,
+            await stat(join(voiceDir, f)).then(
+              (x) => x.mtimeMs,
+              () => 0
+            )
+          )
+      if (!inUse && now - when > maxAge) {
+        for (const f of legacyFiles) await rm(join(voiceDir, f), { force: true })
+        removed.push(`${v.name}/(antigo)`)
+      }
+    }
+    const left = await readdir(voiceDir).catch(() => ['?'])
+    if (!left.length) await rm(voiceDir, { recursive: true, force: true })
+  }
+  return { removed }
 }
 
 // ---------------- pós-processamento (puro) ----------------

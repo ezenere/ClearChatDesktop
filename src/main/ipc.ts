@@ -153,11 +153,11 @@ import { audioDurationMs, sanitizeDictationMeta } from '@shared/voiceCallMarks'
 import { parseOpenFile } from '@shared/openFile'
 import type { VoiceCatalogRequest } from '@shared/voiceCatalog'
 import {
-  clipVoiceId,
   generateClips,
-  loadClips,
+  loadVoiceClips,
   clipStaleClasses,
   loadCurrentClipAudio,
+  pruneClips,
   type ClipsManifest
 } from './voice/clips'
 import { createEvalLogger } from './voice/evalLog'
@@ -290,6 +290,40 @@ function callVoiceSettings(chatId?: string | null): VoiceSettings {
   return callVoice && (!chatId || chatId === callVoice.chatId)
     ? getVoiceSettingsWith(callVoice, callSignature())
     : getVoiceSettings()
+}
+
+/**
+ * Limpeza do cache de clipes (`pruneClips`): as vozes em uso — a deste dispositivo, a de toda
+ * persona e todo chat e a da chamada em andamento, resolvidas como a lista/geração/chamada as
+ * resolvem — ficam sempre; variante que nenhuma delas usa e sem uso há 30 dias sai. Uma por vez
+ * (a seguinte espera); falha só vai para o log.
+ */
+let clipsPruning: Promise<void> = Promise.resolve()
+function pruneVoiceClipsSoon(): void {
+  clipsPruning = clipsPruning
+    .then(async () => {
+      const choices = new Map<string, VoiceTtsChoice | null>([['', null]])
+      const add = (v: unknown): void => {
+        const c = normalizeVoiceTtsChoice(v)
+        if (c) choices.set(JSON.stringify(c), c)
+      }
+      add(callVoice?.tts)
+      for (const p of presetsRepo.list()) add(p.config.voice?.tts)
+      for (const c of chatsRepo.list()) add(c.config.voice?.tts)
+      const device = getVoiceSettings().voiceCallDefaults
+      const { removed } = await pruneClips({
+        baseDir: app.getPath('userData'),
+        keep: [...choices.values()].map((c) => getVoiceSettingsWith({ tts: c }).tts),
+        fillerPool: device.fillers.pool,
+        toolPool: device.toolPhrases.pool,
+        thanksPool: device.delayPhrases.thanksPool
+      })
+      if (removed.length)
+        console.log(`[clearchat] clipes de voz sem uso removidos: ${removed.join(', ')}`)
+    })
+    .catch((e) =>
+      console.warn('[clearchat] limpeza dos clipes de voz:', e instanceof Error ? e.message : e)
+    )
 }
 
 /**
@@ -540,6 +574,9 @@ function runDeps(): RunDeps {
 
 export function registerIpc(): void {
   presetsRepo.seed()
+  // clipes de voz: a limpeza roda uma vez por abertura, depois que o app assentou (a chamada e a
+  // UI nunca esperam por ela)
+  setTimeout(pruneVoiceClipsSoon, 2 * 60_000).unref()
   // ---- chamada de voz meia-duplex: o dono do turno no main + os overrides de request ----
   // (o renderer é o "sensor": captura/silêncio/reprodução — SPEC → "Chamada de voz (meia-duplex)")
   // decisões de preâmbulo também viram linhas no log de diagnóstico (`voice-eval/*.jsonl`)
@@ -1530,6 +1567,8 @@ export function registerIpc(): void {
         local: ttsLocalEngine(),
         onProgress: (e) => sendToWindows(VOICE_TTS_CLIPS_PROGRESS_CHANNEL, e)
       })
+      // configuração nova gerada: as que ficaram sem uso (e sem voz que as use) podem sair
+      pruneVoiceClipsSoon()
       return toClipsView(manifest)
     },
     [IPC.voice.ttsClipsList]: async (input?: {
@@ -1537,7 +1576,15 @@ export function registerIpc(): void {
       call?: boolean
     }): Promise<TtsClipsView | null> => {
       const v = getVoiceSettingsWith({ tts: clipsTtsChoice(input, callVoice?.tts) })
-      const m = await loadClips(app.getPath('userData'), clipVoiceId(v.tts))
+      // a pasta da CONFIGURAÇÃO de voz (voz + modelo + parâmetros…) — a mesma que a geração e a
+      // chamada resolvem; o layout antigo que casa com ela é adotado aqui
+      const m = await loadVoiceClips(
+        app.getPath('userData'),
+        v.tts,
+        v.voiceCallDefaults.fillers.pool,
+        v.voiceCallDefaults.toolPhrases.pool,
+        v.voiceCallDefaults.delayPhrases.thanksPool
+      )
       if (!m) return null
       // cache de uma definição antiga (frases/pool mudaram): "stale" → a UI pede para regerar; as
       // classes velhas vão em `staleClasses` (as outras continuam tocando — ex.: cache só de
