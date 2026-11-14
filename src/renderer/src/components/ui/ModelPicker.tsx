@@ -330,7 +330,9 @@ export function ModelPicker({
               'group/h flex h-full w-full items-center gap-1.5 bg-elevated px-3 text-left',
               !floating && i > 0 && 'border-t border-border/60',
               floating && 'border-b border-border/60 shadow-[0_6px_10px_-8px_rgb(0_0_0/0.7)]',
-              !searching && 'hover:bg-hover/50'
+              // opaco: o cabeçalho fixo (floating) fica por cima das linhas que rolam por baixo
+              !searching &&
+                'hover:bg-[color-mix(in_srgb,var(--color-hover)_50%,var(--color-elevated))]'
             )}
           >
             <ChevronRight
