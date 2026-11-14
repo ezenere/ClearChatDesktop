@@ -1377,8 +1377,10 @@ export const useStore = create<Store>()((set, get) => ({
     // mesmo caminho ou dentro da pasta movida → o caminho correspondente no destino
     const map = (p: string): string | null | undefined => {
       if (p === from) return to
-      const pre = from.endsWith('/') ? from : `${from}/`
-      if (p.startsWith(pre)) return to ? `${to}/${p.slice(pre.length)}` : null
+      // dentro da pasta movida (separador `/` ou `\` — host Windows)
+      const sep = p[from.length]
+      if (p.startsWith(from) && (sep === '/' || sep === '\\'))
+        return to ? `${to}${p.slice(from.length)}` : null
       return undefined
     }
     const nameOf = (p: string): string => p.split(/[\\/]/).filter(Boolean).pop() ?? p

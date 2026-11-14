@@ -139,6 +139,17 @@ export function parseOpenFile(v: unknown, root?: string | null): OpenFileMeta | 
   return path ? { path } : null
 }
 
+/**
+ * `payload.meta.openFile` de um comando remoto `send`/`force` (§8.6): vale em qualquer `meta` (o
+ * composer manda `{ openFile }` sem `kind`; `inter-chat` não leva arquivo) — string ≤ 1024 sem
+ * caracteres de controle; quem executa normaliza pela raiz do chat dele. Senão null (a mensagem
+ * segue sem o arquivo, nunca é recusada por isso).
+ */
+export function sendMetaOpenFile(meta: unknown): OpenFileMeta | null {
+  if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return null
+  return parseOpenFile((meta as { openFile?: unknown }).openFile)
+}
+
 // ---------------- request ----------------
 
 /** `openFile` utilizável de um meta salvo/sincronizado (sem renormalizar: o host já normalizou). */

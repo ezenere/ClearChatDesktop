@@ -20,6 +20,7 @@ import {
   parseOpenFile,
   pathBaseName,
   resolveChatPath,
+  sendMetaOpenFile,
   storedOpenFile,
   withOpenFile,
   withOpenFiles
@@ -89,6 +90,13 @@ test('parseOpenFile / storedOpenFile: entrada não confiável', () => {
   assert.deepEqual(storedOpenFile({ openFile: { path: 'a.ts' } }), { path: 'a.ts' })
   assert.equal(storedOpenFile({ openFile: { path: 'x'.repeat(2000) } }), null)
   assert.equal(storedOpenFile({}), null)
+})
+
+test('sendMetaOpenFile: `meta.openFile` do comando remoto `send` (qualquer meta)', () => {
+  assert.deepEqual(sendMetaOpenFile({ openFile: { path: '/r/a.ts' } }), { path: '/r/a.ts' })
+  assert.deepEqual(sendMetaOpenFile({ kind: 'inter-chat', openFile: { path: 'a' } }), { path: 'a' })
+  for (const bad of [null, undefined, 'x', [], {}, { openFile: { path: 'a\u0000' } }])
+    assert.equal(sendMetaOpenFile(bad), null)
 })
 
 test('resolveChatPath / pathBaseName', () => {
