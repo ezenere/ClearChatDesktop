@@ -45,8 +45,14 @@ const SKIP_LABELS: Record<string, string> = {
   // frases de ferramenta (motivo `<categoria>/<motivo>`; `live/` = síntese ao vivo)
   'tool-phrase': 'a frase de ferramenta tocou no lugar',
   'no-phrase': 'sem frase para essa tool',
-  announced: 'o assistente já falou antes da tool',
-  'after-preamble': 'preâmbulo terminou há menos de 3 s'
+  announced: 'o assistente já falou antes da tool'
+}
+
+/** Frase de ferramenta que esperou na fila (`after-<o quê>`) → texto. */
+const QUEUED_LABELS: Record<string, string> = {
+  'after-filler': 'na fila após o preâmbulo',
+  'after-delay': 'na fila após a frase de espera',
+  'after-audio': 'na fila após o áudio do assistente'
 }
 
 /** Classe do ato de fala curta → nome no painel (as de ferramenta têm linha própria). */
@@ -75,11 +81,14 @@ function describeTimelineEvent(e: VoiceCallTimelineEvent): string {
   switch (e.kind) {
     case 'decision': {
       if (e.class === 'TOOL') {
-        // `<categoria>` | `<categoria>/live` (tocou) · `<categoria>[/live]/<motivo>` (pulada)
+        // `<categoria>[/live][/after-<o quê>]` (tocou — já ou na fila depois do áudio tocando) ·
+        // `<categoria>[/live][/after-<o quê>]/<motivo>` (não tocou / caiu da fila)
         const [cat = '?', ...rest] = (e.reason ?? '?').split('/')
         const live = rest[0] === 'live'
-        const why = rest.filter((r) => r !== 'live').join('/')
-        const state = e.played ? 'tocou' : `não tocou — ${skipLabel(why || '?')}`
+        const queued = rest.find((r) => r in QUEUED_LABELS)
+        const why = rest.filter((r) => r !== 'live' && r !== queued).join('/')
+        const where = queued ? ` (${QUEUED_LABELS[queued]})` : ''
+        const state = e.played ? `tocou${where}` : `não tocou — ${skipLabel(why || '?')}${where}`
         return `frase de ferramenta (${toolPhraseCategoryShort(cat)}${live ? ' · ao vivo' : ''})${
           e.variant ? ` v${e.variant}` : ''
         } — ${state}${e.text ? ` · "${e.text.slice(0, 40)}"` : ''}`
@@ -94,6 +103,10 @@ function describeTimelineEvent(e: VoiceCallTimelineEvent): string {
       return e.text
         ? `frase ${e.class ?? '?'} emitida: "${e.text.slice(0, 40)}"`
         : `clipe ${e.class ?? '?'} emitido`
+    case 'clip-queued':
+      return `frase de ferramenta ${QUEUED_LABELS[e.reason ?? ''] ?? 'na fila'}${
+        e.text ? ` · "${e.text.slice(0, 40)}"` : ''
+      }`
     case 'clip-cancelled':
       return e.class === 'TOOL'
         ? 'frase de ferramenta cancelada'

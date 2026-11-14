@@ -999,6 +999,11 @@ export interface VoiceCallTimelineEvent {
     | 'decision'
     /** Clipe (preâmbulo/frase de demora) emitido ao renderer. */
     | 'clip-emitted'
+    /**
+     * Frase de ferramenta pronta esperando na fila o fim do áudio tocando (`reason` =
+     * `after-filler`|`after-delay`|`after-audio`) — toca logo depois dele (main).
+     */
+    | 'clip-queued'
     /** Clipe cancelado (filler interrompido pela 1ª sentença/reset). */
     | 'clip-cancelled'
     /** Sentença da resposta emitida ao renderer. */

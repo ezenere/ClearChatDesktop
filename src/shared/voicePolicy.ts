@@ -237,11 +237,6 @@ export class VoicedSpan {
 
 // ---------------- frases de ferramenta (SPEC → "Frases de ferramenta") ----------------
 
-/**
- * Preâmbulo que já tocou: a frase de ferramenta só sai se ele terminou há pelo menos isto (ms) —
- * senão as duas emendariam ("Hum, deixa eu ver." + "Vou pesquisar isso.").
- */
-export const TOOL_PHRASE_AFTER_PREAMBLE_MS = 3000
 /** A frase de ferramenta não repete nenhuma das últimas N usadas. */
 export const TOOL_PHRASE_RECENT_WINDOW = 3
 
@@ -325,22 +320,14 @@ export function pickToolPhrase(
   return cands[k]
 }
 
-/** Por que a frase de ferramenta NÃO sai (null = sai). */
-export type ToolPhraseSkip =
-  | 'disabled'
-  | 'no-phrase'
-  | 'announced'
-  | 'hangup'
-  | 'user-speaking'
-  | 'clip-playing'
-  | 'after-preamble'
-  | 'assistant-audio'
+/** Por que a frase de ferramenta NÃO sai (null = sai — já ou na fila depois do áudio tocando). */
+export type ToolPhraseSkip = 'disabled' | 'no-phrase' | 'announced' | 'hangup' | 'user-speaking'
 
 /**
  * Regras da frase da 1ª tool do turno (a função é pura; quem chama garante "só a 1ª"): desligada;
  * tool sem frase; o assistente já falou/cortou uma frase da resposta neste turno (ele mesmo anunciou
- * a tool); desligamento armado; o usuário falando; uma frase curta tocando agora; o preâmbulo
- * terminou há menos de `TOOL_PHRASE_AFTER_PREAMBLE_MS`; outro áudio do assistente tocando.
+ * a tool); desligamento armado; o usuário falando. Outro áudio tocando (preâmbulo, "manter viva",
+ * a resposta anterior) NÃO pula — a frase entra na fila depois dele (`toolPhraseWaitFor`).
  */
 export function toolPhraseSkipReason(input: {
   enabled: boolean
@@ -348,23 +335,31 @@ export function toolPhraseSkipReason(input: {
   answerStarted: boolean
   hangup: boolean
   userSpeaking: boolean
-  shortPlaying: boolean
-  preambleEndedAt: number | null
-  playbackActive: boolean
-  now: number
 }): ToolPhraseSkip | null {
   if (!input.enabled) return 'disabled'
   if (!input.category) return 'no-phrase'
   if (input.answerStarted) return 'announced'
   if (input.hangup) return 'hangup'
   if (input.userSpeaking) return 'user-speaking'
-  if (input.shortPlaying) return 'clip-playing'
-  if (
-    input.preambleEndedAt != null &&
-    input.now - input.preambleEndedAt < TOOL_PHRASE_AFTER_PREAMBLE_MS
-  )
-    return 'after-preamble'
-  if (input.playbackActive) return 'assistant-audio'
+  return null
+}
+
+/** O que a frase de ferramenta pronta espera terminar antes de tocar (fila — nunca sobrepõe). */
+export type ToolPhraseWait = 'filler' | 'delay' | 'audio'
+
+/**
+ * A frase de ferramenta pronta sai JÁ (null) ou espera o fim do áudio tocando: o preâmbulo
+ * (`filler`), uma frase de espera (`delay`) ou outro áudio do assistente (`audio`) — toca logo
+ * depois dele, sem cortá-lo (2026-11-14: antes era pulada — `clip-playing`/`after-preamble` 3 s).
+ */
+export function toolPhraseWaitFor(input: {
+  fillerPlaying: boolean
+  delayPlaying: boolean
+  playbackActive: boolean
+}): ToolPhraseWait | null {
+  if (input.fillerPlaying) return 'filler'
+  if (input.delayPlaying) return 'delay'
+  if (input.playbackActive) return 'audio'
   return null
 }
 

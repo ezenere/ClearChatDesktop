@@ -34,11 +34,11 @@ import {
   type VoiceToolPhrases
 } from '@shared/voice'
 import {
-  TOOL_PHRASE_AFTER_PREAMBLE_MS,
   TOOL_PHRASE_RECENT_WINDOW,
   pickToolPhrase,
   toolPhraseCategory,
-  toolPhraseSkipReason
+  toolPhraseSkipReason,
+  toolPhraseWaitFor
 } from '@shared/voicePolicy'
 import { computeVoiceCallMetrics } from '@shared/voiceTimeline'
 import type { VoiceCallMark } from '@shared/voiceCallMarks'
@@ -185,29 +185,26 @@ test('pickToolPhrase: só da categoria, nunca as últimas 3; esgotada → genér
   )
 })
 
-test('toolPhraseSkipReason: desligada, anunciada, desligamento, usuário falando, frase curta tocando, < 3 s do preâmbulo, outro áudio', () => {
+test('toolPhraseSkipReason: desligada, anunciada, desligamento, usuário falando; outro áudio tocando NÃO pula (toolPhraseWaitFor: fila)', () => {
   const base = {
     enabled: true,
     category: 'web' as ToolPhraseCategory | null,
     answerStarted: false,
     hangup: false,
-    userSpeaking: false,
-    shortPlaying: false,
-    preambleEndedAt: null as number | null,
-    playbackActive: false,
-    now: 10_000
+    userSpeaking: false
   }
-  assert.equal(TOOL_PHRASE_AFTER_PREAMBLE_MS, 3000)
   assert.equal(toolPhraseSkipReason(base), null)
   assert.equal(toolPhraseSkipReason({ ...base, enabled: false }), 'disabled')
   assert.equal(toolPhraseSkipReason({ ...base, category: null }), 'no-phrase')
   assert.equal(toolPhraseSkipReason({ ...base, answerStarted: true }), 'announced')
   assert.equal(toolPhraseSkipReason({ ...base, hangup: true }), 'hangup')
   assert.equal(toolPhraseSkipReason({ ...base, userSpeaking: true }), 'user-speaking')
-  assert.equal(toolPhraseSkipReason({ ...base, shortPlaying: true }), 'clip-playing')
-  assert.equal(toolPhraseSkipReason({ ...base, preambleEndedAt: 7001 }), 'after-preamble')
-  assert.equal(toolPhraseSkipReason({ ...base, preambleEndedAt: 7000 }), null, '3 s exatos: sai')
-  assert.equal(toolPhraseSkipReason({ ...base, playbackActive: true }), 'assistant-audio')
+  // pronta com outro áudio tocando: espera o fim dele (preâmbulo > frase de espera > outro áudio)
+  const idle = { fillerPlaying: false, delayPlaying: false, playbackActive: false }
+  assert.equal(toolPhraseWaitFor(idle), null)
+  assert.equal(toolPhraseWaitFor({ ...idle, fillerPlaying: true, playbackActive: true }), 'filler')
+  assert.equal(toolPhraseWaitFor({ ...idle, delayPlaying: true, playbackActive: true }), 'delay')
+  assert.equal(toolPhraseWaitFor({ ...idle, playbackActive: true }), 'audio')
 })
 
 test('editor por categoria (renderer): troca só as frases da categoria, junta categorias da mesma frase, igual ao padrão → null', () => {
@@ -640,39 +637,99 @@ test('preâmbulo ainda não tocou: a frase de ferramenta fica NO LUGAR dele (nen
   h.m.stop()
 })
 
-test('preâmbulo já tocou: frase de ferramenta só ≥ 3 s depois do FIM dele (antes → pulada)', async () => {
-  // terminou há < 3 s → pulada
+test('preâmbulo já tocou (há pouco): a frase de ferramenta sai NO INSTANTE da tool (sem a antiga folga de 3 s)', async () => {
+  // regra nova (2026-11-14, o usuário: "no instante que usou a tool ele falasse"): antes, a tool
+  // < 3 s depois do fim do preâmbulo pulava a frase (`after-preamble`)
   const a = harness()
   userTurn(a)
   await waitFiller(a)
   await a.clock.advance(1000)
   a.m.playbackIdle() // fim do preâmbulo
-  await a.clock.advance(TOOL_PHRASE_AFTER_PREAMBLE_MS - 1)
+  await a.clock.advance(100)
+  const t0 = a.clock.now
   callTools(a, ['web_search'])
   await flush()
-  assert.equal(a.tools().length, 0)
-  assert.equal(toolDecisions(a)[0].reason, 'web/after-preamble')
+  assert.equal(a.tools().length, 1, 'tocou')
+  assert.equal(a.emittedAt.get(a.emitted.find((u) => u.kind === 'tool')!.id), t0, 'já')
+  assert.equal(toolDecisions(a)[0].reason, 'web')
   a.m.stop()
-  // terminou há 3 s → toca
-  const b = harness()
-  userTurn(b)
-  await waitFiller(b)
-  await b.clock.advance(1000)
-  b.m.playbackIdle()
-  await b.clock.advance(TOOL_PHRASE_AFTER_PREAMBLE_MS)
-  callTools(b, ['web_search'])
+})
+
+test('preâmbulo TOCANDO quando a tool começa: a frase entra na fila e toca logo depois dele (sem sobrepor nem cortar)', async () => {
+  // reprodução falsa: cada utterance toca pelo tempo dado; o `playback-idle` sai na fila vazia
+  const h = harness({ fillerDelayMs: 300, autoPlay: true })
+  userTurn(h)
+  await h.clock.advance(300) // o preâmbulo sai aos 300 ms (toca 1000 ms)
+  const filler = h.emitted.find((u) => u.kind === 'filler')
+  assert.ok(filler, 'preâmbulo tocando')
+  const fillerEnd = h.emittedAt.get(filler.id)! + DUR.filler
+  await h.clock.advance(200)
+  callTools(h, ['web_search'])
   await flush()
-  assert.equal(b.tools().length, 1)
-  b.m.stop()
-  // preâmbulo tocando agora → pulada (frase curta tocando)
-  const c = harness()
-  userTurn(c)
-  await waitFiller(c)
-  callTools(c, ['web_search'])
+  assert.equal(h.tools().length, 0, 'ainda não: o preâmbulo está tocando')
+  const queued = h.timeline.find((e) => e.kind === 'clip-queued')
+  assert.equal(queued?.class, 'TOOL')
+  assert.equal(queued?.reason, 'after-filler')
+  assert.equal(toolDecisions(h).length, 0, 'nem decisão — ainda pode cair')
+  assert.deepEqual(h.cancelled, [], 'o preâmbulo não é cortado')
+  await h.clock.advance(fillerEnd - h.clock.now) // o preâmbulo termina
+  assert.equal(h.tools().length, 1, 'tocou logo depois do preâmbulo')
+  assert.equal(h.emittedAt.get(h.emitted.find((u) => u.kind === 'tool')!.id), fillerEnd)
+  const d = toolDecisions(h)
+  assert.equal(d.length, 1)
+  assert.equal(d[0].played, true)
+  assert.equal(d[0].reason, 'web/after-filler')
+  assert.equal(computeVoiceCallMetrics(h.timeline).toolPlayed, 1)
+  h.m.stop()
+})
+
+test('frase de ferramenta na fila: a 1ª frase da resposta chega antes → cai (nunca toca depois da resposta)', async () => {
+  const h = harness({ fillerDelayMs: 300 })
+  userTurn(h)
+  await h.clock.advance(300)
+  assert.ok(
+    h.emitted.some((u) => u.kind === 'filler'),
+    'preâmbulo tocando'
+  )
+  const [t1] = callTools(h, ['web_search'])
   await flush()
-  assert.equal(c.tools().length, 0)
-  assert.equal(toolDecisions(c)[0].reason, 'web/clip-playing')
-  c.m.stop()
+  assert.ok(h.timeline.some((e) => e.kind === 'clip-queued'))
+  toolDone(h, t1)
+  await answer(h, 'Vai chover à tarde.', false)
+  const d = toolDecisions(h)
+  assert.equal(d.length, 1)
+  assert.equal(d[0].played, false)
+  assert.equal(d[0].reason, 'web/after-filler/answer-first')
+  // o preâmbulo termina: nada de frase de ferramenta (só a resposta)
+  h.m.playbackIdle()
+  await flush()
+  assert.equal(h.tools().length, 0)
+  assert.equal(h.emitted.at(-1)?.kind, 'sentence')
+  h.m.stop()
+})
+
+test('frase de ferramenta na fila: o usuário fala / barge-in / a chamada acaba antes → cai (motivo na timeline)', async () => {
+  for (const [what, act, reason] of [
+    ['fala', (h: Harness) => h.m.speechBegin(), 'user-speaking'],
+    ['barge-in', (h: Harness) => h.m.bargeIn({ playedIds: [] }), 'barge-in'],
+    ['fim da chamada', (h: Harness) => h.m.stop(), 'stopped']
+  ] as const) {
+    const h = harness({ fillerDelayMs: 300 })
+    userTurn(h)
+    await h.clock.advance(300)
+    callTools(h, ['shell'])
+    await flush()
+    assert.ok(
+      h.timeline.some((e) => e.kind === 'clip-queued'),
+      what
+    )
+    act(h)
+    h.m.playbackIdle()
+    await flush()
+    assert.equal(h.tools().length, 0, `${what}: não toca`)
+    assert.equal(toolDecisions(h)[0]?.reason, `shell/after-filler/${reason}`, what)
+    h.m.stop()
+  }
 })
 
 test('usuário falando (resposta em voo) → pulada', async () => {
@@ -706,15 +763,18 @@ test('espaçamento: a frase de ferramenta conta como frase curta — "manter viv
   h.m.stop()
 })
 
-test('espaçamento: "manter viva" tocando quando a 1ª tool começa → frase de ferramenta pulada', async () => {
+test('espaçamento: "manter viva" tocando quando a 1ª tool começa → a frase de ferramenta toca logo depois dela (fila)', async () => {
   const h = harness({ fillers: false, autoPlay: true })
   userTurn(h)
   await h.clock.advance(DEFAULT_DELAY_PHRASES.keepAliveAfterMs) // "manter viva" sai aos 8 s
-  assert.equal(h.emitted.filter((u) => u.kind === 'delay').length, 1)
+  const delay = h.emitted.find((u) => u.kind === 'delay')
+  assert.ok(delay)
   callTools(h, ['read_file'])
   await flush()
-  assert.equal(h.tools().length, 0)
-  assert.equal(toolDecisions(h)[0].reason, 'files/clip-playing')
+  assert.equal(h.tools().length, 0, 'espera a "manter viva" terminar')
+  await h.clock.advance(h.emittedAt.get(delay.id)! + DUR.delay - h.clock.now)
+  assert.equal(h.tools().length, 1)
+  assert.equal(toolDecisions(h)[0].reason, 'files/after-delay')
   h.m.stop()
 })
 

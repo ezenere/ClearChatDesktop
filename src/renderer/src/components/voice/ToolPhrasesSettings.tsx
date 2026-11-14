@@ -11,7 +11,6 @@ import {
   type ToolPhraseCategory,
   type VoiceToolPhrases
 } from '@shared/voice'
-import { TOOL_PHRASE_AFTER_PREAMBLE_MS } from '@shared/voicePolicy'
 import { ToggleRow } from '../panel/fields'
 import { Button } from '../ui/controls'
 import { SubHeading } from './audioUi'
@@ -81,8 +80,8 @@ export function ToolPhrasesSettings({
         onChange={(enabled) => set({ enabled })}
         help={
           'Quando o assistente usa uma ferramenta durante a chamada, fala uma frase curta sobre ela ("Vou pesquisar isso.", "Deixa eu dar uma olhada nos arquivos.", "Vou rodar isso aqui.") — só na 1ª tool do turno, nunca mais de uma por turno.\n' +
-          `Fica no lugar do preâmbulo quando ele ainda não tocou; se o preâmbulo já tocou, só sai ${TOOL_PHRASE_AFTER_PREAMBLE_MS / 1000} s depois do fim dele. Pulada quando o assistente já falou algo antes da tool, quando você está falando, com outra frase curta tocando ou depois da despedida.\n` +
-          'Usa os clipes pré-gerados ("Gerar clipes" em Voz); sem eles, sintetiza na hora (descartada se a tool terminar ou a resposta começar antes). Persona/chat podem ligar/desligar (★ segue este padrão). Não entra no histórico; os caracteres sintetizados contam no custo da voz da chamada.'
+          'Sai no instante em que a tool começa: no lugar do preâmbulo quando ele ainda não tocou; com o preâmbulo (ou uma frase de espera) tocando, entra na fila e toca logo depois dele, sem cortá-lo. Pulada quando o assistente já falou algo antes da tool, quando você está falando ou depois da despedida; na fila, cai se a resposta começar antes.\n' +
+          'Usa os clipes pré-gerados ("Gerar clipes" em Voz); sem eles, sintetiza na hora (descartada se a resposta começar antes). Persona/chat podem ligar/desligar (★ segue este padrão). Não entra no histórico; os caracteres sintetizados contam no custo da voz da chamada.'
         }
       />
       {tp.enabled && (
