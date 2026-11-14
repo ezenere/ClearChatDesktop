@@ -42,7 +42,11 @@ import {
 } from '@shared/voicePolicy'
 import { computeVoiceCallMetrics } from '@shared/voiceTimeline'
 import type { VoiceCallMark } from '@shared/voiceCallMarks'
-import { VoiceCallManager, type VoiceCallUtterance } from '../src/main/voice/call.ts'
+import {
+  VoiceCallManager,
+  type VoiceCallAmend,
+  type VoiceCallUtterance
+} from '../src/main/voice/call.ts'
 import { replaceCategoryLines } from '../src/renderer/src/lib/voice/toolPhrases.ts'
 
 // =====================================================================================
@@ -143,6 +147,8 @@ test('toolPhraseCategory: web/arquivos/comandos/memória/subagentes/informaçõe
     // 1.11.0: search_tool (lê a definição de uma tool compactada) e datetime são instantâneas — a
     // frase fica para a próxima tool do turno
     ['search_tool', null],
+    // 1.12.0: o nome novo (renome search_tool → tool_search) também fica sem frase
+    ['tool_search', null],
     ['datetime', null]
   ]
   for (const [name, cat] of cases) assert.equal(toolPhraseCategory(name), cat, name)
@@ -298,6 +304,8 @@ interface Harness {
   phrases: PhraseCall[]
   markers: { content: string; meta: MessageMeta }[]
   history: StoredMessage[]
+  /** `amendTurn` pedidos (barge-in/turno continuado) — o id da mensagem do usuário do turno. */
+  amends: VoiceCallAmend[]
   emit(e: AgentEvent): void
   tools(): string[]
 }
@@ -319,6 +327,7 @@ function harness(opts: HarnessOpts = {}): Harness {
     phrases: [],
     markers: [],
     history: [],
+    amends: [],
     emit: (e) => listeners.forEach((l) => l(e)),
     tools: () => h.emitted.filter((u) => u.kind === 'tool').map(dec)
   }
@@ -396,7 +405,7 @@ function harness(opts: HarnessOpts = {}): Harness {
       listeners.push(cb)
       return () => {}
     },
-    amendTurn: async () => {},
+    amendTurn: async (_sid, amend) => void h.amends.push(amend),
     appendMarker: (_sid, content, meta) => void h.markers.push({ content, meta }),
     sessionMessages: () => h.history,
     newCallId: () => 'call-1'
@@ -729,7 +738,7 @@ test('sem clipe TOOL: síntese AO VIVO — toca se a tool ainda roda; caracteres
   assert.equal(usage.tts.chars, text.length + 'Pronto.'.length, 'frase + resposta')
 })
 
-test('sem clipe TOOL: síntese ao vivo pronta DEPOIS da resposta começar (ou da tool terminar) → descartada', async () => {
+test('sem clipe TOOL: síntese ao vivo pronta DEPOIS da resposta começar → descartada', async () => {
   // a resposta começou antes
   const a = harness({ fillers: false, toolClips: false, manualPhrases: true })
   userTurn(a)
@@ -745,7 +754,13 @@ test('sem clipe TOOL: síntese ao vivo pronta DEPOIS da resposta começar (ou da
   assert.equal(d[0].reason, 'web/live/answer-first')
   void t1
   a.m.stop()
-  // a tool terminou antes
+})
+
+test('bug "o áudio da frase de ferramenta foi gerado mas não falou": síntese ao vivo pronta com a tool JÁ terminada (resposta ainda não começou) → toca, como o clipe', async () => {
+  // uso real (2026-11-14): sem clipe TOOL para a voz da chamada, a frase sai ao vivo; a tool
+  // (web_search ~1 s) voltava antes da síntese (~1,5 s) e a frase pronta — paga — era jogada fora
+  // (`live/tool-done`) com o modelo ainda processando e nada tocando: silêncio. Agora segue a regra
+  // do clipe: só a resposta já começada (ou outro áudio/o usuário falando/desligamento) a descarta
   const b = harness({ fillers: false, toolClips: false, manualPhrases: true })
   userTurn(b)
   const [t2] = callTools(b, ['shell'])
@@ -753,9 +768,89 @@ test('sem clipe TOOL: síntese ao vivo pronta DEPOIS da resposta começar (ou da
   toolDone(b, t2)
   b.phrases[0].resolve()
   await flush()
-  assert.equal(b.tools().length, 0)
-  assert.equal(toolDecisions(b)[0].reason, 'shell/live/tool-done')
+  const text = b.phrases[0].text
+  assert.deepEqual(b.tools(), [`PHRASE:${text}`], 'a frase sintetizada toca')
+  const d = toolDecisions(b)
+  assert.equal(d.length, 1)
+  assert.equal(d[0].played, true)
+  assert.equal(d[0].reason, 'shell/live')
+  // a resposta que chega depois espera a frase na fila (nunca a corta)
+  await answer(b, 'Rodei o comando.')
+  assert.equal(b.emitted.at(-1)?.kind, 'sentence')
+  assert.deepEqual(b.cancelled, [])
   b.m.stop()
+  // com a resposta já começada continua descartada (a frase viria depois do que ela anunciava)
+  const c = harness({ fillers: false, toolClips: false, manualPhrases: true })
+  userTurn(c)
+  const [t3] = callTools(c, ['shell'])
+  await flush()
+  toolDone(c, t3)
+  await answer(c, 'Rodei o comando.', false)
+  c.phrases[0].resolve()
+  await flush()
+  assert.equal(c.tools().length, 0)
+  assert.equal(toolDecisions(c)[0].reason, 'shell/live/answer-first')
+  c.m.stop()
+})
+
+test('mensagem do APP no meio do turno (resultados das tools no modo texto, resumo da compactação automática, retorno de subagente) não vira turno novo: a frase de ferramenta tocando continua', async () => {
+  for (const meta of [
+    { synthetic: true }, // modo texto: os resultados das tools voltam como mensagem `user` sintética
+    { synthetic: true, kind: 'compaction' as const }, // compactação automática no limite de passo
+    { synthetic: true, kind: 'subagent-callback' as const } // retorno de subagente drenado da fila
+  ]) {
+    const what = meta.kind ?? 'modo texto'
+    const h = harness({ fillerDelayMs: 400 })
+    userTurn(h)
+    const userId = h.history[0].id
+    const [t1] = callTools(h, ['web_search'])
+    await flush()
+    assert.ok(
+      h.emitted.some((u) => u.kind === 'tool'),
+      `${what}: a frase de ferramenta saiu`
+    )
+    toolDone(h, t1)
+    const synth: StoredMessage = {
+      id: `ms-${what}`,
+      sessionId: 's1',
+      seq: h.history.length + 1,
+      message: { role: 'user', content: 'Resultado de web_search: …' },
+      meta,
+      createdAt: h.clock.now
+    }
+    h.history.push(synth)
+    h.emit({ type: 'message-added', message: synth })
+    await h.clock.advance(1000)
+    assert.deepEqual(h.cancelled, [], `${what}: a frase não é cortada`)
+    assert.ok(!h.timeline.some((e) => e.kind === 'clip-cancelled'), `${what}: nada cancelado`)
+    assert.equal(toolDecisions(h).length, 1, `${what}: nem uma 2ª decisão de frase de ferramenta`)
+    assert.equal(fillersOf(h).length, 0, `${what}: nem um preâmbulo rearmado no meio do turno`)
+    // o turno continua o mesmo: a resposta é falada e um barge-in ajusta a fala do USUÁRIO
+    h.m.playbackIdle()
+    await answer(h, 'Achei a previsão. Vai chover à tarde.', false)
+    const sentence = h.emitted.find((u) => u.kind === 'sentence')
+    assert.ok(sentence, `${what}: a resposta é falada`)
+    h.m.bargeIn({ playedIds: [sentence.id] })
+    assert.equal(h.amends.at(-1)?.userMessageId, userId, `${what}: o turno é o da fala do usuário`)
+    h.m.stop()
+  }
+})
+
+test('busca de tools (tool_search local / busca nativa do servidor) antes da tool de verdade: a frase fica para a tool de verdade', async () => {
+  // local: a `tool_search` não tem frase e não conta como "a 1ª tool" (mesmo que um dia rode com
+  // `tool-running` — hoje o runner a resolve antes); nativa: os blocos do servidor
+  // (`server_tool_use`, a pré-busca `orpresearch…`) nem viram tool call — a 1ª é a tool de verdade
+  const h = harness({ fillers: false })
+  userTurn(h)
+  const [s1] = callTools(h, ['tool_search'])
+  await flush()
+  toolDone(h, s1)
+  assert.equal(toolDecisions(h).length, 0)
+  callTools(h, ['web_search'])
+  await flush()
+  assert.equal(h.tools().length, 1)
+  assert.equal(toolDecisions(h)[0].reason, 'web')
+  h.m.stop()
 })
 
 test('com clipe: tool rápida já terminada ainda toca (latência ~zero; o modelo processa o resultado)', async () => {

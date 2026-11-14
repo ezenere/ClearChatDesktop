@@ -813,6 +813,45 @@ test('clipes por voz: a voz da persona sem clipes não toca os da voz do disposi
   }
 })
 
+test('dock da chamada: confere e gera os clipes da voz DA CHAMADA (a da persona/chat), não a do dispositivo', async () => {
+  // bug (uso real, 2026-11-14 — "o áudio da frase de ferramenta foi gerado mas não falou"): o dock
+  // listava/gerava os clipes da voz deste dispositivo enquanto a chamada tocava os da voz da
+  // persona/chat — com a da persona sem clipes, o aviso "Gerar clipes" sumia (a do dispositivo
+  // tinha), o botão gerava para a voz errada e toda frase de ferramenta saía ao vivo
+  const { clipsTtsChoice } = await import('../src/shared/voice.ts')
+  const { generateClips, loadClips, clipVoiceId } = await import('../src/main/voice/clips.ts')
+  // `input.call` = a voz da chamada (a da persona/chat decidida no início dela)
+  assert.deepEqual(clipsTtsChoice({ call: true }, KOKORO_MALE), KOKORO_MALE)
+  assert.equal(clipsTtsChoice({ call: true }, null), null, 'chamada com a voz do dispositivo')
+  assert.equal(clipsTtsChoice({ call: true }, undefined), null, 'sem chamada: a do dispositivo')
+  // Configurações → Áudio (sem nada) continua na voz deste dispositivo, mesmo durante a chamada
+  assert.equal(clipsTtsChoice(undefined, KOKORO_MALE), null)
+  assert.equal(clipsTtsChoice({}, KOKORO_MALE), null)
+  assert.equal(clipsTtsChoice({ call: 'sim' }, KOKORO_MALE), null)
+  // "Gerar clipes desta voz" (editor da persona/chat): a escolha explícita vence
+  assert.deepEqual(clipsTtsChoice({ tts: ELEVEN, call: true }, KOKORO_MALE), ELEVEN)
+  assert.deepEqual(clipsTtsChoice({ tts: ELEVEN }, null), ELEVEN)
+  // o que o dock vê: com os clipes só da voz do dispositivo, a voz da chamada (persona) não tem
+  const base = mkdtempSync(join(tmpdir(), 'clearchat-dock-clips-'))
+  try {
+    const local = {
+      engine: 'kokoro' as const,
+      async synthesize(): Promise<any> {
+        return { audio: new Uint8Array([82, 73, 70, 70]), mime: 'audio/wav', model: 'k', ms: 1 }
+      }
+    }
+    await generateClips({ baseDir: base, settings: DEVICE_TTS, local })
+    const dock = applyTtsChoice(DEVICE_TTS, clipsTtsChoice({ call: true }, KOKORO_MALE))
+    assert.notEqual(clipVoiceId(dock), clipVoiceId(DEVICE_TTS))
+    assert.equal(await loadClips(base, clipVoiceId(dock)), null, 'o dock avisa: faltam clipes')
+    // "Gerar clipes" do dock gera para a voz da chamada
+    await generateClips({ baseDir: base, settings: dock, local })
+    assert.ok(await loadClips(base, clipVoiceId(dock)))
+  } finally {
+    rmSync(base, { recursive: true, force: true })
+  }
+})
+
 // ---------------- textos dos ícones e "Salvar como persona" (renderer, puros) ----------------
 
 test('textos: tooltips do mic/telefone esmaecidos, aviso do fallback, rótulos e a voz herdada no snapshot', async () => {

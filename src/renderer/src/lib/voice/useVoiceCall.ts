@@ -59,12 +59,15 @@ function mockMicMode(): string {
   return (window as unknown as { __clearMockMic?: string }).__clearMockMic ?? 'ok'
 }
 
-/** Recarrega o estado dos clipes (preâmbulos e frases de ferramenta) da voz atual. */
+/**
+ * Recarrega o estado dos clipes (preâmbulos e frases de ferramenta) da voz DA CHAMADA (a da
+ * persona/chat quando ela tem voz própria — os clipes que a chamada vai tocar).
+ */
 async function refreshClips(): Promise<void> {
   const v = api.voice
   if (!v) return
   try {
-    const m = await v.tts.clips.list()
+    const m = await v.tts.clips.list({ call: true })
     // cache de definição antiga (frases/pool mudaram) conta como ausente: "Gerar clipes" de novo —
     // `clipsStale` diz quais classes (as outras continuam tocando)
     const ok = !!m && m.clips.length > 0 && !m.stale
@@ -630,7 +633,10 @@ export function useVoiceCall(): void {
 
   const clearError = useCallback((): void => setError(null), [])
 
-  /** "Gerar clipes" do dock: mesmos clipes de Configurações → Áudio (voz atual), com progresso. */
+  /**
+   * "Gerar clipes" do dock: os clipes da voz DA CHAMADA (a da persona/chat quando ela tem voz
+   * própria; senão a deste dispositivo — os mesmos de Configurações → Áudio), com progresso.
+   */
   const generateClips = useCallback(async (): Promise<void> => {
     const v = api.voice
     if (!v) return
@@ -639,7 +645,7 @@ export function useVoiceCall(): void {
       useVoiceCallRuntime.setState({ clipsProgress: { done: e.done, total: e.total } })
     )
     try {
-      const m = await v.tts.clips.generate()
+      const m = await v.tts.clips.generate({ call: true })
       const ok = m.clips.length > 0
       useVoiceCallRuntime.setState({
         clips: ok ? 'ok' : 'missing',

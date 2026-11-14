@@ -140,6 +140,7 @@ import {
 } from './voice'
 import { collectVoiceCaps } from './voice/voiceCaps'
 import {
+  clipsTtsChoice,
   normalizeVoiceTtsChoice,
   type VoiceLayers,
   type VoiceSttChoice,
@@ -1487,9 +1488,13 @@ export function registerIpc(): void {
     [IPC.voice.catalogPreview]: (input: { url: string }) =>
       fetchVoicePreview(typeof input?.url === 'string' ? input.url : ''),
     // `input.tts` = a voz de uma persona/chat ("Gerar clipes desta voz" — só com o clique do
-    // usuário: nunca gerados sozinhos, uma API paga custa por clipe); ausente = a deste dispositivo
-    [IPC.voice.ttsClipsGenerate]: async (input?: { tts?: unknown }): Promise<TtsClipsView> => {
-      const v = getVoiceSettingsWith({ tts: normalizeVoiceTtsChoice(input?.tts) })
+    // usuário: nunca gerados sozinhos, uma API paga custa por clipe); `input.call` = a voz da
+    // chamada em andamento (o dock — os clipes que a chamada toca); ausente = a deste dispositivo
+    [IPC.voice.ttsClipsGenerate]: async (input?: {
+      tts?: unknown
+      call?: boolean
+    }): Promise<TtsClipsView> => {
+      const v = getVoiceSettingsWith({ tts: clipsTtsChoice(input, callVoice?.tts) })
       const manifest = await generateClips({
         baseDir: app.getPath('userData'),
         settings: v.tts,
@@ -1501,8 +1506,11 @@ export function registerIpc(): void {
       })
       return toClipsView(manifest)
     },
-    [IPC.voice.ttsClipsList]: async (input?: { tts?: unknown }): Promise<TtsClipsView | null> => {
-      const v = getVoiceSettingsWith({ tts: normalizeVoiceTtsChoice(input?.tts) })
+    [IPC.voice.ttsClipsList]: async (input?: {
+      tts?: unknown
+      call?: boolean
+    }): Promise<TtsClipsView | null> => {
+      const v = getVoiceSettingsWith({ tts: clipsTtsChoice(input, callVoice?.tts) })
       const m = await loadClips(app.getPath('userData'), clipVoiceId(v.tts))
       if (!m) return null
       // cache de uma definição antiga (frases/pool mudaram): "stale" → a UI pede para regerar; as

@@ -46,8 +46,7 @@ const SKIP_LABELS: Record<string, string> = {
   'tool-phrase': 'a frase de ferramenta tocou no lugar',
   'no-phrase': 'sem frase para essa tool',
   announced: 'o assistente já falou antes da tool',
-  'after-preamble': 'preâmbulo terminou há menos de 3 s',
-  'tool-done': 'a tool terminou antes'
+  'after-preamble': 'preâmbulo terminou há menos de 3 s'
 }
 
 /** Classe do ato de fala curta → nome no painel (as de ferramenta têm linha própria). */

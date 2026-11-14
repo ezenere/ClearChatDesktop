@@ -1813,6 +1813,24 @@ export function applyTtsChoice(
 }
 
 /**
+ * De qual voz são os clipes que o renderer pede (`voice:tts:clips:list|generate`): `input.tts` = a
+ * escolha de uma persona/chat ("Gerar clipes desta voz"); `input.call: true` = a voz da CHAMADA em
+ * andamento (`callTts` — a da persona/chat decidida no início dela; null = a deste dispositivo) —
+ * o dock confere e gera os clipes que a chamada vai tocar (antes ele olhava a voz deste
+ * dispositivo: com a voz da persona/chat sem clipes, o aviso sumia, "Gerar clipes" gerava para a
+ * voz errada e as frases de ferramenta saíam ao vivo); nada = a deste dispositivo. Puro.
+ */
+export function clipsTtsChoice(
+  input: unknown,
+  callTts: VoiceTtsChoice | null | undefined
+): VoiceTtsChoice | null {
+  const o = asObject(input)
+  const explicit = normalizeVoiceTtsChoice(o?.tts)
+  if (explicit) return explicit
+  return o?.call === true ? (callTts ?? null) : null
+}
+
+/**
  * `sttSettings` deste dispositivo com a escolha da persona/chat aplicada (null = as do
  * dispositivo). Do dispositivo continuam: parciais ao vivo, "final rápida", os parâmetros da GPU e
  * o `installed` do mesmo motor+modelo local. Puro; `api` vem SEM endereço/chave.

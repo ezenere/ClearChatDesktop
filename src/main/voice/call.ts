@@ -1064,6 +1064,11 @@ export class VoiceCallManager {
       const m: StoredMessage = e.message
       if (m.sessionId !== sessionId) return
       if (m.message.role === 'user') {
+        // mensagem do APP no meio do turno do agente (resultados das tools no modo texto, resumo da
+        // compactação automática no limite de passo, retorno de subagente drenado da fila): o turno
+        // é o MESMO — nada é zerado (antes cortava a frase de ferramenta tocando, rearmava o
+        // preâmbulo e trocava a mensagem do turno, que o barge-in ajusta, pela do app)
+        if (m.meta?.synthetic && this.#machine.responseInFlight) return
         // novo turno (falado, digitado ou drenado da fila): a próxima resposta volta a ser falada
         const text =
           typeof m.message.content === 'string'
@@ -1600,18 +1605,18 @@ export class VoiceCallManager {
         played: false,
         reason: 'tool-phrase'
       })
-    void this.#playToolPhrase(category, toolCallId, now)
+    void this.#playToolPhrase(category, now)
   }
 
   /**
    * Toca a frase da categoria (sem repetir as últimas): o clipe pré-gerado `TOOL_<n>` (latência
    * zero); sem clipe, síntese AO VIVO (como as frases de demora — caracteres no custo). Pronta tarde
-   * demais — a tool terminou (só na síntese ao vivo), a resposta começou, o usuário falou… — é
-   * descartada.
+   * demais — a resposta começou, o usuário falou, outra frase curta/áudio tocando, desligamento — é
+   * descartada. A tool já de volta NÃO descarta (clipe ou ao vivo): o modelo ainda processa o
+   * resultado e nada mais está sendo dito.
    */
   async #playToolPhrase(
     category: NonNullable<ReturnType<typeof toolPhraseCategory>>,
-    toolCallId: string,
     decidedAt: number
   ): Promise<void> {
     const gen = this.#toolGen
@@ -1642,22 +1647,22 @@ export class VoiceCallManager {
       if (gen !== this.#toolGen || !this.#sessionId) return
     }
     const phase = this.#machine.phase
-    // síntese ao vivo que ficou pronta com a tool já terminada: tarde demais. O clipe (latência
-    // ~zero) toca mesmo com uma tool rápida já de volta — o modelo ainda processa o resultado
+    // a tool já de volta não conta (clipe OU síntese ao vivo): a frase pronta — paga, no caso da
+    // síntese — ainda cabe enquanto o modelo processa o resultado e nada mais toca. Antes a síntese
+    // ao vivo pronta depois de uma tool rápida (web_search ~1 s × síntese ~1,5 s) era jogada fora
+    // (`live/tool-done`) — "o áudio da frase foi gerado mas não falou" (uso real, 2026-11-14)
     const why =
-      live && !this.#toolsRunningIds.has(toolCallId)
-        ? 'tool-done'
-        : this.#keyText.size > 0 || this.#delay.answerSpoken
-          ? 'answer-first'
-          : this.#hangup
-            ? 'hangup'
-            : phase === 'listening' || phase === 'transcribing'
-              ? 'user-speaking'
-              : this.#fillerUttId || this.#delayPlaying
-                ? 'clip-playing'
-                : this.#playbackActive
-                  ? 'assistant-audio'
-                  : null
+      this.#keyText.size > 0 || this.#delay.answerSpoken
+        ? 'answer-first'
+        : this.#hangup
+          ? 'hangup'
+          : phase === 'listening' || phase === 'transcribing'
+            ? 'user-speaking'
+            : this.#fillerUttId || this.#delayPlaying
+              ? 'clip-playing'
+              : this.#playbackActive
+                ? 'assistant-audio'
+                : null
     if (why) return this.#toolSkip(category, live ? `live/${why}` : why, text)
     this.#uttSeq++
     const id = `u${this.#uttSeq}`
