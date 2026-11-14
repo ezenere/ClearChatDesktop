@@ -35,8 +35,12 @@ test('nenhum spec inicia o Electron sem o launch.ts (guarda do microfone)', () =
     const hits = [
       /\b_electron\b/.test(src) && '`_electron` do Playwright',
       /\belectron\s*\.\s*launch\s*\(/.test(src) && '`electron.launch(`',
-      /electron\/dist\/electron|require\(['"]electron\/index(\.js)?['"]\)/.test(src) &&
-        'binário do Electron'
+      /electron\/dist\/electron|\.bin\/electron\b|require\(['"]electron\/index(\.js)?['"]\)/.test(
+        src
+      ) && 'binário do Electron',
+      // no Node, `import … from 'electron'` é o caminho do binário (para um spawn); o
+      // `require('electron')` dos mains do mock (texto que roda DENTRO do Electron) não conta
+      /^\s*import\b[^\n]*\bfrom\s+['"]electron['"]/m.test(src) && "import de 'electron'"
     ].filter(Boolean)
     if (hits.length) bad.push(`${rel}: ${hits.join(', ')}`)
   }
