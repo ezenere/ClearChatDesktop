@@ -283,7 +283,8 @@ app.on('window-all-closed', () => app.quit())
           spoken: getComputedStyle(sp).color,
           typed: getComputedStyle(typed).color,
           value: ta.value,
-          hidden: getComputedStyle(ta).display,
+          // escondida pelo invólucro (com o destaque das menções), não por display na própria
+          visible: ta.checkVisibility(),
           mic: icon.dataset.hasText,
           micColor: getComputedStyle(icon).color
         }
@@ -294,7 +295,7 @@ app.on('window-all-closed', () => app.quit())
       assert.equal(live.italic, 'normal')
       // a textarea (escondida) continua com SÓ o texto do usuário
       assert.equal(live.value, 'Linha digitada\nsegunda linha')
-      assert.equal(live.hidden, 'none', 'textarea no lugar do campo do ditado')
+      assert.equal(live.visible, false, 'textarea no lugar do campo do ditado')
       await page
         .getByTestId('composer-column')
         .screenshot({ path: join(SHOTS, 'composer-03-recording-text.png') })
