@@ -384,7 +384,7 @@ npm run test:unit   # seletor de modelos (e2e/models.test.ts: grupos por provedo
                     # remotos contra o servidor falso; e2e/syncFakeServer.test.ts: o próprio servidor falso),
                     # migração CleartChat → ClearChat; rascunho em $CLEARCHAT_TEST_TMP (padrão: tmp do sistema), apagado no fim
 
-# E2E do backend (Playwright `_electron`, chama window.api pelo renderer; faz chamadas reais e baratas ao OpenRouter)
+# E2E do backend (Playwright via e2e/launch.ts, chama window.api pelo renderer; faz chamadas reais e baratas ao OpenRouter)
 unset ELECTRON_RUN_AS_NODE
 OPENROUTER_API_KEY=sk-or-... CLEARCHAT_E2E_DIR=/tmp/clearchat-e2e npm run test:e2e
 # só alguns testes (filtro por nome, separado por vírgula):
@@ -436,7 +436,7 @@ CLEARCHAT_SYNC_TEST_URL=http://127.0.0.1:8100 CLEARCHAT_SYNC_TEST_MAIL_LOG=/cami
 # Dois apps reais:
 CLEARCHAT_SYNC_TEST_URL=http://127.0.0.1:8100 CLEARCHAT_SYNC_TEST_MAIL_LOG=/caminho/api.log npm run test:e2e:sync-real
 
-# E2E da UI real (Playwright `_electron` clicando/digitando na interface; screenshots em $CLEARCHAT_E2E_DIR/shots)
+# E2E da UI real (Playwright via e2e/launch.ts clicando/digitando na interface; screenshots em $CLEARCHAT_E2E_DIR/shots)
 OPENROUTER_API_KEY=sk-or-... CLEARCHAT_E2E_DIR=/tmp/clearchat-ui-e2e npm run test:e2e:ui
 # para depois de um passo (os passos são dependentes):
 OPENROUTER_API_KEY=... node e2e/ui.spec.ts 'delegate'
@@ -487,3 +487,11 @@ OPENROUTER_API_KEY=... node e2e/ui.spec.ts 'delegate'
   (`E2E_CACHE_MODEL`). Relatório em `$CLEARCHAT_E2E_DIR/report.json`, log do main em `main.log`.
 - Os scripts `.ts` de `e2e/` rodam direto no Node ≥ 23.6 (type stripping nativo); `e2e/ts-hooks.mjs`
   resolve `@shared/*` e imports sem extensão.
+- **Microfone nos testes:** todo spec inicia o Electron só por `launchElectron` (`e2e/launch.ts`), que
+  carrega `e2e/micGuard.cjs` no main antes do app (`-r`): dispositivo falso do Chromium
+  (`--use-fake-device-for-media-stream`), `--use-fake-ui-for-media-stream=deny` e a permissão `media`
+  negada em toda sessão (mesmo se o app trocar o handler); confere tudo no main logo depois de subir e
+  exige `CLEARCHAT_USER_DATA` isolado para o app real. `mic: 'fake'` (só quem precisa de uma captura
+  funcionando) entrega o tom do dispositivo falso. `e2e/micGuard.test.ts` (no `test:unit`) reprova
+  quem chamar `_electron.launch` direto; `npm run test:e2e:mic-guard` prova no app e no mock que o
+  getUserMedia é recusado (ou só vê o falso).

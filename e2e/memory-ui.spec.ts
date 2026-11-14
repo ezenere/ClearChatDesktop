@@ -1,4 +1,4 @@
-// E2E da UI da memória modular contra o MOCK de UI (Playwright `_electron`, sem backend, sem key):
+// E2E da UI da memória modular contra o MOCK de UI (Playwright + `e2e/launch.ts`, sem backend, sem key):
 // builda o renderer com VITE_CLEAR_MOCK=1 numa pasta de rascunho (não mexe em out/), abre
 // `index.html?scenario=memory` numa janela Electron mínima e percorre:
 //   Configurações → Memórias (criar coleções em duas categorias, criar/editar/fixar/reordenar/
@@ -16,7 +16,8 @@
 //   unset ELECTRON_RUN_AS_NODE
 //   CLEARCHAT_E2E_DIR=/tmp/clearchat-memory-ui-e2e node e2e/memory-ui.spec.ts [filtro-para-parar]
 //   (SKIP_BUILD=1 reaproveita o build anterior)
-import { _electron as electron, type ElectronApplication, type Page } from 'playwright'
+import type { ElectronApplication, Page } from 'playwright'
+import { launchElectron } from './launch.ts'
 import { execSync } from 'node:child_process'
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -156,7 +157,7 @@ app.on('window-all-closed', () => app.quit())
   )
   const env = { ...process.env } as Record<string, string>
   delete env.ELECTRON_RUN_AS_NODE
-  app = await electron.launch({ args: [mainJs], env, timeout: 60_000 })
+  app = await launchElectron({ args: [mainJs], env, timeout: 60_000 })
   page = await app.firstWindow()
   await page.waitForLoadState('domcontentloaded')
   await setSize(1280, 820)

@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-// E2E das VERSÕES de mensagens (ramos) contra o MOCK de UI (Playwright `_electron`, sem backend,
+// E2E das VERSÕES de mensagens (ramos) contra o MOCK de UI (Playwright + `e2e/launch.ts`, sem backend,
 // sem key): builda o renderer com VITE_CLEAR_MOCK=1 numa pasta de rascunho (não mexe em out/), abre
 // `index.html?scenario=branches` numa janela Electron mínima e percorre o chat "Cache das respostas
 // da API" (resposta do 1º turno regenerada: 2 versões; pergunta do 2º editada: 3 versões, a 2ª ativa):
@@ -14,7 +14,8 @@
 //   unset ELECTRON_RUN_AS_NODE
 //   CLEARCHAT_E2E_DIR=/tmp/clearchat-branches-e2e node e2e/branches-ui.spec.ts [filtro-para-parar]
 //   (SKIP_BUILD=1 reaproveita o build anterior)
-import { _electron as electron, type ElectronApplication, type Page } from 'playwright'
+import type { ElectronApplication, Page } from 'playwright'
+import { launchElectron } from './launch.ts'
 import { execSync } from 'node:child_process'
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -110,7 +111,7 @@ app.on('window-all-closed', () => app.quit())
   )
   const env = { ...process.env } as Record<string, string>
   delete env.ELECTRON_RUN_AS_NODE
-  app = await electron.launch({ args: [mainJs], env, timeout: 60_000 })
+  app = await launchElectron({ args: [mainJs], env, timeout: 60_000 })
   page = await app.firstWindow()
   await page.waitForLoadState('domcontentloaded')
   await app.evaluate(({ BrowserWindow }) =>

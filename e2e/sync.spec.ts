@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-// E2E do sync com DUAS instâncias reais do app (Playwright `_electron`, userData isolados) contra o
+// E2E do sync com DUAS instâncias reais do app (Playwright + `e2e/launch.ts`, userData isolados) contra o
 // servidor de sync FALSO (e2e/fakes/syncServer.ts) e um provedor OpenAI-compatible FALSO (nada de
 // key real). Cobre: login pela UI (onboarding) e pela API, upload/download de provedores, chats e
 // mensagens nos dois sentidos, host de execução (envio remoto executado no host, stream ao vivo
@@ -13,7 +13,8 @@
 //   unset ELECTRON_RUN_AS_NODE
 //   npm run build
 //   CLEARCHAT_E2E_DIR=/tmp/algum-dir node e2e/sync.spec.ts [filtro]
-import { _electron as electron, type ElectronApplication, type Page } from 'playwright'
+import type { ElectronApplication, Page } from 'playwright'
+import { launchElectron } from './launch.ts'
 import {
   createWriteStream,
   existsSync,
@@ -195,7 +196,7 @@ async function launch(name: string, dir: string, url?: string): Promise<Inst> {
   env.CLEARCHAT_DEVICE_NAME = name
   // presença fixa (presente): os avisos push só saem pelos turnos vindos do "celular"
   env.CLEARCHAT_FORCE_AWAY = '0'
-  const app = await electron.launch({ args: [ROOT], env, timeout: 60_000 })
+  const app = await launchElectron({ args: [ROOT], env, timeout: 60_000 })
   const log = createWriteStream(join(BASE, `${name.replace(/\W+/g, '_')}.log`), { flags: 'a' })
   app.process().stdout?.pipe(log)
   app.process().stderr?.pipe(log)

@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-// E2E da UI real (Playwright `_electron`, app buildado) das tools compactadas e da tool `datetime`
+// E2E da UI real (Playwright + `e2e/launch.ts`, app buildado) das tools compactadas e da tool `datetime`
 // (protocolo 1.11.0): na aba Tools do chat, "Enviar tools compactadas" ligado por padrão com o </>
 // mostrando o prompt fixo e a definição da search_tool exatamente como vão; o </> de cada tool
 // mostra a definição enviada (compacta ou completa); o chip "compacta"/"completa" marca a tool
@@ -18,7 +18,8 @@
 //   unset ELECTRON_RUN_AS_NODE
 //   npm run build
 //   CLEARCHAT_E2E_DIR=/tmp/algum-dir node e2e/compact-ui.spec.ts
-import { _electron as electron, type ElectronApplication, type Page } from 'playwright'
+import type { ElectronApplication, Page } from 'playwright'
+import { launchElectron } from './launch.ts'
 import { createWriteStream, mkdirSync, rmSync } from 'node:fs'
 import { createServer, type IncomingMessage, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
@@ -206,7 +207,7 @@ async function launch(): Promise<void> {
   env.CLEARCHAT_E2E_NATIVE_HOSTS = '127.0.0.1'
   // sem login nada vai à rede; mesmo assim, nunca o servidor real
   env.CLEARCHAT_SYNC_URL = 'http://127.0.0.1:9'
-  app = await electron.launch({ args: [ROOT], env, timeout: 60_000 })
+  app = await launchElectron({ args: [ROOT], env, timeout: 60_000 })
   const log = createWriteStream(join(BASE, 'compact-main.log'), { flags: 'a' })
   app.process().stdout?.pipe(log)
   app.process().stderr?.pipe(log)

@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-// E2E do backend (main process) via Playwright `_electron`, chamando window.api a partir do renderer.
+// E2E do backend (main process) via Playwright + `e2e/launch.ts`, chamando window.api a partir do renderer.
 //
 // Uso:
 //   unset ELECTRON_RUN_AS_NODE
@@ -11,7 +11,8 @@
 // - E2E_MODEL / E2E_CACHE_MODEL / E2E_VISION_MODEL / E2E_AUDIO_MODEL / E2E_TEXT_MODEL sobrescrevem os
 //   modelos escolhidos.
 // - [filtro] (opcional): roda só os testes cujo nome contém algum dos textos (separados por vírgula).
-import { _electron as electron, type ElectronApplication, type Page } from 'playwright'
+import type { ElectronApplication, Page } from 'playwright'
+import { launchElectron } from './launch.ts'
 import {
   existsSync,
   mkdirSync,
@@ -56,7 +57,7 @@ async function launch(): Promise<void> {
   delete env.ELECTRON_RUN_AS_NODE
   delete env.OPENROUTER_API_KEY // o app não lê a key do ambiente; ela é passada via providers.create
   env.CLEARCHAT_USER_DATA = USER_DATA
-  app = await electron.launch({ args: [ROOT], env, timeout: 60_000 })
+  app = await launchElectron({ args: [ROOT], env, timeout: 60_000 })
   const log = createWriteStream(join(BASE, 'main.log'), { flags: 'a' })
   app.process().stdout?.pipe(log)
   app.process().stderr?.pipe(log)

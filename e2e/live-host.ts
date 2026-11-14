@@ -13,7 +13,8 @@
 //   CLEARCHAT_SYNC_TEST_URL=http://127.0.0.1:8123 CLEARCHAT_SYNC_TEST_MAIL_LOG=/caminho/dev-server.log \
 //     CLEARCHAT_E2E_DIR=/algum/dir [CLEARCHAT_LIVE_EMAIL=… CLEARCHAT_LIVE_PASSWORD=…] node e2e/live-host.ts
 //   (CLEARCHAT_LIVE_EMAIL de uma conta que já existe: só entra; sem ele, cadastra uma conta nova.)
-import { _electron as electron, type ElectronApplication, type Page } from 'playwright'
+import type { ElectronApplication, Page } from 'playwright'
+import { launchElectron } from './launch.ts'
 import { createWriteStream, mkdirSync, readFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
@@ -216,7 +217,7 @@ async function main(): Promise<void> {
     CLEARCHAT_SYNC_FAST: '1',
     CLEARCHAT_DEVICE_NAME: NAME
   })
-  const app: ElectronApplication = await electron.launch({ args: [ROOT], env, timeout: 60_000 })
+  const app: ElectronApplication = await launchElectron({ args: [ROOT], env, timeout: 60_000 })
   const log = createWriteStream(join(BASE, 'host.log'), { flags: 'a' })
   app.process().stdout?.pipe(log)
   app.process().stderr?.pipe(log)

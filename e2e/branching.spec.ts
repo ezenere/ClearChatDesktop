@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-// E2E da ramificação da conversa no app real (Playwright `_electron`, chamando window.api pelo
+// E2E da ramificação da conversa no app real (Playwright + `e2e/launch.ts`, chamando window.api pelo
 // renderer — IPC + runner + banco de verdade), 100% determinístico: provedor OpenAI-compatible
 // FALSO em 127.0.0.1 (nenhuma key real, nenhum custo).
 //
@@ -12,7 +12,8 @@
 // regenerate = irmã da resposta; trocar de versão muda o corpo da próxima request; trocar com o
 // agente rodando é recusado; subagente em segundo plano da versão abandonada é parado sem
 // callback; regenerate depois de um erro substitui o erro; eventos session-updated com branchSel.
-import { _electron as electron, type ElectronApplication, type Page } from 'playwright'
+import type { ElectronApplication, Page } from 'playwright'
+import { launchElectron } from './launch.ts'
 import { createWriteStream, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer, type IncomingMessage, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
@@ -139,7 +140,7 @@ async function launch(): Promise<void> {
   delete env.ELECTRON_RUN_AS_NODE
   delete env.OPENROUTER_API_KEY
   env.CLEARCHAT_USER_DATA = USER_DATA
-  app = await electron.launch({ args: [ROOT], env, timeout: 60_000 })
+  app = await launchElectron({ args: [ROOT], env, timeout: 60_000 })
   const log = createWriteStream(join(BASE, 'main.log'), { flags: 'a' })
   app.process().stdout?.pipe(log)
   app.process().stderr?.pipe(log)

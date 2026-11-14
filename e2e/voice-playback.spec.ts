@@ -14,7 +14,8 @@
 // Uso:
 //   unset ELECTRON_RUN_AS_NODE
 //   npm run test:e2e:playback
-import { _electron as electron, type ElectronApplication, type Page } from 'playwright'
+import type { ElectronApplication, Page } from 'playwright'
+import { launchElectron } from './launch.ts'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { stripTypeScriptTypes } from 'node:module'
 import { join, resolve } from 'node:path'
@@ -435,7 +436,7 @@ app.on('window-all-closed', () => app.quit())
   let app: ElectronApplication | null = null
   const failures: string[] = []
   try {
-    app = await electron.launch({ args: ['--disable-gpu', mainJs], env, timeout: 60_000 })
+    app = await launchElectron({ args: ['--disable-gpu', mainJs], env, timeout: 60_000 })
     const page = await app.firstWindow()
     await page.waitForFunction(() => document.title === 'pronto', null, { timeout: 30_000 })
     for (const sc of scenarios) {

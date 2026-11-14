@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-// E2E da UI real (Playwright `_electron`): clica/digita na interface do app buildado — nada de
+// E2E da UI real (Playwright + `e2e/launch.ts`): clica/digita na interface do app buildado — nada de
 // atalhos via window.api para AGIR (window.api só é lido para conferir estado no banco).
 //
 // Uso:
@@ -14,12 +14,8 @@
 //   a pasta de rascunho — o clique no botão continua sendo pela UI.
 // - [filtro] opcional: os passos são dependentes; o filtro só serve para PARAR depois do passo
 //   cujo nome contém o texto (ex.: `node e2e/ui.spec.ts delegate`).
-import {
-  _electron as electron,
-  type ElectronApplication,
-  type Locator,
-  type Page
-} from 'playwright'
+import type { ElectronApplication, Locator, Page } from 'playwright'
+import { launchElectron } from './launch.ts'
 import {
   createWriteStream,
   existsSync,
@@ -147,7 +143,7 @@ async function launch(): Promise<void> {
   delete env.ELECTRON_RUN_AS_NODE
   delete env.OPENROUTER_API_KEY // o app não lê a key do ambiente: ela é digitada no onboarding
   env.CLEARCHAT_USER_DATA = USER_DATA
-  app = await electron.launch({ args: [ROOT], env, timeout: 60_000 })
+  app = await launchElectron({ args: [ROOT], env, timeout: 60_000 })
   const log = createWriteStream(join(BASE, 'ui-main.log'), { flags: 'a' })
   app.process().stdout?.pipe(log)
   app.process().stderr?.pipe(log)

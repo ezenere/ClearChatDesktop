@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-// E2E do questionário (tool ask_user) na UI real (Playwright `_electron`), determinístico: um
+// E2E do questionário (tool ask_user) na UI real (Playwright + `e2e/launch.ts`), determinístico: um
 // provedor OpenAI-compatible FALSO servido pelo teste em 127.0.0.1 faz o papel do agente
 // (`fake/agent-1`: mensagem "pergunte" → chama ask_user; resultado de tool → "FIM: …"). Também
 // serve uma imagem PNG (ícone/hover da opção) para testar o download no main.
@@ -13,12 +13,8 @@
 // com texto, Voltar, Enviar respostas → resultado compacto + card respondido; Esc cancela →
 // "[O usuário não respondeu ao questionário]", sessão ociosa e NENHUMA nova chamada ao modelo;
 // a próxima mensagem vê o "não respondeu" + a mensagem no histórico.
-import {
-  _electron as electron,
-  type ElectronApplication,
-  type Locator,
-  type Page
-} from 'playwright'
+import type { ElectronApplication, Locator, Page } from 'playwright'
+import { launchElectron } from './launch.ts'
 import { createWriteStream, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer, type IncomingMessage, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
@@ -242,7 +238,7 @@ async function main(): Promise<void> {
   for (const [k, v] of Object.entries(process.env)) if (v !== undefined) env[k] = v
   delete env.ELECTRON_RUN_AS_NODE
   env.CLEARCHAT_USER_DATA = USER_DATA
-  app = await electron.launch({ args: [ROOT], env, timeout: 60_000 })
+  app = await launchElectron({ args: [ROOT], env, timeout: 60_000 })
   const log = createWriteStream(join(BASE, 'main.log'), { flags: 'a' })
   app.process().stdout?.pipe(log)
   app.process().stderr?.pipe(log)

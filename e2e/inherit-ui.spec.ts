@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-// E2E da UI real (Playwright `_electron`, app buildado) da herança ao vivo da persona (protocolo
+// E2E da UI real (Playwright + `e2e/launch.ts`, app buildado) da herança ao vivo da persona (protocolo
 // 1.10.0): Novo chat marca como próprio só o que o usuário mudou no formulário; no painel do chat
 // os campos próprios ganham "neste chat ↺" (voltar a herdar, com o valor herdado no tooltip) e os
 // herdados seguem a persona ao vivo (editada pela UI das Configurações); o seletor "Persona de
@@ -13,7 +13,8 @@
 //   unset ELECTRON_RUN_AS_NODE
 //   npm run build
 //   CLEARCHAT_E2E_DIR=/tmp/algum-dir node e2e/inherit-ui.spec.ts
-import { _electron as electron, type ElectronApplication, type Page } from 'playwright'
+import type { ElectronApplication, Page } from 'playwright'
+import { launchElectron } from './launch.ts'
 import { createWriteStream, mkdirSync, rmSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
@@ -63,7 +64,7 @@ async function launch(): Promise<void> {
   env.CLEARCHAT_USER_DATA = join(BASE, 'user-data')
   // sem login nada vai à rede; mesmo assim, nunca o servidor real
   env.CLEARCHAT_SYNC_URL = 'http://127.0.0.1:9'
-  app = await electron.launch({ args: [ROOT], env, timeout: 60_000 })
+  app = await launchElectron({ args: [ROOT], env, timeout: 60_000 })
   const log = createWriteStream(join(BASE, 'inherit-main.log'), { flags: 'a' })
   app.process().stdout?.pipe(log)
   app.process().stderr?.pipe(log)

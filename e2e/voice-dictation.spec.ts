@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-// E2E do ditado por voz (Feature A) na UI real (Playwright `_electron`), determinístico e sem
+// E2E do ditado por voz (Feature A) na UI real (Playwright + `e2e/launch.ts`), determinístico e sem
 // rede externa: microfone INJETADO (getUserMedia/enumerateDevices trocados por um stream
 // sintético — o microfone real nunca é aberto; as flags de fake device do Chromium são ignoradas
 // neste Electron/Linux) + servidor FALSO de STT
@@ -20,12 +20,8 @@
 // conclui e envia digitado + final, o request
 // multipart chega ao servidor falso (file/model/language/response_format + Authorization da chave
 // do provedor) e o microfone salvo inexistente cai no padrão com aviso (OverconstrainedError simulado).
-import {
-  _electron as electron,
-  type ElectronApplication,
-  type Locator,
-  type Page
-} from 'playwright'
+import type { ElectronApplication, Locator, Page } from 'playwright'
+import { launchElectron } from './launch.ts'
 import { createWriteStream, mkdirSync, rmSync } from 'node:fs'
 import { createServer, type IncomingMessage, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
@@ -163,7 +159,7 @@ async function main(): Promise<void> {
   // um MediaStream sintético (rajadas de tom com pausas, para o VAD ver fala e silêncio) e
   // enumerateDevices devolve um dispositivo falso; deviceId exato desconhecido →
   // OverconstrainedError, como o Chromium real.
-  app = await electron.launch({ args: [ROOT], env, timeout: 60_000 })
+  app = await launchElectron({ args: [ROOT], env, timeout: 60_000 })
   const log = createWriteStream(join(BASE, 'main.log'), { flags: 'a' })
   app.process().stdout?.pipe(log)
   app.process().stderr?.pipe(log)

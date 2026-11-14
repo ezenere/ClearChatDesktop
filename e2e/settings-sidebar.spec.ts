@@ -1,4 +1,4 @@
-// E2E contra o MOCK de UI (Playwright `_electron`, sem backend/chave) da navegação de Configurações:
+// E2E contra o MOCK de UI (Playwright + `e2e/launch.ts`, sem backend/chave) da navegação de Configurações:
 // barra lateral com grupos (Geral · Agente · Conexões) e itens ícone + rótulo (botões com o mesmo nome
 // acessível das abas antigas, `aria-current="page"` no ativo), conteúdo com rolagem própria e título da
 // aba, busca "Procurar" (filtra por rótulo e palavras-chave; Enter abre o melhor resultado; "Nenhuma
@@ -11,7 +11,8 @@
 //   unset ELECTRON_RUN_AS_NODE
 //   CLEARCHAT_E2E_DIR=/tmp/clearchat-settings-sidebar node e2e/settings-sidebar.spec.ts [filtro-para-parar]
 //   (SKIP_BUILD=1 reaproveita o build anterior)
-import { _electron as electron, type ElectronApplication, type Page } from 'playwright'
+import type { ElectronApplication, Page } from 'playwright'
+import { launchElectron } from './launch.ts'
 import { execSync } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -114,9 +115,7 @@ async function main(): Promise<void> {
   writeFileSync(
     mainJs,
     `const { app, BrowserWindow } = require('electron')
-// nunca o microfone real: dispositivo falso do Chromium
-app.commandLine.appendSwitch('use-fake-device-for-media-stream')
-app.commandLine.appendSwitch('use-fake-ui-for-media-stream')
+// microfone: a guarda do e2e/launch.ts (dispositivo falso, permissão negada)
 app.setPath('userData', ${JSON.stringify(join(BASE, 'user-data'))})
 app.whenReady().then(() => {
   const win = new BrowserWindow({ width: 1440, height: 900, useContentSize: true, backgroundColor: '#0d0d10', show: true })
@@ -127,7 +126,7 @@ app.on('window-all-closed', () => app.quit())
   )
   const env = { ...process.env } as Record<string, string>
   delete env.ELECTRON_RUN_AS_NODE
-  app = await electron.launch({ args: [mainJs], env, timeout: 60_000 })
+  app = await launchElectron({ args: [mainJs], env, timeout: 60_000 })
   page = await app.firstWindow()
   await page.waitForLoadState('domcontentloaded')
   await page.getByRole('button', { name: /^Configurações/ }).waitFor()

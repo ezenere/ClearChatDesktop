@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-// E2E do modo "Listas" das aprovações na UI real (Playwright `_electron`), determinístico: um
+// E2E do modo "Listas" das aprovações na UI real (Playwright + `e2e/launch.ts`), determinístico: um
 // provedor OpenAI-compatible FALSO (`fake/agent-1`: "rode: <cmd>" → chama shell com o comando;
 // resultado da tool → "FIM: …"). Nenhuma key real, nenhum custo.
 //
@@ -15,12 +15,8 @@
 // decomposição em árvore (ssh com comandos remotos + sudo: card com cabeçalhos "no servidor …",
 // "Não" na conexão → nada roda; `rm -rf` remoto bloqueado pela blacklist — host `.invalid`, nada
 // é executado); Configurações → Aprovações (modos globais, tabelas e "Testar comando" com ssh).
-import {
-  _electron as electron,
-  type ElectronApplication,
-  type Locator,
-  type Page
-} from 'playwright'
+import type { ElectronApplication, Locator, Page } from 'playwright'
+import { launchElectron } from './launch.ts'
 import { createWriteStream, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer, type IncomingMessage, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
@@ -168,7 +164,7 @@ async function launch(): Promise<void> {
   delete env.ELECTRON_RUN_AS_NODE
   delete env.OPENROUTER_API_KEY
   env.CLEARCHAT_USER_DATA = USER_DATA
-  app = await electron.launch({ args: [ROOT], env, timeout: 60_000 })
+  app = await launchElectron({ args: [ROOT], env, timeout: 60_000 })
   const log = createWriteStream(join(BASE, 'main.log'), { flags: 'a' })
   app.process().stdout?.pipe(log)
   app.process().stderr?.pipe(log)

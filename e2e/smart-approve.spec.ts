@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-// E2E do Smart-Approve na UI real (Playwright `_electron`), 100% determinístico: um provedor
+// E2E do Smart-Approve na UI real (Playwright + `e2e/launch.ts`), 100% determinístico: um provedor
 // OpenAI-compatible FALSO servido pelo próprio teste em 127.0.0.1 faz o papel do agente
 // (`fake/agent-1`: pede bash com o comando da mensagem e depois responde "FIM") E do juiz
 // (`fake/judge-1`: respostas roteirizadas por passo). Nenhuma key real, nenhum custo.
@@ -20,12 +20,8 @@
 // aprovação e faixa compacta nas negadas;
 // arquivo (Escrever arquivo em Smart-Approve → juiz; em Perguntar → card), popover do header (modos
 // efetivos, revogar "Sempre") e a seção no editor de personas. Screenshots em $CLEARCHAT_E2E_DIR/shots.
-import {
-  _electron as electron,
-  type ElectronApplication,
-  type Locator,
-  type Page
-} from 'playwright'
+import type { ElectronApplication, Locator, Page } from 'playwright'
+import { launchElectron } from './launch.ts'
 import { createWriteStream, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer, type IncomingMessage, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
@@ -274,7 +270,7 @@ async function launch(): Promise<void> {
   delete env.ELECTRON_RUN_AS_NODE
   delete env.OPENROUTER_API_KEY
   env.CLEARCHAT_USER_DATA = USER_DATA
-  app = await electron.launch({ args: [ROOT], env, timeout: 60_000 })
+  app = await launchElectron({ args: [ROOT], env, timeout: 60_000 })
   const log = createWriteStream(join(BASE, 'main.log'), { flags: 'a' })
   app.process().stdout?.pipe(log)
   app.process().stderr?.pipe(log)

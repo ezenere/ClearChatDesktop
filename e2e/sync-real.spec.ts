@@ -14,7 +14,8 @@
 //   unset ELECTRON_RUN_AS_NODE; npm run build
 //   CLEARCHAT_SYNC_TEST_URL=http://127.0.0.1:8100 CLEARCHAT_SYNC_TEST_MAIL_LOG=/caminho/api.log \
 //     [CLEARCHAT_SYNC_TEST_PSQL="docker … psql … -tA"] CLEARCHAT_E2E_DIR=/tmp/x node e2e/sync-real.spec.ts
-import { _electron as electron, type ElectronApplication, type Page } from 'playwright'
+import type { ElectronApplication, Page } from 'playwright'
+import { launchElectron } from './launch.ts'
 import { createWriteStream, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
@@ -136,7 +137,7 @@ async function launch(name: string): Promise<Inst> {
     CLEARCHAT_SYNC_FAST: '1',
     CLEARCHAT_DEVICE_NAME: name
   })
-  const app = await electron.launch({ args: [ROOT], env, timeout: 60_000 })
+  const app = await launchElectron({ args: [ROOT], env, timeout: 60_000 })
   const log = createWriteStream(join(BASE, `${name.replace(/\W+/g, '_')}.log`))
   app.process().stdout?.pipe(log)
   app.process().stderr?.pipe(log)

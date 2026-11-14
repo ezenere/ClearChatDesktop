@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-// E2E do menu de contexto (botão direito) no app REAL buildado (Playwright `_electron`), com um
+// E2E do menu de contexto (botão direito) no app REAL buildado (Playwright + `e2e/launch.ts`), com um
 // provedor OpenAI-compatible FALSO em 127.0.0.1 (nenhuma key, nenhum custo). Menus nativos não são
 // clicáveis pelo Playwright: com userData isolado o main expõe `globalThis.__clearchatContextMenu`
 // (só nesse modo) — `capture(true)` guarda os menus em vez de abri-los e `click(rótulo)` executa um
@@ -16,7 +16,8 @@
 //   unset ELECTRON_RUN_AS_NODE
 //   npm run build
 //   CLEARCHAT_E2E_DIR=/tmp/algum-dir node e2e/context-menu.spec.ts
-import { _electron as electron, type ElectronApplication, type Page } from 'playwright'
+import type { ElectronApplication, Page } from 'playwright'
+import { launchElectron } from './launch.ts'
 import { createWriteStream, mkdirSync, rmSync } from 'node:fs'
 import { createServer, type IncomingMessage, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
@@ -158,7 +159,7 @@ async function main(): Promise<void> {
   for (const [k, v] of Object.entries(process.env)) if (v !== undefined) env[k] = v
   delete env.ELECTRON_RUN_AS_NODE
   env.CLEARCHAT_USER_DATA = USER_DATA
-  app = await electron.launch({ args: [ROOT], env, timeout: 60_000 })
+  app = await launchElectron({ args: [ROOT], env, timeout: 60_000 })
   const log = createWriteStream(join(BASE, 'main.log'), { flags: 'a' })
   app.process().stdout?.pipe(log)
   app.process().stderr?.pipe(log)

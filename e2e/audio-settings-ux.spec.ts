@@ -1,4 +1,4 @@
-// E2E contra o MOCK de UI (Playwright `_electron`, sem backend/chave) de Configurações → Áudio,
+// E2E contra o MOCK de UI (Playwright + `e2e/launch.ts`, sem backend/chave) de Configurações → Áudio,
 // seções de Transcrição (STT) e Fala (TTS): SEM seletor de Provedor — um único seletor de MODELO
 // (`ModelPicker`, o mesmo do chat) com um grupo por provedor cadastrado em Configurações →
 // Provedores (um servidor local OpenAI-compatível cadastrado vale) + "Local (CPU)"/"Local (GPU)" só
@@ -23,7 +23,8 @@
 //   unset ELECTRON_RUN_AS_NODE
 //   CLEARCHAT_E2E_DIR=/tmp/clearchat-audio-ux node e2e/audio-settings-ux.spec.ts [filtro-para-parar]
 //   (SKIP_BUILD=1 reaproveita o build anterior)
-import { _electron as electron, type ElectronApplication, type Page } from 'playwright'
+import type { ElectronApplication, Page } from 'playwright'
+import { launchElectron } from './launch.ts'
 import { execSync } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -135,9 +136,7 @@ async function main(): Promise<void> {
   writeFileSync(
     mainJs,
     `const { app, BrowserWindow } = require('electron')
-// nunca o microfone real: dispositivo falso do Chromium
-app.commandLine.appendSwitch('use-fake-device-for-media-stream')
-app.commandLine.appendSwitch('use-fake-ui-for-media-stream')
+// microfone: a guarda do e2e/launch.ts (dispositivo falso, permissão negada)
 app.setPath('userData', ${JSON.stringify(join(BASE, 'user-data'))})
 app.whenReady().then(() => {
   const win = new BrowserWindow({ width: 1440, height: 1000, useContentSize: true, backgroundColor: '#0d0d10', show: true })
@@ -148,7 +147,7 @@ app.on('window-all-closed', () => app.quit())
   )
   const env = { ...process.env } as Record<string, string>
   delete env.ELECTRON_RUN_AS_NODE
-  app = await electron.launch({ args: [mainJs], env, timeout: 60_000 })
+  app = await launchElectron({ args: [mainJs], env, timeout: 60_000 })
   page = await app.firstWindow()
   const cspErrors: string[] = []
   page.on('console', (m) => {

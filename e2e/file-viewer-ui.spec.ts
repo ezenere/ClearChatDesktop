@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-// E2E do VISUALIZADOR DE ARQUIVOS (present_file) contra o MOCK de UI (Playwright `_electron`, sem
+// E2E do VISUALIZADOR DE ARQUIVOS (present_file) contra o MOCK de UI (Playwright + `e2e/launch.ts`, sem
 // backend, sem key): builda o renderer com VITE_CLEAR_MOCK=1 numa pasta de rascunho (não mexe em
 // out/), abre `index.html` numa janela Electron mínima e percorre o chat "Relatório trimestral de
 // vendas" (mockViewer.ts):
@@ -21,7 +21,8 @@
 //   unset ELECTRON_RUN_AS_NODE
 //   CLEARCHAT_E2E_DIR=/tmp/clearchat-viewer-e2e node e2e/file-viewer-ui.spec.ts [filtro-para-parar]
 //   (SKIP_BUILD=1 reaproveita o build anterior)
-import { _electron as electron, type ElectronApplication, type Page } from 'playwright'
+import type { ElectronApplication, Page } from 'playwright'
+import { launchElectron } from './launch.ts'
 import { execSync } from 'node:child_process'
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -91,9 +92,7 @@ async function main(): Promise<void> {
   writeFileSync(
     mainJs,
     `const { app, BrowserWindow } = require('electron')
-// nunca o microfone real: dispositivo falso do Chromium
-app.commandLine.appendSwitch('use-fake-device-for-media-stream')
-app.commandLine.appendSwitch('use-fake-ui-for-media-stream')
+// microfone: a guarda do e2e/launch.ts (dispositivo falso, permissão negada)
 app.whenReady().then(() => {
   const win = new BrowserWindow({ width: 1440, height: 860, useContentSize: true, backgroundColor: '#0d0d10', show: true })
   win.loadFile(${JSON.stringify(join(BUILD, 'renderer', 'index.html'))})
@@ -103,7 +102,7 @@ app.on('window-all-closed', () => app.quit())
   )
   const env = { ...process.env } as Record<string, string>
   delete env.ELECTRON_RUN_AS_NODE
-  app = await electron.launch({ args: [mainJs], env, timeout: 60_000 })
+  app = await launchElectron({ args: [mainJs], env, timeout: 60_000 })
   page = await app.firstWindow()
   await page.waitForLoadState('domcontentloaded')
   await app.evaluate(({ BrowserWindow }) =>

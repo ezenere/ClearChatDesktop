@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-// E2E das skills no app real (Playwright `_electron`), 100% local: um provedor OpenAI-compatible
+// E2E das skills no app real (Playwright + `e2e/launch.ts`), 100% local: um provedor OpenAI-compatible
 // FALSO servido pelo próprio teste em 127.0.0.1 roteiriza o agente (list_skills → skill_load →
 // skill_read; delegate_task para os subagentes). userData isolado (CLEARCHAT_USER_DATA) e HOME
 // temporária — a pasta padrão `~/.claude/skills` resolve dentro dela; o ~/.claude/skills real e o
@@ -15,7 +15,8 @@
 // (prompt de apoio + tools na request, cards); skills desligadas → nada na request; lâmpada →
 // picker → chip → mensagem com o part <skill> (sem `_skill` na request) e card; fila; erro legível
 // com skill inexistente; subagentes com/sem skills; seção na aba Tools. Screenshots em $BASE/shots.
-import { _electron as electron, type ElectronApplication, type Page } from 'playwright'
+import type { ElectronApplication, Page } from 'playwright'
+import { launchElectron } from './launch.ts'
 import { createWriteStream, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer, type IncomingMessage, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
@@ -178,7 +179,7 @@ async function launch(): Promise<void> {
   env.CLEARCHAT_USER_DATA = USER_DATA
   env.HOME = HOME
   env.CLEARCHAT_SKIP_SHELL_ENV = '1'
-  app = await electron.launch({ args: [ROOT], env, timeout: 60_000 })
+  app = await launchElectron({ args: [ROOT], env, timeout: 60_000 })
   const log = createWriteStream(join(BASE, 'main.log'), { flags: 'a' })
   app.process().stdout?.pipe(log)
   app.process().stderr?.pipe(log)

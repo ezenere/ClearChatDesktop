@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-// E2E dos buscadores do web_search na UI real (Playwright `_electron`), determinístico e sem rede:
+// E2E dos buscadores do web_search na UI real (Playwright + `e2e/launch.ts`), determinístico e sem rede:
 // um provedor OpenAI-compatible FALSO e um servidor FALSO de busca em 127.0.0.1 fazem o papel de
 // Exa / Tavily / Brave Search API / DuckDuckGo / Brave (site) — as bases vêm de
 // CLEARCHAT_SEARCH_BASE_<ID>. userData isolado (CLEARCHAT_USER_DATA); nenhuma chave real.
@@ -14,12 +14,8 @@
 // fora do "mostrar"; setting protegido), habilitar, reordenar (↑/↓ e arrastar), desabilitar,
 // Testar (ok / erro de cota; gzip da Brave API), remover chave (desliga). Depois uma pesquisa pelo
 // runner: Exa (1ª) responde 429 → Tavily (2ª) responde; o resultado diz quem respondeu e quem falhou.
-import {
-  _electron as electron,
-  type ElectronApplication,
-  type Locator,
-  type Page
-} from 'playwright'
+import type { ElectronApplication, Locator, Page } from 'playwright'
+import { launchElectron } from './launch.ts'
 import { createWriteStream, mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { createServer, type IncomingMessage, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
@@ -248,7 +244,7 @@ async function main(): Promise<void> {
   env.CLEARCHAT_SEARCH_BASE_BRAVE_API = `${searchBase}/brave`
   env.CLEARCHAT_SEARCH_BASE_DDG = `${searchBase}/ddg/html/`
   env.CLEARCHAT_SEARCH_BASE_BRAVE_SITE = `${searchBase}/brave-site/search`
-  app = await electron.launch({ args: [ROOT], env, timeout: 60_000 })
+  app = await launchElectron({ args: [ROOT], env, timeout: 60_000 })
   const log = createWriteStream(join(BASE, 'main.log'), { flags: 'a' })
   app.process().stdout?.pipe(log)
   app.process().stderr?.pipe(log)

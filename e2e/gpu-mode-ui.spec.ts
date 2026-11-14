@@ -1,4 +1,4 @@
-// E2E contra o MOCK de UI (Playwright `_electron`, sem backend/GPU/chave) do "Modo avançado (GPU
+// E2E contra o MOCK de UI (Playwright + `e2e/launch.ts`, sem backend/GPU/chave) do "Modo avançado (GPU
 // local)" — agora dentro de Configurações → Áudio → "Modelos locais" (sub-tela com "← Áudio";
 // `components/voice/gpu/`, mock em `dev/mockGpu.ts`): fora da página principal e sempre aberta na
 // sub-tela; sem motor instalado nenhum grupo "Local (GPU)" no seletor de Modelo (instalado, o motor
@@ -22,7 +22,8 @@
 //   unset ELECTRON_RUN_AS_NODE
 //   CLEARCHAT_E2E_DIR=/tmp/clearchat-gpumode node e2e/gpu-mode-ui.spec.ts [filtro-para-parar]
 //   (SKIP_BUILD=1 reaproveita o build anterior)
-import { _electron as electron, type ElectronApplication, type Page } from 'playwright'
+import type { ElectronApplication, Page } from 'playwright'
+import { launchElectron } from './launch.ts'
 import { execSync } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -220,9 +221,7 @@ async function main(): Promise<void> {
   writeFileSync(
     mainJs,
     `const { app, BrowserWindow } = require('electron')
-// nunca o microfone real: dispositivo falso do Chromium
-app.commandLine.appendSwitch('use-fake-device-for-media-stream')
-app.commandLine.appendSwitch('use-fake-ui-for-media-stream')
+// microfone: a guarda do e2e/launch.ts (dispositivo falso, permissão negada)
 app.setPath('userData', ${JSON.stringify(join(BASE, 'user-data'))})
 app.whenReady().then(() => {
   const win = new BrowserWindow({ width: 1440, height: 1000, useContentSize: true, backgroundColor: '#0d0d10', show: true })
@@ -233,7 +232,7 @@ app.on('window-all-closed', () => app.quit())
   )
   const env = { ...process.env } as Record<string, string>
   delete env.ELECTRON_RUN_AS_NODE
-  app = await electron.launch({ args: [mainJs], env, timeout: 60_000 })
+  app = await launchElectron({ args: [mainJs], env, timeout: 60_000 })
   page = await app.firstWindow()
   const pageErrors: string[] = []
   page.on('pageerror', (e) => pageErrors.push(e.message))

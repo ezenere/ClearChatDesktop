@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-// Verificação REAL do "Modo avançado (GPU local)" pelo app de verdade (Playwright `_electron`):
+// Verificação REAL do "Modo avançado (GPU local)" pelo app de verdade (Playwright + `e2e/launch.ts`):
 // instala o runtime e os motores pedidos num userData ISOLADO (downloads reais: Python portátil,
 // torch cu128, pesos do HF), sobe o servidor pelo main, sintetiza pelo caminho de áudio do app
 // ("Testar voz" e o autoteste = `synthesizeStream`, o mesmo da chamada), transcreve uma sessão de
@@ -14,7 +14,8 @@
 //   GPU_REAL_TEST=omnivoice,whisper-large-v3-turbo \
 //   CLEARCHAT_E2E_DIR=/tmp/gpu-real node e2e/gpu-real.spec.ts
 //   (CLEARCHAT_GPU_PIP_CACHE=~/.cache/pip só acelera os downloads do pip — a instalação é do zero)
-import { _electron as electron, type ElectronApplication, type Page } from 'playwright'
+import type { ElectronApplication, Page } from 'playwright'
+import { launchElectron } from './launch.ts'
 import { createWriteStream, mkdirSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -122,7 +123,7 @@ async function main(): Promise<void> {
   env.CLEARCHAT_USER_DATA = USER_DATA
   // GPU_REAL_EXECUTABLE=dist/linux-unpacked/clearchat → o app EMPACOTADO (server.py fora do asar)
   const exe = process.env.GPU_REAL_EXECUTABLE
-  app = await electron.launch(
+  app = await launchElectron(
     exe
       ? { executablePath: resolve(exe), args: [], env, timeout: 60_000 }
       : { args: [ROOT], env, timeout: 60_000 }
