@@ -21,7 +21,7 @@ import { cn } from '../../lib/format'
 import { useStore } from '../../store'
 import { Popover } from '../ui/layers'
 import { Tip } from '../ui/Tooltip'
-import { VoiceCallButton } from './VoiceCallButton'
+import { VOICE_SEGMENT_WIDTH, VoiceCallButton } from './VoiceCallButton'
 
 /** Rótulo do menu/seta: o microfone vale para o ditado E para a chamada. */
 export const MIC_MENU_LABEL = 'Microfone (ditado e chamada)'
@@ -77,9 +77,9 @@ export function VoiceGroup({
       role="group"
       aria-label="Voz: chamada, ditado e microfone"
       data-testid="voice-group"
-      className="flex h-[30px] shrink-0 items-stretch divide-x divide-border overflow-hidden rounded-lg border border-border bg-elevated/40"
+      className="flex h-8 shrink-0 items-stretch divide-x divide-border overflow-hidden rounded-lg border border-border bg-elevated/40"
     >
-      <VoiceCallButton session={session} className="rounded-none!" />
+      <VoiceCallButton session={session} segment />
       <Tip
         label={
           <span className="block max-w-[28rem] leading-snug whitespace-normal">{micLabel}</span>
@@ -105,7 +105,7 @@ export function VoiceGroup({
           }}
           className={cn(
             SEGMENT,
-            'w-7',
+            VOICE_SEGMENT_WIDTH,
             dictationOff && 'cursor-default opacity-40 hover:bg-transparent'
           )}
         >

@@ -33,12 +33,24 @@ import { callUnavailableText, voiceFallbackNote, voiceIconState } from '../../li
 import { useHostInfo } from '../sync/hooks'
 import { Tip } from '../ui/Tooltip'
 
+/**
+ * Largura do telefone e do mic no grupo `[ telefone | mic | ˅ ]`: quase quadrados na altura do
+ * grupo (h-8, a do botão de enviar — 30 px por dentro da borda), um pouco mais largos que altos.
+ */
+export const VOICE_SEGMENT_WIDTH = 'w-[34px]'
+/** Telefone com o mesmo peso visual do Mic (size-4, traço 2): caixa menor, traço compensado. */
+const PHONE_ICON = 'size-[14px] translate-x-[0.5px] -translate-y-[0.5px]'
+const PHONE_STROKE = 2.25
+
 export function VoiceCallButton({
   session,
+  segment,
   className
 }: {
   session: Session
-  /** Classes extras do botão (no grupo de voz do composer: segmento do `[ telefone | mic | ˅ ]`). */
+  /** Segmento do grupo de voz do composer (altura cheia, sem cantos — o grupo arredonda). */
+  segment?: boolean
+  /** Classes extras do botão. */
   className?: string
 }): React.JSX.Element | null {
   const defaults = useVoiceSettings((s) => s.view.voiceCallDefaults)
@@ -168,13 +180,21 @@ export function VoiceCallButton({
             void (mine ? stopVoiceCall() : start())
           }}
           className={cn(
-            'flex size-7 shrink-0 items-center justify-center rounded-lg text-subtle transition-colors hover:bg-hover hover:text-fg',
+            'flex shrink-0 items-center justify-center text-subtle transition-colors hover:bg-hover hover:text-fg',
+            segment ? `h-full ${VOICE_SEGMENT_WIDTH}` : 'size-7 rounded-lg',
             mine && 'voice-call-button-active bg-accent/15 text-accent-strong hover:bg-accent/25',
             (busy || remote || off || unavailable) && 'opacity-40',
             className
           )}
         >
-          {mine ? <PhoneOff className="size-4" /> : <Phone className="size-4" />}
+          {/* o telefone do lucide ocupa a caixa toda (o mic, ~⅔ da largura): menor e com traço
+              compensado para pesar igual ao mic, e meio pixel para a direita/cima (a curva do fone
+              puxa o desenho para baixo/esquerda) — centralizado no segmento */}
+          {mine ? (
+            <PhoneOff className={PHONE_ICON} strokeWidth={PHONE_STROKE} />
+          ) : (
+            <Phone className={PHONE_ICON} strokeWidth={PHONE_STROKE} />
+          )}
         </button>
       </span>
     </Tip>
