@@ -371,13 +371,26 @@ export function nativeToolSearchPrompt(
 
 // ---------------- itens do array tools (formato da Messages API) ----------------
 
-/** Item `tools[]` da Messages API de uma definição completa (adiada → `defer_loading: true`). */
-export function messagesApiTool(def: ToolDefinition, deferred = false): Record<string, unknown> {
+/**
+ * Item `tools[]` da Messages API de uma definição completa (adiada → `defer_loading: true`).
+ * `eager` (só a API nativa da Anthropic, requests em streaming): `eager_input_streaming: true` — os
+ * argumentos chegam aos pedaços enquanto o modelo os gera, em vez de presos no servidor até o
+ * parâmetro inteiro ficar pronto (um write_file grande ficava mudo até o fim). Sem validação do
+ * servidor: o JSON é conferido no app antes de rodar (parse estrito; resposta cortada por
+ * max_tokens/recusa não roda tools). Nunca em entradas do servidor (busca) nem em proxies (o
+ * OpenRouter não foi verificado com o campo).
+ */
+export function messagesApiTool(
+  def: ToolDefinition,
+  deferred = false,
+  eager = false
+): Record<string, unknown> {
   return {
     name: def.function.name,
     description: def.function.description,
     input_schema: def.function.parameters,
-    ...(deferred ? { defer_loading: true } : {})
+    ...(deferred ? { defer_loading: true } : {}),
+    ...(eager ? { eager_input_streaming: true } : {})
   }
 }
 
@@ -388,9 +401,15 @@ export function messagesApiTool(def: ToolDefinition, deferred = false): Record<s
  */
 export function nativeToolsArray(
   defs: readonly ToolDefinition[],
-  o: { deferred: ReadonlySet<string>; entry: Record<string, unknown> | null; cache?: boolean }
+  o: {
+    deferred: ReadonlySet<string>
+    entry: Record<string, unknown> | null
+    cache?: boolean
+    /** `eager_input_streaming` nas tools do app (só Anthropic nativa — messagesApiTool). */
+    eager?: boolean
+  }
 ): Record<string, unknown>[] {
-  const out = defs.map((d) => messagesApiTool(d, o.deferred.has(d.function.name)))
+  const out = defs.map((d) => messagesApiTool(d, o.deferred.has(d.function.name), !!o.eager))
   if (o.cache) {
     for (let i = out.length - 1; i >= 0; i--)
       if (!out[i].defer_loading) {
@@ -811,7 +830,8 @@ export function toolSearchView(
     const arr = nativeToolsArray(plan.full, {
       deferred: new Set(plan.deferred),
       entry: null,
-      cache
+      cache,
+      eager: plan.mode === 'native-anthropic'
     })
     for (const it of arr) items[String(it.name)] = it
   }

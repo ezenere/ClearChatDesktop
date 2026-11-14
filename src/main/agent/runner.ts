@@ -1344,6 +1344,25 @@ async function step(st: RunState, signal: AbortSignal): Promise<StepResult> {
   )
     void fillGenerationCost(provider, saved.id, acc.generationId)
 
+  // resposta cortada pelo limite de tokens ou interrompida por recusa: as tool calls dela podem ter
+  // parado no meio dos argumentos (com `eager_input_streaming` o servidor não os confere) — nenhuma
+  // roda; cada uma ganha o resultado de erro (o histórico continua válido) e o turno termina (sem
+  // repetir: o mesmo limite cortaria de novo)
+  if (calls.length && (acc.finishReason === 'length' || acc.finishReason === 'content_filter')) {
+    const why =
+      acc.finishReason === 'length'
+        ? 'a resposta do modelo foi cortada pelo limite de tokens (max_tokens) antes de terminar — os argumentos podem estar incompletos; aumente max_tokens ou peça de novo'
+        : 'o provedor interrompeu a resposta (recusa) — as chamadas de ferramenta dela não rodam'
+    for (const c of calls)
+      append(
+        session.id,
+        { role: 'tool', tool_call_id: c.id, content: `Erro: não executada: ${why}.` },
+        { toolStatus: 'error', durationMs: 0 }
+      )
+    st.pauseTurns = 0
+    return { kind: 'final', text: acc.content }
+  }
+
   // busca do servidor pausada (`pause_turn`): pede de novo, sem mensagem nova do usuário — o
   // provedor retoma do `server_tool_use` no fim do turno (máx. MAX_PAUSE_TURNS seguidos)
   if (acc.finishReason === 'pause_turn' && !calls.length) {

@@ -239,7 +239,9 @@ function NativeToolDefInfo({
   // o estado DESTA request (uma adiada já usada no histórico sem a busca vai carregada)
   const forced = view.forceLoaded.includes(name)
   const deferred = view.items[name] ? view.deferred.includes(name) : sendsCompact(name, cfg)
-  const item = view.items[name] ?? messagesApiTool(currentToolDefinition(name), deferred)
+  const item =
+    view.items[name] ??
+    messagesApiTool(currentToolDefinition(name), deferred, view.mode === 'native-anthropic')
   const who = view.mode === 'native-anthropic' ? 'da Anthropic' : 'do OpenRouter'
   return (
     <ApiInfo

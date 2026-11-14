@@ -150,15 +150,18 @@ test('Anthropic nativa num modelo sem busca nativa (versão local): compactas co
     ANTH,
     env
   ).body as any
+  // turno do chat na API nativa: argumentos em streaming (`eager_input_streaming`)
   assert.deepEqual(b.tools[0], {
     name: 'read_file',
     description: TOOL_SHORT_DESCRIPTIONS.read_file,
-    input_schema: { type: 'object', properties: {} }
+    input_schema: { type: 'object', properties: {} },
+    eager_input_streaming: true
   })
   assert.deepEqual(b.tools.at(-1), {
     name: 'tool_search',
     description: SEARCH_TOOL_DEFINITION.function.description,
-    input_schema: SEARCH_TOOL_DEFINITION.function.parameters
+    input_schema: SEARCH_TOOL_DEFINITION.function.parameters,
+    eager_input_streaming: true
   })
   assert.deepEqual(b.system, [{ type: 'text', text: `SYS\n\n${COMPACT_TOOLS_PROMPT}` }])
 })

@@ -280,8 +280,9 @@ export function applyAnthropicCache(
   return { system: sys, messages: msgs }
 }
 
-export function anthropicTools(defs: ToolDefinition[]): Record<string, unknown>[] {
-  return defs.map((d) => messagesApiTool(d))
+/** `eager`: `eager_input_streaming` em cada tool (turnos do chat na API nativa — messagesApiTool). */
+export function anthropicTools(defs: ToolDefinition[], eager = false): Record<string, unknown>[] {
+  return defs.map((d) => messagesApiTool(d, false, eager))
 }
 
 /**
@@ -310,6 +311,8 @@ export function buildAnthropicBody(input: {
   model: string
   messages: ApiMessage[]
   tools?: ToolDefinition[]
+  /** `eager_input_streaming` nas `tools` (turnos do chat; as chamadas laterais ficam sem). */
+  eagerTools?: boolean
   toolsArray?: Record<string, unknown>[]
   params?: ChatParams & { stop?: string | string[] }
   cacheEnabled?: boolean
@@ -330,7 +333,8 @@ export function buildAnthropicBody(input: {
   if (system.length) body.system = system
   body.messages = messages
   if (input.toolsArray?.length) body.tools = input.toolsArray
-  else if (input.tools?.length) body.tools = anthropicTools(input.tools)
+  else if (input.tools?.length)
+    body.tools = anthropicTools(input.tools, !!input.eagerTools && !openRouter)
   if (ok(params.temperature)) body.temperature = params.temperature
   if (ok(params.top_p)) body.top_p = params.top_p
   if (ok(params.top_k)) body.top_k = params.top_k

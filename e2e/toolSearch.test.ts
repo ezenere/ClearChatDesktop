@@ -301,6 +301,21 @@ test('array tools nativo: definições completas, defer_loading, cache numa NÃO
   })
   assert.ok(all.every((t) => !t.cache_control))
   assert.deepEqual(all.at(-1), { type: 'openrouter:tool_search' })
+  assert.ok(
+    all.every((t) => t.eager_input_streaming === undefined),
+    'sem eager por padrão'
+  )
+  // eager (Anthropic nativa): nas tools do app, nunca na entrada de busca do servidor
+  const eager = nativeToolsArray(full, {
+    deferred: new Set(['list_dir']),
+    entry: { ...ANTHROPIC_SEARCH_TOOL },
+    eager: true
+  })
+  assert.deepEqual(
+    eager.map((t) => t.eager_input_streaming ?? null),
+    [true, true, true, null]
+  )
+  assert.deepEqual(eager.at(-1), ANTHROPIC_SEARCH_TOOL)
 })
 
 // Blocos de uma resposta da busca nativa (docs "Tool search tool" — https://platform.claude.com/docs/en/agents-and-tools/tool-use/tool-search-tool)
@@ -701,6 +716,11 @@ test('native-anthropic: /messages, defer_loading, cache numa não adiada, busca 
     'definição completa'
   )
   assert.ok(!b.tools.slice(1).some((t: any) => t.cache_control), 'cache só na carregada')
+  // argumentos em streaming nas tools do app (adiadas também); nunca na entrada do servidor
+  assert.ok(
+    b.tools.slice(0, -1).every((t: any) => t.eager_input_streaming === true),
+    'eager_input_streaming nas tools do app'
+  )
   assert.deepEqual(b.tools.at(-1), ANTHROPIC_SEARCH_TOOL)
   // o prompt fixo nativo no fim do system prompt (nunca o da versão local)
   assert.equal(
@@ -733,6 +753,8 @@ test('native-openrouter: POST {base}/messages com Bearer, openrouter:tool_search
   assert.equal(req.headers.Authorization, 'Bearer sk-or-k')
   assert.equal(req.headers['x-api-key'], undefined)
   assert.deepEqual(b.tools.at(-1), { type: 'openrouter:tool_search' })
+  // o OpenRouter não recebe eager_input_streaming (proxy: não verificado com o campo)
+  assert.ok(!JSON.stringify(b.tools).includes('eager_input_streaming'))
   assert.equal(b.max_tokens, undefined)
   assert.equal(b.usage, undefined)
   assert.equal(b.stream_options, undefined)
@@ -1290,6 +1312,34 @@ before(async () => {
           ])
         )
       }
+      // resposta cortada (max_tokens) ou recusada no meio de um tool_use: com eager_input_streaming
+      // o servidor não confere o JSON — o app não pode rodar a tool
+      if (lastText === 'cortada' || lastText === 'cortada-ok' || lastText === 'recusa')
+        return void res.end(
+          sseOf([
+            { type: 'message_start', message: { model: body.model, usage: {} } },
+            {
+              type: 'content_block_start',
+              index: 0,
+              content_block: { type: 'tool_use', id: 'toolu_cut', name: 'datetime', input: {} }
+            },
+            {
+              type: 'content_block_delta',
+              index: 0,
+              delta: {
+                type: 'input_json_delta',
+                partial_json: lastText === 'cortada' ? '{"format":"%Y-%' : '{"format":"%Y"}'
+              }
+            },
+            { type: 'content_block_stop', index: 0 },
+            {
+              type: 'message_delta',
+              delta: { stop_reason: lastText === 'recusa' ? 'refusal' : 'max_tokens' },
+              usage: { output_tokens: 2 }
+            },
+            { type: 'message_stop' }
+          ])
+        )
       if (lastText === 'busca-local')
         return void res.end(
           sseOf([
@@ -1565,6 +1615,28 @@ test('runner: reenvio recusado → repete sem reenviar (mesmo modo nativo, nada 
     !JSON.stringify(hits[n1].body.messages).includes('server_tool_use'),
     'não reenvia mais na sessão'
   )
+})
+
+test('runner: resposta cortada por max_tokens ou recusada com tool_use → a tool NÃO roda (erro no resultado) e o turno termina', async () => {
+  behavior = {}
+  for (const [text, why] of [
+    ['cortada', /max_tokens/],
+    ['cortada-ok', /max_tokens/],
+    ['recusa', /recusa/]
+  ] as const) {
+    // um chat por caso (o falso responde "FIM" a qualquer request com tool_result no fim)
+    const sid = await newChat('anthropic', 'claude-opus-5-5', { toolsFull: ['datetime'] })
+    const n0 = hits.length
+    const msgs = await turn(sid, text)
+    assert.equal(hits.length - n0, 1, `${text}: nenhuma request depois (o turno termina)`)
+    const tool = msgs.at(-1)
+    assert.equal(tool.message.role, 'tool', `${text}: o tool_use ganhou resultado`)
+    assert.equal(tool.message.tool_call_id, 'toolu_cut')
+    assert.equal(tool.meta.toolStatus, 'error')
+    assert.match(textOfContent(tool.message.content), /não executada/)
+    assert.match(textOfContent(tool.message.content), why)
+    assert.equal((await load()).repo.sessionsRepo.get(sid)!.status, 'idle')
+  }
 })
 
 test('runner: pause_turn → nova request sem mensagem do usuário, terminando no assistente pausado', async () => {
