@@ -1775,7 +1775,10 @@ test('conta: trocar senha, nova chave de recuperação e desbloqueio pela chave'
   await C.eng.verifyCode(email, srv.lastCode(email)!)
   // chave errada: troca o último caractere por OUTRO (se já terminasse em 'Z', 'Z' não mudaria nada)
   const wrongKey = recoveryKey.slice(0, -1) + (recoveryKey.endsWith('Z') ? 'Y' : 'Z')
-  await assert.rejects(C.eng.unlockWithRecovery(wrongKey, 'terceira senha longa', true), /incorreta/)
+  await assert.rejects(
+    C.eng.unlockWithRecovery(wrongKey, 'terceira senha longa', true),
+    /incorreta/
+  )
   await C.eng.unlockWithRecovery(recoveryKey.toLowerCase(), 'terceira senha longa', true)
   assert.equal(C.eng.phase(), 'ready')
   // A continua funcionando (a DEK não muda)
