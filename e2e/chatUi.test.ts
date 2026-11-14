@@ -484,6 +484,33 @@ test('planCollapse: tudo cabe → completo; aperta → menor prioridade desce pr
   })
 })
 
+test('planCollapse: host, </> e dica só voltam com o grupo de voz completo (yieldsTo)', () => {
+  const items = [
+    { id: 'voice-controls' as const, widths: { 0: 80, 1: 62 } },
+    { id: 'composer-host' as const, widths: { 0: 25, 2: 0 } },
+    { id: 'composer-info' as const, widths: { 0: 14, 2: 0 } }
+  ]
+  // falta espaço para o grupo completo (80) mas sobra para o </> (14): o </> continua recolhido
+  const p = planCollapse(items, 62 + 15)
+  assert.deepEqual(p, { 'voice-controls': 1, 'composer-host': 2, 'composer-info': 2 })
+  // com o grupo completo, a folga devolve o host e o </>
+  assert.deepEqual(planCollapse(items, 80 + 25 + 14), {
+    'voice-controls': 0,
+    'composer-host': 0,
+    'composer-info': 0
+  })
+  assert.deepEqual(planCollapse(items, 80 + 14), {
+    'voice-controls': 0,
+    'composer-host': 2,
+    'composer-info': 0
+  })
+  // sem o grupo de voz na barra (bloqueado): nada a esperar
+  assert.deepEqual(planCollapse(items.slice(1), 14), {
+    'composer-host': 2,
+    'composer-info': 0
+  })
+})
+
 test('planCollapse: estimativa de níveis nunca medidos e determinismo', () => {
   assert.equal(estimateWidth({ 0: 300 }, 2), 30)
   assert.equal(estimateWidth({ 0: 300 }, 1), 72)

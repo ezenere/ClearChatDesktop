@@ -319,85 +319,87 @@ function UsageFooter({
   judge?: JudgeTotals | null
 }): React.JSX.Element | null {
   const u = msg.meta.usage
-  const parts: ReactNode[] = []
+  // só o modelo e o modo da busca encolhem (com reticências); números ficam inteiros — em coluna
+  // estreita eles encolhiam sem quebrar e um passava por cima do outro
+  const parts: { node: ReactNode; truncate?: boolean }[] = []
   if (msg.meta.model)
-    parts.push(
-      <span key="m" className="truncate">
-        {msg.meta.model}
-      </span>
-    )
+    parts.push({
+      truncate: true,
+      node: <span className="truncate">{msg.meta.model}</span>
+    })
   if (u) {
-    parts.push(
-      <Tip key="u" label="Tokens de entrada / saída / lidos do cache">
-        <span className="tabular-nums">
-          {formatTokens(u.promptTokens)} in · {formatTokens(u.completionTokens)} out
-          {u.cachedTokens ? (
-            <span className="text-success/70"> · {formatTokens(u.cachedTokens)} cache</span>
-          ) : null}
-          {u.reasoningTokens ? <> · {formatTokens(u.reasoningTokens)} raciocínio</> : null}
-        </span>
-      </Tip>
-    )
-    const cost = formatCost(u.cost)
-    if (cost)
-      parts.push(
-        <span key="c" className="tabular-nums">
-          {cost}
-        </span>
+    parts.push({
+      node: (
+        <Tip label="Tokens de entrada / saída / lidos do cache">
+          <span className="tabular-nums">
+            {formatTokens(u.promptTokens)} in · {formatTokens(u.completionTokens)} out
+            {u.cachedTokens ? (
+              <span className="text-success/70"> · {formatTokens(u.cachedTokens)} cache</span>
+            ) : null}
+            {u.reasoningTokens ? <> · {formatTokens(u.reasoningTokens)} raciocínio</> : null}
+          </span>
+        </Tip>
       )
+    })
+    const cost = formatCost(u.cost)
+    if (cost) parts.push({ node: <span className="tabular-nums">{cost}</span> })
   }
   const d = formatDuration(msg.meta.durationMs)
-  if (d)
-    parts.push(
-      <span key="d" className="tabular-nums">
-        {d}
-      </span>
-    )
+  if (d) parts.push({ node: <span className="tabular-nums">{d}</span> })
   // busca nativa de tools (1.12.0): o modo em que a resposta foi gerada (só exibição)
   const ts = msg.meta.toolSearch
   const tsLabel = ts ? toolSearchMetaLabel(ts) : null
   if (ts && tsLabel)
-    parts.push(
-      <Tip
-        key="ts"
-        label={
-          <span className="block max-w-[280px] leading-snug">
-            Envio das tools nesta resposta: {tsLabel}
-            {ts.reason ? ` — ${ts.reason}` : ''}
+    parts.push({
+      truncate: true,
+      node: (
+        <Tip
+          label={
+            <span className="block max-w-[280px] leading-snug">
+              Envio das tools nesta resposta: {tsLabel}
+              {ts.reason ? ` — ${ts.reason}` : ''}
+            </span>
+          }
+        >
+          <span data-testid="tool-search-meta" data-mode={ts.mode} className="truncate">
+            {tsLabel}
           </span>
-        }
-      >
-        <span data-testid="tool-search-meta" data-mode={ts.mode} className="truncate">
-          {tsLabel}
-        </span>
-      </Tip>
-    )
+        </Tip>
+      )
+    })
   if (judge)
-    parts.push(
-      <Tip
-        key="j"
-        label={
-          <span>
-            Smart-Approve: {judge.calls} chamada{judge.calls > 1 ? 's' : ''} ao juiz ·{' '}
-            {formatTokens(judge.promptTokens)} in · {formatTokens(judge.completionTokens)} out
-            {judge.hasCost ? ` · ${formatCost(judge.cost) ?? '$0'}` : ''} — fora do histórico, não
-            somado acima
+    parts.push({
+      node: (
+        <Tip
+          label={
+            <span>
+              Smart-Approve: {judge.calls} chamada{judge.calls > 1 ? 's' : ''} ao juiz ·{' '}
+              {formatTokens(judge.promptTokens)} in · {formatTokens(judge.completionTokens)} out
+              {judge.hasCost ? ` · ${formatCost(judge.cost) ?? '$0'}` : ''} — fora do histórico, não
+              somado acima
+            </span>
+          }
+        >
+          <span data-testid="judge-usage" className="tabular-nums">
+            juiz {judge.hasCost ? (formatCost(judge.cost) ?? '$0') : `${judge.calls}×`}
           </span>
-        }
-      >
-        <span data-testid="judge-usage" className="tabular-nums">
-          juiz {judge.hasCost ? (formatCost(judge.cost) ?? '$0') : `${judge.calls}×`}
-        </span>
-      </Tip>
-    )
+        </Tip>
+      )
+    })
   if (parts.length === 0) return null
   return (
     <div className="flex min-w-0 items-center gap-1.5 text-[11px] text-faint transition-colors group-hover/msg:text-subtle">
       <Cpu className="size-3 shrink-0" />
       {parts.map((p, i) => (
-        <span key={i} className="flex min-w-0 items-center gap-1.5">
+        <span
+          key={i}
+          className={cn(
+            'flex items-center gap-1.5',
+            p.truncate ? 'min-w-0' : 'shrink-0 whitespace-nowrap'
+          )}
+        >
           {i > 0 && <span className="text-faint/60">·</span>}
-          {p}
+          {p.node}
         </span>
       ))}
     </div>
@@ -1952,12 +1954,13 @@ export function MessageList({
         onScroll={onScroll}
         data-chat-scroller
         data-testid="chat-scroller"
-        className="absolute inset-0 scroll-pt-6 scroll-pb-[calc(var(--chat-bottom-inset,0px)+16px)] overflow-y-auto [scrollbar-gutter:stable]"
+        className="@container absolute inset-0 scroll-pt-6 scroll-pb-[calc(var(--chat-bottom-inset,0px)+16px)] overflow-y-auto [scrollbar-gutter:stable]"
       >
-        {/* o fim fica acima do composer flutuante (--chat-bottom-inset = altura da pilha de baixo) */}
+        {/* o fim fica acima do composer flutuante (--chat-bottom-inset = altura da pilha de baixo);
+            coluna estreita (chat no mínimo): margem menor, como o composer */}
         <div
           ref={inner}
-          className="mx-auto w-full max-w-[1920px] px-8 pt-6 pb-[calc(var(--chat-bottom-inset,140px)+24px)]"
+          className="mx-auto w-full max-w-[1920px] px-8 pt-6 pb-[calc(var(--chat-bottom-inset,140px)+24px)] @max-[560px]:px-3"
         >
           {loaded && allMessages.length === 0 && !draft && !busy && empty}
           {oldMsgs.length > 0 && showOld && (

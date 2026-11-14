@@ -678,10 +678,15 @@ export function Composer({
   })
 
   return (
-    <div className="relative px-8 pb-5">
+    // coluna estreita (chat no mínimo, ao lado do arquivo e do painel): margem menor e largura toda —
+    // senão a barra não cabe nem com tudo recolhido (mesmo limiar da lista: MessageList)
+    <div className="relative px-8 pb-5 @max-[560px]:px-3">
       {/* 90% da coluna de conteúdo (a mesma da lista: até 1920px); fora dele, cliques/rolagem passam para a lista */}
       <div className="mx-auto w-full max-w-[1920px]">
-        <div data-testid="composer-column" className="pointer-events-auto mx-auto w-[90%]">
+        <div
+          data-testid="composer-column"
+          className="pointer-events-auto mx-auto w-[90%] @max-[560px]:w-full"
+        >
           {chat && <CompactBanner chat={chat} session={session} />}
           {queue.length > 0 && (
             <div className="mb-2" data-stack-extra>

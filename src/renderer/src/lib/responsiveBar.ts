@@ -33,6 +33,11 @@ export interface BarItemSpec {
   levels: BarLevel[]
   /** O que cada nível mostra (documentação — a SPEC repete esta tabela). */
   doc: string
+  /**
+   * Só volta a aparecer (sobe de nível na folga) com estes itens completos: um item pequeno de
+   * prioridade menor não fica visível enquanto um maior, de prioridade maior, está recolhido.
+   */
+  yieldsTo?: BarItemId[]
 }
 
 export const BAR_ITEMS: Record<BarItemId, BarItemSpec> = {
@@ -79,13 +84,20 @@ export const BAR_ITEMS: Record<BarItemId, BarItemSpec> = {
   'composer-host': {
     priority: 16,
     levels: [0, 2],
-    doc: 'ícone do host (local/remoto, só com sync) → some (a linha do host acima do composer continua)'
+    doc: 'ícone do host (local/remoto, só com sync) → some (a linha do host acima do composer continua)',
+    yieldsTo: ['voice-controls']
   },
-  'composer-info': { priority: 14, levels: [0, 2], doc: '</> "Sua mensagem" (API) → some' },
+  'composer-info': {
+    priority: 14,
+    levels: [0, 2],
+    doc: '</> "Sua mensagem" (API) → some',
+    yieldsTo: ['voice-controls']
+  },
   'composer-hint': {
     priority: 10,
     levels: [0, 2],
-    doc: '"Enter envia · Shift+Enter quebra linha" → some'
+    doc: '"Enter envia · Shift+Enter quebra linha" → some',
+    yieldsTo: ['voice-controls']
   }
 }
 
@@ -138,12 +150,13 @@ export function planCollapse(
     total += width(it) - before
   }
   // folga que sobrou (um item grande desceu de uma vez): devolve degraus, maior prioridade
-  // primeiro, enquanto couber
+  // primeiro, enquanto couber — menos para quem cede a vez (`yieldsTo`) a um item ainda recolhido
   for (let changed = true; changed;) {
     changed = false
     for (const it of [...order].reverse()) {
       const i = idx.get(it.id)!
       if (i === 0) continue
+      if (BAR_ITEMS[it.id].yieldsTo?.some((y) => (idx.get(y) ?? 0) > 0)) continue
       const before = width(it)
       const up = BAR_ITEMS[it.id].levels[i - 1]
       const after = estimateWidth(it.widths, up)

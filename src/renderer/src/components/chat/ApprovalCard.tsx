@@ -209,7 +209,7 @@ function ListsPrompt({
                 )}
               >
                 <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                  <code className="min-w-0 flex-1 font-mono text-[11.5px] break-all whitespace-pre-wrap text-fg/90">
+                  <code className="min-w-[min(12rem,100%)] flex-1 font-mono text-[11.5px] break-all whitespace-pre-wrap text-fg/90">
                     {it.text || '(vazio)'}
                   </code>
                   {it.protectedPath && (

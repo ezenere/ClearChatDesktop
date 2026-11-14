@@ -316,6 +316,8 @@ app.on('window-all-closed', () => app.quit())
     'recolhimento: 1440 / 1100 / 900 px × painel × arquivo (± ditado), sem overflow; host = ícone no composer',
     async () => {
       await open('chat', 'Refatorar o parser de SSE')
+      // o painel abre por padrão a cada carga: com ele a 1440 px o ícone do host já pode recolher
+      await panel(false)
       const HOST = 'Workstation do escritório (Linux)'
       const remote = (): Promise<void> =>
         store(

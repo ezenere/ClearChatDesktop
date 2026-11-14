@@ -588,7 +588,7 @@ function ChatStage({ chat, session }: { chat: Chat; session: Session }): React.J
         ref={stack}
         data-testid="composer-stack"
         data-composer-stack
-        className="pointer-events-none absolute bottom-0 left-0 z-20 right-[var(--chat-scrollbar,0px)]"
+        className="@container pointer-events-none absolute bottom-0 left-0 z-20 right-[var(--chat-scrollbar,0px)]"
       >
         {/* degradê (styles.css → .composer-fade): o conteúdo aparece por trás e some sob o composer */}
         <div
