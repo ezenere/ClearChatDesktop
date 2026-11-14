@@ -171,6 +171,15 @@ test('normalização: só os válidos e diferentes do padrão, por família; vaz
     apiParamsToSend('tts', 'openrouter', 'fish-audio/s1', { openrouter: { speed: 2 } }),
     {}
   )
+  // Fish Audio Drama 3/S2: `speed` medido (2026-11-14), faixa 0,5–2
+  assert.deepEqual(
+    apiParamsToSend('tts', 'openrouter', 'fish-audio/drama-3', { openrouter: { speed: 3 } }),
+    { speed: 2 }
+  )
+  assert.deepEqual(
+    apiParamsToSend('tts', 'openrouter', 'fish-audio/s2.1-pro', { openrouter: { speed: 0.8 } }),
+    { speed: 0.8 }
+  )
   // formato
   assert.equal(elevenLabsOutputFormat(undefined), 'pcm_24000')
   assert.equal(elevenLabsOutputFormat({ elevenlabs: { output_format: 'pcm_16000' } }), 'pcm_16000')

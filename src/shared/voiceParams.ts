@@ -19,7 +19,10 @@
 //   TTS e Fish Audio) e https://openrouter.ai/docs/guides/overview/multimodal/stt.md (`temperature`
 //   0–1 normalizado; `prompt` "aceito mas ignorado" → não exposto). A listagem `/models` traz
 //   `supported_parameters` vazio para os modelos de áudio, então a regra é por id de modelo. O `speed`
-//   no ElevenLabs via OpenRouter foi medido (2026-10-24: 0,8 → 3,30 s; 1,2 → 2,14 s na mesma frase).
+//   no ElevenLabs via OpenRouter foi medido (2026-10-24: 0,8 → 3,30 s; 1,2 → 2,14 s na mesma frase) e
+//   no Fish Audio também (2026-11-14, `speed` no topo do body; `provider.options.fish-audio.prosody`
+//   é ignorado): drama-3 4,69 s no padrão, 0,5 → 9,91 s, 0,7 → 7,69 s, 1,5 → 3,53 s, 2 → 2,57 s;
+//   s2-pro e s2.1-pro 1,5 → 3,09 s. O s1 não foi medido (fica sem o controle).
 // - OpenAI-compatível: `/audio/speech` `speed` (0,25–4) e `instructions` (gpt-4o-mini-tts);
 //   `/audio/transcriptions` `temperature` (0–1) e `prompt` (dica de vocabulário — Groq/OpenAI).
 import type { VoiceCapability, VoiceProviderSupport } from './voiceCatalog'
@@ -198,6 +201,7 @@ function openRouterSpeedRange(model: string): { min: number; max: number } | nul
   if (m.startsWith('elevenlabs/')) return { min: 0.7, max: 1.2 }
   if (m.startsWith('bytedance-seed/')) return { min: 0.5, max: 2 }
   if (m.startsWith('openai/')) return { min: 0.25, max: 4 }
+  if (/^fish-audio\/(?:drama-3|s2-pro|s2\.1-pro)(?:[-.:]|$)/.test(m)) return { min: 0.5, max: 2 }
   return null
 }
 
@@ -227,7 +231,7 @@ const OPENROUTER_TTS_PARAMS: VoiceParamSpec[] = [
   {
     key: 'speed',
     label: 'Velocidade',
-    help: 'Ritmo da fala (1 = normal). Só nos modelos com controle de velocidade (ElevenLabs 0,7–1,2; Seed Audio 0,5–2; OpenAI 0,25–4) — nos outros o OpenRouter ignora ou recusa, então o controle nem aparece. Sem mexer, não é enviado.',
+    help: 'Ritmo da fala (1 = normal). Só nos modelos com controle de velocidade (ElevenLabs 0,7–1,2; Seed Audio 0,5–2; OpenAI 0,25–4; Fish Audio Drama 3/S2 0,5–2) — nos outros o OpenRouter ignora ou recusa, então o controle nem aparece. Sem mexer, não é enviado.',
     kind: 'number',
     default: null,
     neutral: 1,
