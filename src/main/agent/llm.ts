@@ -33,6 +33,13 @@ export interface StreamAccumulator {
   blocks?: Record<string, unknown>[]
   /** OpenRouter: header `X-Generation-Id` (custo pelo GET /generation quando o stream não traz). */
   generationId?: string
+  /**
+   * Messages API: estado do último bloco de raciocínio (`thinking`/`redacted_thinking`) — aberto ou
+   * fechado. Conta como raciocínio mesmo SEM texto (o padrão `display: "omitted"` dos Claude ≥ 4.7
+   * manda o bloco vazio): o relógio do "Pensando…" (markReasoning) começa na abertura e para no
+   * fechamento.
+   */
+  thinking?: 'open' | 'closed'
 }
 
 export const newAccumulator = (): StreamAccumulator => ({
@@ -51,15 +58,19 @@ export const accToDraft = (a: StreamAccumulator): StreamDraft => ({
 })
 
 /**
- * Relógio do raciocínio, chamado a cada atualização do stream: marca o 1º delta de raciocínio e o
- * 1º delta de conteúdo/tool call que vem depois dele (o fim do "Pensando…").
+ * Relógio do raciocínio, chamado a cada atualização do stream: marca o 1º delta de raciocínio (ou a
+ * abertura de um bloco de raciocínio da Messages API, mesmo vazio) e o fim do "Pensando…" — o 1º
+ * delta de conteúdo/tool call depois dele ou o fechamento do bloco.
  */
 export function markReasoning(acc: StreamAccumulator, now: number): void {
   if (acc.reasoningStartedAt == null) {
-    if (acc.reasoning) acc.reasoningStartedAt = now
+    if (acc.reasoning || acc.thinking) acc.reasoningStartedAt = now
     else return
   }
-  if (acc.reasoningEndedAt == null && (acc.content || acc.toolCalls.length))
+  if (
+    acc.reasoningEndedAt == null &&
+    (acc.content || acc.toolCalls.length || acc.thinking === 'closed')
+  )
     acc.reasoningEndedAt = now
 }
 

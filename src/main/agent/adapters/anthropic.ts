@@ -432,6 +432,8 @@ export function applyAnthropicEvent(acc: StreamAccumulator, ev: Record<string, u
         s.blocks.set(idx, { type: String(b.type), at })
         if (b.type === 'text' && typeof b.text === 'string') acc.content += b.text
         if (b.type === 'thinking' && typeof b.thinking === 'string') acc.reasoning += b.thinking
+        // raciocínio começou (com ou sem texto — "omitted" manda o bloco vazio)
+        if (b.type === 'thinking' || b.type === 'redacted_thinking') acc.thinking = 'open'
       }
       return
     }
@@ -474,6 +476,7 @@ export function applyAnthropicEvent(acc: StreamAccumulator, ev: Record<string, u
       // input completo de tool_use/server_tool_use no bloco guardado (o JSON chegou em pedaços)
       const st = s.blocks.get(n(ev.index) ?? -1)
       const blk = blockAt(acc, s, n(ev.index) ?? -1)
+      if (st && (st.type === 'thinking' || st.type === 'redacted_thinking')) acc.thinking = 'closed'
       if (st?.json !== undefined && blk) {
         const raw = st.json.trim()
         try {

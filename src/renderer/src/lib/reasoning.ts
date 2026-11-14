@@ -5,9 +5,9 @@ import type { StreamDraft } from '@shared/types'
 
 /** Relógio do raciocínio de uma sessão enquanto o rascunho existe. */
 export interface ReasoningClock {
-  /** 1º delta de raciocínio (epoch ms). */
+  /** 1º delta de raciocínio ou abertura do bloco de raciocínio (epoch ms). */
   start: number
-  /** 1º delta de conteúdo/tool call depois dele (o "Pensando…" acabou). */
+  /** 1º delta de conteúdo/tool call depois dele ou o fechamento do bloco ("Pensando…" acabou). */
   end?: number
 }
 
@@ -22,9 +22,11 @@ export function nextReasoningClock(
   draft: StreamDraft | null,
   now: number
 ): ReasoningClock | undefined {
-  if (!draft || !draft.reasoning) return undefined
+  // raciocínio = texto dele OU a marca de início do processo que roda o stream (bloco de raciocínio
+  // da Messages API aberto sem texto — `display: "omitted"` dos Claude ≥ 4.7)
+  if (!draft || !(draft.reasoning || draft.reasoningStartedAt != null)) return undefined
   const start = draft.reasoningStartedAt ?? prev?.start ?? now
-  const answering = !!draft.content || draft.toolCalls.length > 0
+  const answering = !!draft.content || draft.toolCalls.length > 0 || draft.reasoningEndedAt != null
   const end = answering ? (draft.reasoningEndedAt ?? prev?.end ?? Math.max(now, start)) : undefined
   if (prev && prev.start === start && prev.end === end) return prev
   return end != null ? { start, end } : { start }

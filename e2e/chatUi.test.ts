@@ -23,6 +23,7 @@ import {
   newAccumulator,
   reasoningDuration
 } from '../src/main/agent/llm.ts'
+import { applyAnthropicEvent } from '../src/main/agent/adapters/anthropic.ts'
 
 // ---------------- raciocínio ----------------
 
@@ -141,6 +142,51 @@ test('markReasoning / reasoningDuration (runner → meta.reasoningMs)', () => {
   assert.equal(reasoningDuration(once, 500), undefined)
   // sem raciocínio: nada no draft
   assert.equal('reasoningStartedAt' in accToDraft(newAccumulator()), false)
+})
+
+test('raciocínio OMITIDO (Messages API, bloco thinking sem texto): relógio do "Pensando…" e meta.reasoningMs', () => {
+  const acc = newAccumulator()
+  const ev = (e: Record<string, unknown>, now: number): void => {
+    applyAnthropicEvent(acc, e)
+    markReasoning(acc, now)
+  }
+  ev({ type: 'message_start', message: { model: 'claude-opus-5-5' } }, 100)
+  assert.equal(acc.reasoningStartedAt, undefined, 'nada de raciocínio ainda')
+  ev(
+    { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } },
+    1000
+  )
+  assert.equal(acc.thinking, 'open')
+  assert.equal(acc.reasoning, '', 'sem texto (display omitted)')
+  assert.equal(acc.reasoningStartedAt, 1000, 'o bloco vazio já conta')
+  const d1 = accToDraft(acc)
+  assert.deepEqual(nextReasoningClock(undefined, d1, 1000), { start: 1000 }, '"Pensando…" ao vivo')
+  ev(
+    { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 's' } },
+    4000
+  )
+  assert.equal(acc.reasoningEndedAt, undefined)
+  ev({ type: 'content_block_stop', index: 0 }, 4200)
+  assert.equal(acc.thinking, 'closed')
+  assert.equal(acc.reasoningEndedAt, 4200, 'fechar o bloco encerra o "Pensando…"')
+  assert.deepEqual(nextReasoningClock(undefined, accToDraft(acc), 4300), {
+    start: 1000,
+    end: 4200
+  })
+  ev({ type: 'content_block_start', index: 1, content_block: { type: 'text', text: '' } }, 4300)
+  ev({ type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: 'Oi' } }, 4400)
+  assert.equal(reasoningDuration(acc, 9000), 3200, 'meta.reasoningMs conta o bloco vazio')
+  // redacted_thinking também é raciocínio
+  const r = newAccumulator()
+  applyAnthropicEvent(r, {
+    type: 'content_block_start',
+    index: 0,
+    content_block: { type: 'redacted_thinking', data: 'x' }
+  })
+  markReasoning(r, 50)
+  assert.equal(r.reasoningStartedAt, 50)
+  // controle remoto (draft sem marcas e sem texto): nada de relógio
+  assert.equal(nextReasoningClock(undefined, draft({}), 100), undefined)
 })
 
 // ---------------- gasto do chat ----------------

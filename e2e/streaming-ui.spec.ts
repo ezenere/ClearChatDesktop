@@ -155,7 +155,7 @@ async function messagesTurn(
     })
     send({ type: 'content_block_stop', index: idx++ })
   }
-  if (variant === 'omitido' || variant === 'resumo') {
+  if (variant === 'omitido' || variant === 'resumo' || variant === 'pensa') {
     send({
       type: 'content_block_start',
       index: idx,
@@ -169,6 +169,12 @@ async function messagesTurn(
           index: idx,
           delta: { type: 'thinking_delta', thinking: `pensando ${i}… ` }
         })
+      }
+    else if (variant === 'pensa')
+      // raciocínio omitido longo (o bloco fica aberto e vazio ~2,4 s — só pings)
+      for (let i = 0; i < 6; i++) {
+        await sleep(400)
+        send({ type: 'ping' })
       }
     else await sleep(PAUSE * 3)
     send({
@@ -554,6 +560,44 @@ async function main(): Promise<void> {
     )
   }
   await shot('streaming-anthropic')
+
+  await step(
+    'raciocínio omitido (bloco thinking vazio): "Pensando… · N s" no rascunho enquanto o bloco está aberto; depois "Raciocínio · N s" na mensagem',
+    async () => {
+      const id = `a${++n}`
+      // as respostas "omitido" anteriores já mostram o cabeçalho na mensagem gravada
+      const omitted = page.getByTestId('reasoning-omitted')
+      const before = await omitted.count()
+      await composer().click()
+      await composer().fill(`${id} pensa`)
+      await composer().press('Enter')
+      const live = omitted.filter({ hasText: 'Pensando…' })
+      await live.waitFor({ timeout: 5000 })
+      const t0 = Date.now()
+      // o relógio anda (≥ 1 s) com o bloco ainda aberto, antes de qualquer texto
+      await live.filter({ hasText: /Pensando… · \d+ s/ }).waitFor({ timeout: 4000 })
+      assert(!(await page.getByText(piece(id, 1)).count()), 'nenhum texto ainda')
+      await shot('streaming-pensando-omitido')
+      await page.getByText(piece(id, PIECES)).first().waitFor({ timeout: 15_000 })
+      const c = await api<any>('chats.get', chats.anth)
+      const msg = await waitFor(async () => {
+        const list = await api<any[]>('sessions.messages', c.mainSessionId)
+        return list.find(
+          (m) => m.message.role === 'assistant' && textOf(m.message.content).includes(piece(id, 1))
+        )
+      }, 'resposta gravada')
+      assert(!msg.message.reasoning, 'sem texto de raciocínio gravado')
+      assert(msg.meta.reasoningMs >= 2000, `meta.reasoningMs ${msg.meta.reasoningMs}`)
+      await waitFor(
+        async () => (await omitted.count()) === before + 1 && !(await live.count()),
+        'cabeçalho na mensagem gravada'
+      )
+      const header = (await omitted.nth(before).innerText()).trim()
+      assert(/^Raciocínio · \d+ s$/.test(header), `na mensagem: ${header}`)
+      await shot('streaming-raciocinio-omitido-mensagem')
+      return `"Pensando…" visível ${Date.now() - t0} ms; mensagem: ${header}; reasoningMs ${msg.meta.reasoningMs}`
+    }
+  )
 
   await openChat('Stream OpenRouter Messages')
   for (const [variant, enc] of [

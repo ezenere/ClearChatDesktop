@@ -178,7 +178,10 @@ function Reasoning({
     if (id) reasoningViews.set(id, v)
     setViewState(v)
   }
-  const shown: ReasoningView = view === 'closed' && live ? 'box' : view
+  // sem texto (o provedor omite o raciocínio — `display: "omitted"` dos Claude ≥ 4.7): só o
+  // cabeçalho com o tempo, sem caixa nem "expandir"
+  const empty = !text
+  const shown: ReasoningView = empty ? 'closed' : view === 'closed' && live ? 'box' : view
   const full = shown === 'full'
   // Caixa compacta enquanto o modelo pensa: acompanha o texto novo só se o usuário está no fim dela
   // (rolou para cima → não força a rolagem; voltou ao fim → volta a acompanhar).
@@ -193,6 +196,27 @@ function Reasoning({
     if (!el || !live || shown !== 'box' || !stickRef.current) return
     el.scrollTop = el.scrollHeight
   }, [text, live, shown])
+  if (empty)
+    return (
+      <div className="mb-2">
+        <div
+          data-testid="reasoning-omitted"
+          title="O modelo raciocina sem devolver o texto do raciocínio (só o tempo aparece aqui)."
+          className="-ml-1 inline-flex items-center gap-1.5 px-1 py-0.5 text-[12px] text-subtle"
+        >
+          <Brain className={cn('size-3.5', live && 'animate-pulse-soft text-accent-strong')} />
+          <span data-testid="reasoning-header">
+            {header.label}
+            {header.details.map((d) => (
+              <span key={d} className="tabular-nums text-faint">
+                {' · '}
+                {d}
+              </span>
+            ))}
+          </span>
+        </div>
+      </div>
+    )
   return (
     <div className="mb-2">
       <div className="group/rsn -ml-1 flex items-center gap-0.5">
@@ -1306,9 +1330,9 @@ function AssistantMessage({ msg, ctx }: { msg: StoredMessage; ctx: Ctx }): React
         })
       }
     >
-      {m.reasoning && (
+      {(!!m.reasoning || (msg.meta.reasoningMs ?? 0) > 0) && (
         <Reasoning
-          text={m.reasoning}
+          text={m.reasoning ?? ''}
           id={msg.id}
           durationMs={msg.meta.reasoningMs}
           tokens={msg.meta.usage?.reasoningTokens}
@@ -1446,10 +1470,12 @@ const DraftView = memo(function DraftView({
 }): React.JSX.Element {
   const clock = useStore((s) => s.reasoningClocks[ctx.sessionId])
   const inCall = useStore((s) => s.voiceCall.active && s.voiceCall.sessionId === ctx.sessionId)
-  const live = !draft.content && !draft.toolCalls.length
+  // raciocínio: o texto dele ou, sem texto (bloco omitido da Messages API), as marcas do stream
+  const thinking = !!draft.reasoning || draft.reasoningStartedAt != null
+  const live = !draft.content && !draft.toolCalls.length && draft.reasoningEndedAt == null
   return (
     <div className="py-2">
-      {draft.reasoning && (
+      {thinking && (
         <Reasoning
           text={draft.reasoning}
           live={live}
@@ -1457,7 +1483,7 @@ const DraftView = memo(function DraftView({
           durationMs={clock?.end != null ? clock.end - clock.start : undefined}
         />
       )}
-      {(draft.content || (!draft.reasoning && !draft.toolCalls.length)) &&
+      {(draft.content || (!draft.toolCalls.length && !(thinking && live))) &&
         (inCall ? (
           // resposta da chamada ainda chegando: itálico + leitura ao vivo
           <div data-voice="call" className="italic">
