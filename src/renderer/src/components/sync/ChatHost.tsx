@@ -4,7 +4,6 @@
 import {
   CircleAlert,
   Cloud,
-  Radio,
   CloudOff,
   GitFork,
   Laptop,
@@ -27,7 +26,8 @@ import { Modal, Popover } from '../ui/layers'
 import { Tip } from '../ui/Tooltip'
 import { Markdown } from '../chat/Markdown'
 import { connectionLabel } from '../../lib/sync'
-import { useHostInfo, useTakeover, deviceName } from './hooks'
+import { useHostInfo, useStorageAction, useTakeover, deviceName } from './hooks'
+import { LiveIndicator } from './LiveChats'
 import { useBranchView } from '../../lib/useBranchView'
 import { branchGroup } from '../../lib/branchView'
 import { BranchSwitcher } from '../chat/BranchSwitcher'
@@ -55,6 +55,8 @@ export function HostIndicator({
   const [open, setOpen] = useState(false)
   const anchor = useRef<HTMLButtonElement>(null)
   const { start, dialog } = useTakeover(chat)
+  // "Tirar do servidor" (§23.8): no popover do host de um chat online executado aqui
+  const storage = useStorageAction(chat, () => setOpen(false))
   if (!info || info.mode === 'off' || !sync || sync.phase !== 'ready') return null
   const host = info.host
   const self = !!host?.self
@@ -241,59 +243,19 @@ export function HostIndicator({
               </span>
             </button>
           )}
+          <div
+            data-testid="host-storage"
+            className="flex items-center gap-2 border-t border-border/70 pt-2.5 text-[12px] text-muted"
+          >
+            <Cloud className="size-3.5 shrink-0 text-subtle" />
+            <span className="min-w-0 flex-1 truncate">Salvo online</span>
+            {storage.action}
+          </div>
         </div>
       </Popover>
       {dialog}
+      {storage.dialog}
     </>
-  )
-}
-
-/**
- * Indicador de chat só ao vivo (§23): no host, "Só ao vivo" (visível nos outros ou não); no
- * visualizador, "Ao vivo em <host>". Sem ações de host (a única cópia está no host, §23.9).
- */
-function LiveIndicator({
-  chat,
-  className
-}: {
-  chat: Chat
-  className?: string
-}): React.JSX.Element | null {
-  const info = useHostInfo(chat.id)
-  const live = info?.live
-  if (!info || !live) return null
-  const viewer = live.role === 'viewer'
-  const label = viewer
-    ? live.status === 'online'
-      ? `Ao vivo em ${live.hostName}`
-      : `Reconectando a ${live.hostName}…`
-    : live.unsupported
-      ? 'Só neste dispositivo — o servidor não suporta chats ao vivo'
-      : live.announced
-        ? 'Só ao vivo: os outros dispositivos o veem enquanto este app estiver aberto'
-        : 'Só ao vivo (ainda não visível nos outros dispositivos)'
-  return (
-    <Tip label={label}>
-      <span
-        data-testid="live-indicator"
-        data-role={live.role}
-        aria-label={label}
-        className={cn(
-          'relative flex size-7 shrink-0 items-center justify-center rounded-lg',
-          viewer && live.status !== 'online'
-            ? 'text-faint'
-            : live.unsupported
-              ? 'text-subtle'
-              : 'text-accent-strong',
-          className
-        )}
-      >
-        <Radio className="size-4" />
-        {(viewer ? live.status === 'online' : live.announced) && (
-          <span className="absolute top-1 right-1 size-1.5 animate-pulse-soft rounded-full bg-success ring-2 ring-surface" />
-        )}
-      </span>
-    </Tip>
   )
 }
 

@@ -1618,8 +1618,22 @@ async function main(): Promise<void> {
       assert(liveRows(liveChat.id).length === 0, 'zero registros do chat ao vivo no servidor')
       assert(!srvLive.chatState(live.userId, liveChat.id), 'sem chat_states')
       await openChatUi(L1, 'Plano só ao vivo')
-      await L1.page.getByTestId('live-badge').waitFor()
+      // sem selo no cabeçalho; ícone neutro no composer (sem ponto verde/roxo) e nada na sidebar
+      assert((await L1.page.getByTestId('live-badge').count()) === 0, 'sem selo no cabeçalho')
+      await L1.page.locator('[data-testid="live-indicator"][data-role="host"]').waitFor()
+      const liveItem = L1.page.locator('[data-testid="chat-item"]', { hasText: 'Plano só ao vivo' })
+      assert(
+        (await liveItem.getByTestId('chat-cloud').count()) === 0,
+        'chat só ao vivo sem ícone na sidebar'
+      )
+      await L1.page.getByTestId('live-indicator').click()
+      await L1.page.getByTestId('storage-popover').waitFor()
+      assert(
+        (await L1.page.getByTestId('storage-popover-title').innerText()) === 'Só ao vivo',
+        'popover: só ao vivo'
+      )
       await shot(L1, '41-host-so-ao-vivo')
+      await L1.page.keyboard.press('Escape')
     }
   )
 
@@ -1632,7 +1646,7 @@ async function main(): Promise<void> {
       await L2.page
         .getByText('primeira mensagem ao vivo', { exact: true })
         .waitFor({ timeout: 20_000 })
-      await L2.page.getByTestId('live-badge').waitFor()
+      await L2.page.locator('[data-testid="live-indicator"][data-role="viewer"]').waitFor()
       const info = await L2.page.evaluate(
         ([cid]) =>
           (window as any).api.sync.liveAttach(
@@ -1669,7 +1683,9 @@ async function main(): Promise<void> {
   await step(
     '§23 ao vivo → online ("Salvar online") e online → ao vivo ("Tirar do servidor")',
     async () => {
-      await L1.page.getByTestId('chat-menu').click()
+      // "Salvar online" no popover do ícone do composer (não há mais o menu "…" do cabeçalho)
+      assert((await L1.page.getByTestId('chat-menu').count()) === 0, 'sem o menu "…"')
+      await L1.page.getByTestId('live-indicator').click()
       await L1.page.getByTestId('chat-save-online').click()
       await L1.page.getByTestId('live-convert-confirm').click()
       await waitFor(
@@ -1696,8 +1712,15 @@ async function main(): Promise<void> {
         (await L2.page.locator('[data-testid="live-chat-item"]').count()) === 0,
         'saiu da seção ao vivo'
       )
-      // de volta: tira do servidor
-      await L1.page.getByTestId('chat-menu').click()
+      // salvo online: nuvem cinza na sidebar e o ícone do host no composer
+      await L1.page
+        .locator('[data-testid="chat-item"]', { hasText: 'Plano só ao vivo' })
+        .getByTestId('chat-cloud')
+        .waitFor({ timeout: 15_000 })
+      // de volta: tira do servidor (popover do ícone do host)
+      await L1.page.getByTestId('host-indicator').click()
+      await L1.page.getByTestId('host-storage').waitFor()
+      await shot(L1, '43-host-tirar-do-servidor')
       await L1.page.getByTestId('chat-take-off-server').click()
       await L1.page.getByTestId('live-convert-confirm').click()
       await waitFor(

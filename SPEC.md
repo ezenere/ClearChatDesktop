@@ -2194,9 +2194,18 @@ Contrato do protocolo: `docs/SYNC_PROTOCOL.md` (compartilhado com o servidor). A
   da memória (`Chat.liveViewer`), as ações viram comandos ao host (`gateChat`; nunca rodam aqui), anexos do
   composer vão por `sync.liveAttach` (sem gravar no store) e os do histórico por `attach.get` servidos pelo
   protocolo `clearchat-attachment://` direto da memória (`no-store`). Nada do chat é gravado (banco, store,
-  arquivos). Host em tolerância → cartão "Reconectando a <host>…" no lugar do composer. **Selo** no cabeçalho
-  (`live-badge`: "Só ao vivo" / "Só neste dispositivo" / "Ao vivo em <host>"), ícone na sidebar (`chat-live`) e no
-  lugar do ícone do host. **Menu do chat** (`chat-menu`, só no host): "Salvar online" (`saveOnline`: vira chat
+  arquivos). Host em tolerância → cartão "Reconectando a <host>…" no lugar do composer. **Indicadores**: nada no
+  cabeçalho; na barra do composer, no lugar do ícone do host, o ícone do chat ao vivo (`live-indicator`,
+  `data-role` host/viewer) com o **mesmo estilo neutro** do ícone do computador de um chat salvo online (sem
+  destaque roxo nem ponto verde; apagado no visualizador reconectando); tooltip "Só ao vivo…" / "Só neste
+  dispositivo…" / "Ao vivo em <host>". Na sidebar a lógica é invertida: os chats **salvos online** (sync ligado,
+  `storage` online) ganham uma nuvem cinza (`chat-cloud`); os só ao vivo, nenhum ícone. **Onde guardar** (só no
+  host, sync pronto, nunca num chat de outro dispositivo): clique no ícone do chat ao vivo → popover
+  (`storage-popover`: "Só ao vivo"/"Só neste dispositivo" + texto) com "Salvar online" (`chat-save-online`,
+  desabilitado em `live_pending`); num chat online executado aqui com o servidor suportando chats ao vivo, o
+  popover do ícone do host (`host-popover`) termina com a linha "Salvo online" (`host-storage`) e "Tirar do
+  servidor" (`chat-take-off-server`). Os dois confirmam no mesmo diálogo de antes (`live-convert-confirm`, com as
+  contagens de `sync.liveStats` no "Salvar online"): "Salvar online" (`saveOnline`: vira chat
   comum criado offline, tudo pela outbox; recriação sobre o tombstone) e "Tirar do servidor" (`takeOffServer`:
   confere host/ocioso/sem pendências, baixa anexos que faltam, `live_pending` → tombstone comum → no ack vira `live`
   com epoch novo; o host ignora o tombstone do próprio chat no pull). Merge do primeiro login pula chats ao vivo e

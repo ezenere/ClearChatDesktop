@@ -1,9 +1,10 @@
 // Hooks do host de execução (selo, composer, troca de host). Ver ChatHost.tsx.
-import { CircleAlert, FolderOpen, Lock, Wrench, Zap } from 'lucide-react'
+import { CircleAlert, Cloud, CloudOff, FolderOpen, Lock, Wrench, Zap } from 'lucide-react'
 import { useCallback, useState } from 'react'
 import type { Chat } from '@shared/types'
 import { takeoverWarnsLocalTools, type ChatHostInfo } from '@shared/sync'
 import { api, errorMessage } from '../../lib/api'
+import { formatSize } from '@shared/attachments'
 import { compactPath } from '../../lib/format'
 import { useStore } from '../../store'
 import { Button, Switch } from '../ui/controls'
@@ -184,4 +185,112 @@ export function useTakeover(chat: Chat): {
       </Modal>
     ) : null
   return { start, dialog, busy }
+}
+
+// ---------------- onde o chat fica (chats só ao vivo, §23.8) ----------------
+
+/**
+ * Onde o chat fica guardado + a conversão (§23.8), com a confirmação e as contagens: "Salvar
+ * online" num chat só ao vivo deste dispositivo; "Tirar do servidor" num chat online executado
+ * aqui (servidor com chats ao vivo). Só no host, com o sync pronto; nunca num chat de outro
+ * dispositivo visto ao vivo. `action` = o botão (ou null quando nada vale agora); `dialog` = a
+ * confirmação (renderizar sempre).
+ */
+export function useStorageAction(
+  chat: Chat,
+  onAsk?: () => void
+): { action: React.JSX.Element | null; dialog: React.JSX.Element | null } {
+  const info = useHostInfo(chat.id)
+  const sync = useStore((s) => s.sync)
+  const saveOnline = useStore((s) => s.saveOnline)
+  const takeOffServer = useStore((s) => s.takeOffServer)
+  const [confirm, setConfirm] = useState<'save' | 'take' | null>(null)
+  const [stats, setStats] = useState<{
+    messages: number
+    attachments: number
+    bytes: number
+  } | null>(null)
+  const [busy, setBusy] = useState(false)
+  const ready = !!info && !!sync && sync.phase === 'ready' && !chat.liveViewer
+  const isLive = ready && info.live?.role === 'host'
+  const pending = info?.storage === 'live_pending'
+  const canTake = ready && !info.live && sync.live.supported && info.mode === 'local'
+  const ask = (k: 'save' | 'take'): void => {
+    onAsk?.()
+    setConfirm(k)
+    if (k === 'save')
+      void api.sync
+        .liveStats(chat.id)
+        .then(setStats)
+        .catch(() => setStats(null))
+  }
+  const go = async (): Promise<void> => {
+    setBusy(true)
+    const ok = confirm === 'save' ? await saveOnline(chat.id) : await takeOffServer(chat.id)
+    setBusy(false)
+    if (ok) setConfirm(null)
+  }
+  const action = isLive ? (
+    <Button
+      size="sm"
+      data-testid="chat-save-online"
+      disabled={pending}
+      icon={<Cloud className="size-3.5" />}
+      onClick={() => ask('save')}
+    >
+      Salvar online
+    </Button>
+  ) : canTake ? (
+    <Button
+      size="sm"
+      variant="ghost"
+      data-testid="chat-take-off-server"
+      icon={<CloudOff className="size-3.5" />}
+      onClick={() => ask('take')}
+    >
+      Tirar do servidor
+    </Button>
+  ) : null
+  const dialog = confirm ? (
+    <Modal
+      open
+      onClose={() => setConfirm(null)}
+      title={confirm === 'save' ? 'Salvar online?' : 'Tirar do servidor?'}
+      width={500}
+      footer={
+        <>
+          <Button variant="ghost" onClick={() => setConfirm(null)}>
+            Cancelar
+          </Button>
+          <Button
+            variant="primary"
+            loading={busy}
+            data-testid="live-convert-confirm"
+            onClick={() => void go()}
+          >
+            {confirm === 'save' ? 'Salvar online' : 'Tirar do servidor'}
+          </Button>
+        </>
+      }
+    >
+      <p className="text-[13px] leading-relaxed text-muted">
+        {confirm === 'save' ? (
+          <>
+            O histórico inteiro ({stats ? `${stats.messages} mensagens` : 'todas as mensagens'}
+            {stats?.attachments
+              ? ` e ${stats.attachments} anexo(s), ~${formatSize(stats.bytes)}`
+              : ' e os anexos'}
+            ) vai para o servidor, cifrado, e o chat passa a sincronizar com os seus dispositivos.
+          </>
+        ) : (
+          <>
+            O chat será apagado do servidor e dos seus outros dispositivos e ficará só neste. Os
+            outros só o verão ao vivo, enquanto este app estiver aberto. Os anexos saem do servidor
+            em até 24 h.
+          </>
+        )}
+      </p>
+    </Modal>
+  ) : null
+  return { action, dialog }
 }

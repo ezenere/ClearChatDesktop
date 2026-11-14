@@ -1,12 +1,12 @@
 import {
   Check,
   CircleX,
+  Cloud,
   GitFork,
   Hand,
   MessageSquarePlus,
   MonitorSmartphone,
   Pencil,
-  Radio,
   Settings,
   Trash2,
   X
@@ -225,21 +225,9 @@ function ChatItem({
           <GitFork data-testid="chat-diverged" className="size-3.5 shrink-0 text-danger" />
         </Tip>
       )}
-      {host?.live?.role === 'host' && (
-        <Tip
-          label={
-            host.live.unsupported
-              ? 'Só neste dispositivo — o servidor não suporta chats ao vivo'
-              : 'Só ao vivo'
-          }
-        >
-          <Radio
-            data-testid="chat-live"
-            className={cn(
-              'size-3 shrink-0',
-              host.live.announced ? 'text-accent-strong/80' : 'text-faint'
-            )}
-          />
+      {host && host.mode !== 'off' && !host.live && !host.storage?.startsWith('live') && (
+        <Tip label="Salvo online (sincroniza com seus dispositivos)">
+          <Cloud data-testid="chat-cloud" className="size-3 shrink-0 text-faint" />
         </Tip>
       )}
       {!host?.live && (host?.mode === 'remote' || host?.mode === 'host-offline') && (
