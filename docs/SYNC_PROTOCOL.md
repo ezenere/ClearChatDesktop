@@ -1009,7 +1009,7 @@ Ver §13 (formato do bundle).
 | índices FTS (`message_search`, `messages_fts`, `memories_fts`) | SQLite | derivados; reconstruídos localmente |
 | fila da sessão (`QueuedMessage`), aprovações/questionários/retries pendentes, processos em segundo plano | memória do main | estado de execução do host (vai ao vivo pelo stream, §11) |
 | arquivos do store de anexos | `userData/attachments` | sincronizados como blobs (§14), mas o store é local |
-| cache de modelos, `localStorage` da UI (aba do painel, seções recolhidas, grupos recolhidos, largura do painel de arquivo…) | renderer | estado de UI / tamanho de tela |
+| cache de modelos, `localStorage` da UI (aba do painel, seções recolhidas, grupos recolhidos, largura do painel de arquivo e do painel de configurações do chat…) | renderer | estado de UI / tamanho de tela |
 | estado do próprio sync (cursor, outbox, revs, credenciais, DEK) | tabelas `sync_*` / chaveiro | por dispositivo |
 | skills não marcadas para sync | pastas | opt-in (§13) |
 | partes do dispositivo das settings de áudio: `audioInput.deviceId`, `audioInput.activationDb`, `local.installed`, bloco `gpu` e modo `'gpu'` de `sttSettings`/`ttsSettings` (desde 1.5.0, §4.3.2) | `settings` | microfone e hardware desta máquina |
