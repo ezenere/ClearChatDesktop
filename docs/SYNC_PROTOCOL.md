@@ -1,6 +1,6 @@
 # ClearChat Sync — Protocolo v1 (contrato)
 
-> **Versão do protocolo: 1.12.0** · status: contrato inicial (ainda sem implementação) · data: 2026-11-13
+> **Versão do protocolo: 1.13.0** · status: contrato inicial (ainda sem implementação) · data: 2026-11-14
 >
 > ⚠️ **AVISO — CONTRATO COMPARTILHADO ENTRE OS REPOSITÓRIOS**
 > Fonte única: `docs/SYNC_PROTOCOL.md` e `docs/test-vectors/` do repositório pai `ezenere/ClearChat`.
@@ -375,7 +375,7 @@ Todo plaintext é um objeto JSON com `sv` (versão do esquema do tipo, hoje `1`)
 `environment`/`capture`/`capturePrompts`/`thinkingTokens`/`cache` (os dois últimos desde 1.4.1), `ContextCaptureConfig.thinkingTokens`/`cache` (desde 1.4.1),
 `MessageMeta.autoTitle`/`presentFiles`/`reasoningMs`; desde 1.5.0, tipos do app com o áudio (depois do 0.9.0):
 `ChatConfig.voice` (§4.3.6), `MessageMeta.voice`/`voiceCall` e `MessageMeta.kind: 'voice-call'` (§4.3.8),
-`VoiceCallConfig.endCall`/`promptMode`; desde 1.10.0, `ChatConfig.overrides` — herança ao vivo da persona, §4.3.6; desde 1.11.0, `ChatConfig.toolsCompact`/`toolsFull` e as tools `datetime`/`search_tool`, §4.3.6; desde 1.12.0, `ApiMessage.native`, `MessageMeta.toolSearch` e a tool `tool_search` (antes `search_tool`), §4.3.6/§4.3.8). Leitores DEVEM ignorar campos
+`VoiceCallConfig.endCall`/`promptMode`; desde 1.10.0, `ChatConfig.overrides` — herança ao vivo da persona, §4.3.6; desde 1.11.0, `ChatConfig.toolsCompact`/`toolsFull` e as tools `datetime`/`search_tool`, §4.3.6; desde 1.12.0, `ApiMessage.native`, `MessageMeta.toolSearch` e a tool `tool_search` (antes `search_tool`), §4.3.6/§4.3.8; desde 1.13.0, `MessageMeta.openFile`, §4.3.8). Leitores DEVEM ignorar campos
 desconhecidos e DEVEM preservá-los ao regravar (merge por campo); escritores NÃO DEVEM enviar `undefined`.
 
 #### 4.3.1 `provider`
@@ -887,6 +887,21 @@ native?: { v: 1, api: 'anthropic-messages', providerId: string, kind: 'anthropic
 `MessageMeta.toolSearch?: { mode: 'native-anthropic' | 'native-openrouter' | 'local', fallbackFrom?:
 'native-anthropic' | 'native-openrouter', reason?: string }` (desde 1.12.0) — só exibição: o modo de envio
 das tools em que a resposta foi gerada (e, numa queda, de qual modo nativo ela veio).
+
+**Arquivo selecionado (desde 1.13.0).** Uma mensagem `role: 'user'` PODE ter
+```ts
+MessageMeta.openFile?: { path: string }   // o arquivo que o usuário tinha selecionado ao enviar
+```
+— o arquivo aberto na pré-visualização do chat (ou escolhido com "Mencionar no chat" no menu do
+arquivo) quando a mensagem foi enviada, salvo se o usuário o tirou da mensagem. `path` = relativo à
+raiz do chat no host quando está dentro dela, senão absoluto (como `present_file`; ≤ 1024 chars). O
+`content` continua sendo só o texto do usuário. **O host DEVE** acrescentar à mensagem enviada ao modelo,
+depois do conteúdo do usuário (como uma parte de texto separada; num `content` em texto, depois de uma
+linha em branco), exatamente:
+`O usuário está com o arquivo <path> selecionado; ele pode ou não estar relacionado a esta mensagem.`
+Clientes DEVEM mostrar a mensagem com uma linha discreta acima dela (`Arquivo selecionado: <path>`) e
+deixar visível o texto exato que vai ao modelo (ex.: no tooltip da linha). Hosts < 1.13.0 ignoram o
+campo (o modelo não vê o arquivo); leitores que não o conhecem o preservam.
 
 **Voz no histórico (desde 1.5.0)** — campos opcionais de `MessageMeta`, só exibição/custos (nunca
 mudam o que vai ao modelo; numa resposta interrompida o `content` já é só o trecho ouvido e o resto fica
@@ -2551,6 +2566,7 @@ gastem o limite do dono do e-mail ou o bloqueiem.
 | 1.10.0 | 2026-11-12 | Adições compatíveis — **chats herdam a persona ao vivo** (§4.3.6): `ChatConfig.overrides` (`{ [unidade]: true }`) marca o que é próprio do chat; o resto segue o valor efetivo da persona (o dela ou, se ela não define, o padrão de "Novos chats" — cadeia Novos chats → persona → chat, ao vivo); unidades (`model` = par provedor+modelo, `params.<nome>`, `enabledTools.<tool>`, `approvalModes.<item>`, `appSignature` com o custom, `smartApprove`/`memory`/`skills` inteiras, as demais chaves de `PresetConfig` uma a uma; `voice` continua com `null` = herda, `cwd`/`presetId`/`capturedContext` sempre próprios); `config` continua completa como cópia informativa (gravada ao criar, migrar, voltar a herdar, trocar de persona e congelar; não regravada a cada edição da persona); migração única dos chats antigos depois de um pull completo (iguais à persona → herdam; diferentes → próprios; na `voice`, iguais à persona → `null`); trocar de persona mantém `overrides`; persona apagada → os chats dela congelam antes (valores efetivos gravados, `presetId` removido, enviados antes do tombstone) (§4.3.3, §7.7); `overrides` mesclado por subchave e cópia informativa que não sobrescreve valor próprio no conflito (§7.5); `chat.update` com/sem `overrides` (§23.7); nota no merge do primeiro login (§12). Tools de um tipo de aparelho (só no computador / só no celular, com limpeza única dos chats marcados por builds de teste): mesma lista em todos os aparelhos, o host manda ao modelo só as que roda, nunca viram próprias por causa do aparelho, padrão do app inclui as do celular, preservadas por quem não as conhece, migração só as marca próprias se o chat rodou naquele tipo; o celular hospeda chats com ferramentas locais sem elas (antes recusava); aviso forte de troca de host só para chats com `hostCwd`; `present_file` em `usesLocalTools`; o merge do primeiro login grava `hostCwd` (§4.3.6, §8.9, §12). Apps < 1.10.0 leem a cópia e preservam `overrides`; edições deles em campos herdados não valem nos apps novos. Sem mudança no servidor além da versão. |
 | 1.11.0 | 2026-11-13 | Adições compatíveis — **tools compactadas** (§4.3.6): `ChatConfig.toolsCompact` (padrão ligado) e `toolsFull` (as que vão completas); tool compacta = nome + descrição curta do app (1–20 palavras) com esquema vazio; `search_tool` automática (só com alguma tool compacta, nunca escolhível) devolve a definição completa; prompt fixo curto no fim do system prompt; textos do app visíveis na UI; erro de argumentos devolve a definição completa; vale para memória/skills, subagentes, chamada de voz (menos `end_call`) e o texto gerado do modo tools no prompt; unidades de herança `toolsCompact` e `toolsFull.<tool>`. Tool **`datetime`** (`format` opcional, códigos `strftime`, fuso do aparelho que roda o turno; no padrão de tools; o system prompt continua sem data). Apps < 1.11.0 ignoram os campos novos e mostram as tools novas como desconhecidas. Sem mudança no servidor além da versão. |
 | 1.12.0 | 2026-11-13 | Adições compatíveis — **busca nativa de ferramentas** (§4.3.6): com a compactação, o host escolhe por request a busca nativa da Anthropic (host oficial, Claude 4.5+: tools completas com `defer_loading` + `tool_search_tool_regex_20251119`, cache numa tool não adiada, prompt fixo nativo visível) ou a do OpenRouter (Messages API + `openrouter:tool_search`, só para modelos servidos por ela e chats compatíveis), e senão a versão local de 1.11.0 com aviso na UI; queda para a local quando o provedor recusa, lembrada por 24 h no dispositivo (`toolSearchCaps`, §4.4); `search_tool` renomeada `tool_search` (alias de leitura, histórico não regravado); `ApiMessage.native` (blocos da resposta, sem pensamento, reenviados só ao mesmo provedor/API/modelo e se ainda batem com a forma canônica) e `MessageMeta.toolSearch` (§4.3.8). Apps < 1.12.0 ignoram `native` e mostram `tool_search` como desconhecida. Sem mudança no servidor além da versão. |
+| 1.13.0 | 2026-11-14 | Adição compatível — **arquivo selecionado** na mensagem do usuário: `MessageMeta.openFile { path }` (o arquivo aberto na pré-visualização ou mencionado pelo menu do arquivo ao enviar); o host acrescenta à mensagem enviada ao modelo um texto fixo com o caminho, e os clientes mostram uma linha "Arquivo selecionado: …" com o texto exato visível (§4.3.8). Hosts < 1.13.0 ignoram o campo. Sem mudança no servidor além da versão. |
 
 ---
 
