@@ -59,12 +59,14 @@ test('specs que sobem o Electron usam launchElectron de ./launch.ts', () => {
   )
 })
 
-test('fakeMediaSwitches: dispositivo falso sempre; UI falsa nega no modo deny', () => {
+test('fakeMediaSwitches: sem som e dispositivo falso sempre; UI falsa nega no modo deny', () => {
   assert.deepEqual(fakeMediaSwitches(), [
+    '--mute-audio',
     '--use-fake-device-for-media-stream',
     '--use-fake-ui-for-media-stream=deny'
   ])
   assert.deepEqual(fakeMediaSwitches('fake'), [
+    '--mute-audio',
     '--use-fake-device-for-media-stream',
     '--use-fake-ui-for-media-stream'
   ])

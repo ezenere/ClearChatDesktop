@@ -31,9 +31,13 @@ export interface LaunchOptions {
   mic?: MicMode
 }
 
-/** Switches do Chromium que trocam o microfone/câmera pelo dispositivo falso. */
+/**
+ * Switches do Chromium que trocam o microfone/câmera pelo dispositivo falso — e `--mute-audio`:
+ * nenhum teste toca som nos alto-falantes (o áudio continua sendo processado, só não sai).
+ */
 export function fakeMediaSwitches(mic: MicMode = 'deny'): string[] {
   return [
+    '--mute-audio',
     '--use-fake-device-for-media-stream',
     mic === 'fake' ? '--use-fake-ui-for-media-stream' : '--use-fake-ui-for-media-stream=deny'
   ]
@@ -66,6 +70,7 @@ export async function assertMicGuard(app: ElectronApplication, mic: MicMode): Pr
       mode: g?.mode as string | undefined,
       defaultSession: !!g?.isGuarded(session.defaultSession),
       fakeDevice: a.commandLine.hasSwitch('use-fake-device-for-media-stream'),
+      muted: a.commandLine.hasSwitch('mute-audio'),
       fakeUi: a.commandLine.hasSwitch('use-fake-ui-for-media-stream')
         ? a.commandLine.getSwitchValue('use-fake-ui-for-media-stream')
         : null
@@ -76,6 +81,7 @@ export async function assertMicGuard(app: ElectronApplication, mic: MicMode): Pr
   if (st.mode !== mic) problems.push(`modo ${st.mode} ≠ ${mic}`)
   if (!st.defaultSession) problems.push('defaultSession sem a guarda')
   if (!st.fakeDevice) problems.push('sem --use-fake-device-for-media-stream')
+  if (!st.muted) problems.push('sem --mute-audio')
   if (st.fakeUi === null || (mic === 'deny' && st.fakeUi !== 'deny'))
     problems.push(`--use-fake-ui-for-media-stream=${st.fakeUi}`)
   if (problems.length) throw new Error(`guarda do microfone: ${problems.join('; ')}`)
