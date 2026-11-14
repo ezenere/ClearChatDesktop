@@ -12,13 +12,13 @@ import {
   supportPromptText,
   toggleSkill
 } from '../../lib/skills'
-import { skillsDetailsSummary } from '../../lib/configSummary'
+import { skillsDetailsSummary, skillsSummary } from '../../lib/configSummary'
 import { useStore } from '../../store'
 import { SkillsSendInfo, SkillsSubagentsInfo, SkillsSupportInfo } from '../apiDocs'
 import { AutoTextarea, Switch } from '../ui/controls'
 import { Tip } from '../ui/Tooltip'
 import type { CfgProps } from '../panel/editors'
-import { CollapsibleSection, RestoreButton, Section, ToggleRow } from '../panel/fields'
+import { CollapsibleSection, RestoreButton, ToggleRow } from '../panel/fields'
 import { useSkillsDiscovery } from './hooks'
 
 export function SkillsSection({
@@ -38,9 +38,13 @@ export function SkillsSection({
   const where = chatScope ? 'neste chat' : 'nesta persona'
 
   return (
-    <Section
-      title="Skills"
+    <CollapsibleSection
       id="skills"
+      title="Skills"
+      section="skills"
+      focusIds={['skills-subagentes']}
+      summary={skillsSummary(sc, activeCount, all.length)}
+      warning={error}
       inherit={['skills']}
       aside={
         <SkillsSendInfo
@@ -213,7 +217,7 @@ export function SkillsSection({
           </div>
         </CollapsibleSection>
       </div>
-    </Section>
+    </CollapsibleSection>
   )
 }
 

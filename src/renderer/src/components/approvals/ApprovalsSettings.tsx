@@ -86,7 +86,7 @@ export function ApprovalsSettings(): React.JSX.Element {
         </HelpTip>
       </div>
       {APPROVAL_ITEM_GROUPS.map((g) => (
-        <div key={g.title} className="space-y-3">
+        <div key={g.title} className="settings-section space-y-3">
           <div className="border-b border-border/50 pb-1 text-[11.5px] text-subtle">{g.title}</div>
           {g.items.map((item) => (
             <div key={item}>
@@ -111,7 +111,7 @@ export function ApprovalsSettings(): React.JSX.Element {
 
       <SmartDefaults />
 
-      <div className="border-t border-border pt-4">
+      <div className="settings-section settings-divided">
         <div className="mb-3 flex items-center gap-1 border-b border-border">
           {(['commands', 'processes', 'pages'] as const).map((it) => (
             <button
@@ -472,7 +472,7 @@ function SmartDefaults(): React.JSX.Element {
   }
   const set = (p: Partial<typeof smart>): void => void update({ smart: { ...smart, ...p } })
   return (
-    <div data-testid="smart-defaults" className="space-y-3 border-t border-border pt-4">
+    <div data-testid="smart-defaults" className="settings-section settings-divided space-y-3">
       <div className="text-[11.5px] text-subtle">
         Padrões globais (cada chat e persona pode ajustar)
       </div>

@@ -17,7 +17,8 @@ import { useState } from 'react'
 import {
   memoryExtractionSummary,
   memoryHelpSummary,
-  memorySubagentsSummary
+  memorySubagentsSummary,
+  memorySummary
 } from '../../lib/configSummary'
 import {
   MEMORY_CATEGORIES,
@@ -64,7 +65,7 @@ import { ModelPicker } from '../ui/ModelPicker'
 import { Select } from '../ui/Select'
 import { Tip } from '../ui/Tooltip'
 import type { CfgProps } from '../panel/editors'
-import { CollapsibleSection, RestoreButton, Section, ToggleRow } from '../panel/fields'
+import { CollapsibleSection, RestoreButton, ToggleRow } from '../panel/fields'
 import { useMemoryCollections, useMemoryPreview } from './hooks'
 import { CollectionIcon } from './MemoryIcon'
 import { useInherit } from '../panel/inheritContext'
@@ -96,11 +97,19 @@ export function MemorySection({
   )
   const helpText = mem.helpPrompt.text ?? DEFAULT_MEMORY_HELP_PROMPT
 
+  const indexed = willSend
+    ? mem.categories.flatMap((c) => activeInCategory(mem, cols, c)).length
+    : 0
   return (
     <div data-testid={isChat ? 'memory-panel' : 'preset-memory'}>
-      <Section
+      <CollapsibleSection
+        id="memory"
         title="Memória"
-        id="memoria"
+        section="memoria"
+        summary={memorySummary(mem, indexed)}
+        // fechada: "neste chat" quando a memória é própria (aberta, a linha da persona explica)
+        inherit={['memory']}
+        inheritClosed
         aside={
           <MemoryPreviewInfo
             preview={isChat ? preview : null}
@@ -139,7 +148,7 @@ export function MemorySection({
           )
         )}
         <SendStatus mem={mem} cols={cols} willSend={willSend} />
-      </Section>
+      </CollapsibleSection>
 
       <CollapsibleSection
         id="memory-collections"

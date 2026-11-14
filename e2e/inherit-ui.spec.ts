@@ -253,6 +253,7 @@ async function main(): Promise<void> {
         .getByTestId('inherit-banner')
         .getByText(/seguem “Revisor” ao vivo/)
         .waitFor()
+      await expand('tools-list')
       await panel().getByRole('switch', { name: 'Terminal (shell)' }).click()
       await mark('enabledTools.shell').waitFor({ timeout: 5000 })
       await expand('approvals')
@@ -286,6 +287,7 @@ async function main(): Promise<void> {
     'Tools: "Só no celular" esmaecido com a nota, alternável, herda como as outras; não vai na request',
     async () => {
       await panelTab('Tools')
+      await expand('tools-list')
       const grp = panel().getByTestId('tools-device-phone')
       await grp.scrollIntoViewIfNeeded()
       await grp.getByText(/Não vão ao modelo quando o chat roda neste computador/).waitFor()
@@ -382,6 +384,17 @@ async function main(): Promise<void> {
 
   await step('trocar de persona: os próprios ficam, os herdados seguem a nova', async () => {
     await panelTab('Chat')
+    // fechada, o cabeçalho resume a persona e quantos campos são deste chat
+    assert(
+      /^Revisor · 1 campo deste chat$/.test(
+        await panel()
+          .locator('[data-collapse-id="chat-persona"]')
+          .getByTestId('collapse-summary')
+          .innerText()
+      ),
+      'resumo da persona'
+    )
+    await expand('chat-persona')
     await page
       .getByTestId('persona-inherit-note')
       .getByText(/1 campo é deste chat/)

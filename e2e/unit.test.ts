@@ -2406,6 +2406,25 @@ test('painel: resumos das seções recolhíveis mostram o que difere do padrão'
     '2 alterados · 2 desligadas · nos subagentes'
   )
   assert.equal(cfgSummary.skillsDetailsSummary(normalizeSkillsConfig(null)).changed, false)
+  // seções que eram sempre visíveis (agora recolhidas): Modelo, Skills, Memória
+  assert.deepEqual(cfgSummary.modelSummary('anthropic/claude-sonnet-4.5'), {
+    text: 'claude-sonnet-4.5',
+    changed: false
+  })
+  assert.equal(cfgSummary.modelSummary('openai/gpt-5', 'high').text, 'gpt-5 · raciocínio high')
+  assert.deepEqual(cfgSummary.modelSummary('  '), { text: 'sem modelo', changed: true })
+  assert.deepEqual(cfgSummary.skillsSummary(normalizeSkillsConfig(null), 0, 3), {
+    text: 'desligadas',
+    changed: false
+  })
+  assert.deepEqual(cfgSummary.skillsSummary({ enabled: true }, 2, 3), {
+    text: 'ligadas · 2/3 ativas',
+    changed: true
+  })
+  assert.equal(
+    cfgSummary.skillsSummary({ enabled: true }, 0, 0).text,
+    'ligadas · nenhuma encontrada'
+  )
   // memória
   const mem = normalizeMemoryConfig(null)
   assert.deepEqual(cfgSummary.memoryHelpSummary(mem), { text: 'desligadas', changed: false })
@@ -2416,6 +2435,13 @@ test('painel: resumos das seções recolhíveis mostram o que difere do padrão'
     '1 alterado · automática'
   )
   assert.equal(cfgSummary.memorySubagentsSummary({ ...mem, subagents: true }).changed, true)
+  assert.deepEqual(cfgSummary.memorySummary(mem, 0), { text: 'desligada', changed: false })
+  assert.deepEqual(cfgSummary.memorySummary({ enabled: true }, 1), {
+    text: 'ligada · 1 coleção',
+    changed: true
+  })
+  assert.equal(cfgSummary.memorySummary({ enabled: true }, 3).text, 'ligada · 3 coleções')
+  assert.equal(cfgSummary.memorySummary({ enabled: true }, 0).text, 'ligada · nada vai para a API')
   // helpers
   assert.equal(cfgSummary.shortModel('anthropic/claude-sonnet-4.5'), 'claude-sonnet-4.5')
   assert.equal(cfgSummary.baseName('/home/u/proj/'), 'proj')
@@ -2473,6 +2499,32 @@ test('painel: aberto/fechado lembrado em localStorage (clearchat.collapse.<id>),
     else delete (globalThis as { localStorage?: unknown }).localStorage
     resetCollapseCache()
   }
+})
+
+import * as panelLayout from '../src/renderer/src/lib/panelLayout.ts'
+
+test('painel lateral: largura salva, máximo na linha (coluna/gaveta) e limites', () => {
+  const { PANEL_DEFAULT_WIDTH: def, PANEL_MIN_WIDTH: min, PANEL_MAX_WIDTH: max } = panelLayout
+  assert.equal(panelLayout.PANEL_WIDTH_KEY, 'clearchat.panel.width')
+  assert.deepEqual([def, min, max], [384, 320, 720])
+  // localStorage: ausente/lixo/pequena → padrão; acima do teto → teto; arredonda
+  for (const raw of [null, undefined, '', 'abc', 'NaN', '-5', '200', 'Infinity'])
+    assert.equal(panelLayout.parsePanelWidth(raw), def, String(raw))
+  assert.equal(panelLayout.parsePanelWidth('500.6'), 501)
+  assert.equal(panelLayout.parsePanelWidth('9999'), max)
+  // coluna: o que sobra depois do reservado (chat 380 + arquivo 280), entre mínimo e teto
+  assert.equal(panelLayout.panelMaxWidth(1032, { overlay: false, reserved: 380 }), 652)
+  assert.equal(panelLayout.panelMaxWidth(1032, { overlay: false, reserved: 660 }), 372)
+  assert.equal(panelLayout.panelMaxWidth(900, { overlay: false, reserved: 660 }), min)
+  assert.equal(panelLayout.panelMaxWidth(2400, { overlay: false, reserved: 380 }), max)
+  // gaveta: 85% da linha
+  assert.equal(panelLayout.panelMaxWidth(600, { overlay: true, reserved: 380 }), 510)
+  assert.equal(panelLayout.panelMaxWidth(300, { overlay: true, reserved: 380 }), min)
+  // linha ainda não medida → teto (não encolhe o painel no primeiro quadro)
+  assert.equal(panelLayout.panelMaxWidth(0, { overlay: false, reserved: 380 }), max)
+  assert.equal(panelLayout.clampPanelWidth(100, 652), min)
+  assert.equal(panelLayout.clampPanelWidth(700, 652), 652)
+  assert.equal(panelLayout.clampPanelWidth(450.4, 652), 450)
 })
 
 test('formulário de provedor (@shared/providerDraft): troca de tipo, URL, headers e validação', async () => {

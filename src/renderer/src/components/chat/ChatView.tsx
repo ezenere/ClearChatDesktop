@@ -51,6 +51,7 @@ import { useHostInfo } from '../sync/hooks'
 function EmptyChat({ chat }: { chat: Chat }): React.JSX.Element {
   const homeDir = useStore((s) => s.homeDir)
   const setPanel = useStore((s) => s.setPanel)
+  const focusConfig = useStore((s) => s.focusConfig)
   return (
     <div className="flex animate-fade-in flex-col items-center pt-[16vh] text-center">
       <div className="mb-5 flex size-11 items-center justify-center rounded-2xl border border-border bg-surface">
@@ -61,7 +62,7 @@ function EmptyChat({ chat }: { chat: Chat }): React.JSX.Element {
       <div className="mt-5 flex flex-wrap items-center justify-center gap-2 text-[11.5px]">
         <button
           type="button"
-          onClick={() => setPanel(true, 'model')}
+          onClick={() => focusConfig('modelo')}
           className="flex max-w-full items-center rounded-full border border-border px-2.5 py-1 text-muted hover:border-border-strong hover:text-fg"
         >
           <ModelLabel

@@ -47,6 +47,7 @@ import { createBranchSelects } from '../lib/branchSelects'
 import { loadVoiceSettings } from '../lib/voice/voiceSettings'
 import { canAutoOpen } from '../lib/fileSources'
 import { nextReasoningClock, type ReasoningClock } from '../lib/reasoning'
+import { PANEL_DEFAULT_WIDTH, PANEL_WIDTH_KEY, parsePanelWidth } from '../lib/panelLayout'
 import { VOICE_CALL_INACTIVE, type VoiceCallState } from '@shared/voice'
 
 export type View = { kind: 'new' } | { kind: 'chat'; chatId: string; sessionId: string }
@@ -118,6 +119,7 @@ const PANEL_TAB_KEY = 'clearchat.panelTab'
 
 /** Seção do painel → aba onde ela mora (focusConfig). */
 const SECTION_TAB: Record<string, PanelTab> = {
+  modelo: 'model',
   contexto: 'chat',
   'contexto-janela': 'chat',
   raiz: 'chat',
@@ -142,6 +144,23 @@ function loadPanelTab(): PanelTab {
 function savePanelTab(tab: PanelTab): void {
   try {
     localStorage.setItem(PANEL_TAB_KEY, tab)
+  } catch {
+    /* armazenamento indisponível: só não lembra */
+  }
+}
+
+/** Largura do painel lateral (lib/panelLayout): local do dispositivo, nunca sincroniza. */
+function loadPanelWidth(): number {
+  try {
+    return parsePanelWidth(localStorage.getItem(PANEL_WIDTH_KEY))
+  } catch {
+    return PANEL_DEFAULT_WIDTH
+  }
+}
+
+function savePanelWidth(w: number): void {
+  try {
+    localStorage.setItem(PANEL_WIDTH_KEY, String(Math.round(w)))
   } catch {
     /* armazenamento indisponível: só não lembra */
   }
@@ -219,6 +238,8 @@ interface State {
   models: Record<string, ModelsEntry>
   panelOpen: boolean
   panelTab: PanelTab
+  /** Largura do painel lateral (px; lembrada em localStorage). */
+  panelWidth: number
   settingsOpen: boolean
   settingsTab: SettingsTab
   /** Sub-tela de Configurações → Áudio (volta a 'main' ao trocar de aba). */
@@ -391,6 +412,8 @@ interface Actions {
   cancelRetry(id: string): Promise<void>
   loadModels(providerId: string, force?: boolean): Promise<void>
   setPanel(open: boolean, tab?: PanelTab): void
+  /** Largura do painel lateral; `persist` grava (fim do arraste, teclado, duplo clique). */
+  setPanelWidth(width: number, persist?: boolean): void
   /** Abre um arquivo no visualizador do chat (vira o arquivo ativo). */
   openFile(chatId: string, target: ViewerTarget, path: string, name: string): void
   /** Fecha o painel de arquivo do chat. */
@@ -559,6 +582,7 @@ export const useStore = create<Store>()((set, get) => ({
   models: {},
   panelOpen: true,
   panelTab: loadPanelTab(),
+  panelWidth: loadPanelWidth(),
   settingsOpen: false,
   settingsTab: 'providers',
   settingsAudioView: 'main',
@@ -1347,6 +1371,10 @@ export const useStore = create<Store>()((set, get) => ({
   setPanel(open, tab) {
     if (tab) savePanelTab(tab)
     set((s) => ({ panelOpen: open, panelTab: tab ?? s.panelTab }))
+  },
+  setPanelWidth(width, persist) {
+    set({ panelWidth: width })
+    if (persist) savePanelWidth(width)
   },
   openFile(chatId, target, path, name) {
     // abrir um arquivo (outro, ou o mesmo de novo) volta a mencioná-lo e substitui o "Mencionar"

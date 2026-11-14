@@ -406,8 +406,8 @@ export function PresetEditor({
           <ToolsEditor cfg={cfg} patch={patch} onOpenMemory={() => setTab('memory')} />
         ) : tab === 'voice' ? (
           <>
-            <VoiceChoiceSections cfg={cfg} patch={patch} scope="persona" defaultOpen />
-            <VoiceCallConfigSection cfg={cfg} patch={patch} scope="persona" defaultOpen />
+            <VoiceChoiceSections cfg={cfg} patch={patch} scope="persona" />
+            <VoiceCallConfigSection cfg={cfg} patch={patch} scope="persona" />
           </>
         ) : (
           <MemorySection cfg={cfg} patch={patch} />

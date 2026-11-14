@@ -453,6 +453,15 @@ async function main(): Promise<void> {
   await step('UI: seção Skills na aba Tools (checklist, prompt de apoio, subagentes)', async () => {
     await openChatUi('Skills em ação')
     await ensurePanelTab('Tools')
+    // a seção Skills começa recolhida, com o resumo do que vale
+    const head = page.getByTestId('right-panel').locator('[data-collapse-id="skills"]')
+    await waitFor(
+      async () =>
+        /^ligadas · 4\/4 ativas$/.test(await head.getByTestId('collapse-summary').innerText()),
+      5000,
+      'resumo da seção Skills (descoberta assíncrona)'
+    )
+    await expand(page.getByTestId('right-panel'), 'skills')
     const sec = page.getByTestId('skills-panel')
     await sec.scrollIntoViewIfNeeded()
     // checklist, prompt de apoio e subagentes ficam em "Ajustes das skills" (recolhido)
@@ -602,6 +611,7 @@ async function main(): Promise<void> {
       .first()
       .click()
     await dlg.getByRole('tab', { name: 'Tools' }).click()
+    await expand(dlg, 'skills')
     await dlg.getByTestId('preset-skills').waitFor()
     await page.keyboard.press('Escape')
   })

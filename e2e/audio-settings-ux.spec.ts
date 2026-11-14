@@ -66,6 +66,14 @@ async function step(name: string, fn: () => Promise<string | void>): Promise<voi
 }
 
 const dialog = (): ReturnType<Page['locator']> => page.locator('[role="dialog"]')
+
+/** Abre a seção recolhível `id` (todas começam fechadas; o aberto fica lembrado). */
+async function expand(scope: ReturnType<Page['locator']>, id: string): Promise<void> {
+  const btn = scope.getByTestId(`collapse-${id}`)
+  await btn.scrollIntoViewIfNeeded()
+  if ((await btn.getAttribute('aria-expanded')) !== 'true') await btn.click()
+  await scope.locator(`[data-collapse-id="${id}"][data-open]`).waitFor()
+}
 const popover = (): ReturnType<Page['locator']> => page.locator('div.shadow-popover').last()
 
 /** Abre Configurações → Áudio no cenário do mock. */
@@ -127,6 +135,9 @@ async function main(): Promise<void> {
   writeFileSync(
     mainJs,
     `const { app, BrowserWindow } = require('electron')
+// nunca o microfone real: dispositivo falso do Chromium
+app.commandLine.appendSwitch('use-fake-device-for-media-stream')
+app.commandLine.appendSwitch('use-fake-ui-for-media-stream')
 app.setPath('userData', ${JSON.stringify(join(BASE, 'user-data'))})
 app.whenReady().then(() => {
   const win = new BrowserWindow({ width: 1440, height: 1000, useContentSize: true, backgroundColor: '#0d0d10', show: true })
@@ -852,6 +863,9 @@ app.on('window-all-closed', () => app.quit())
       .click()
     await dialog().getByTestId('preset-editor').waitFor()
     await dialog().getByRole('tab', { name: 'Voz' }).click()
+    await expand(dialog(), 'voice-tts-persona')
+    await expand(dialog(), 'voice-stt-persona')
+    await expand(dialog(), 'voice-call-persona')
     await dialog().getByTestId('tts-choice-persona').waitFor()
     await page.waitForTimeout(400)
   }
@@ -1014,6 +1028,8 @@ app.on('window-all-closed', () => app.quit())
         await page.getByRole('banner').getByRole('button', { name: 'Abrir painel' }).click()
       await page.getByTestId('right-panel').getByRole('tab', { name: 'Voz' }).click()
       const panel = page.getByTestId('right-panel')
+      await expand(panel, 'voice-tts-chat')
+      await expand(panel, 'voice-stt-chat')
       const cur = panel.getByTestId('tts-choice-current')
       await cur.waitFor()
       assert.match(

@@ -167,6 +167,21 @@
   flex-shrink: 0;
 }
 
+/* Configurações: seção de uma página (Áudio, Aprovações, Pesquisa na web, Título automático, Conta,
+   categorias das Memórias). O respiro entre seções mora só aqui: a margem colapsa com o space-y da
+   página (vale a maior), então o espaço é o mesmo em todas as abas. */
+@utility settings-section {
+  margin-block-start: 1.75rem;
+  &:first-child {
+    margin-block-start: 0;
+  }
+}
+/* Seção separada da anterior por uma linha, com o mesmo respiro abaixo dela. */
+@utility settings-divided {
+  border-top: 1px solid var(--color-border);
+  padding-top: 1.5rem;
+}
+
 /* Campo de texto padrão */
 @utility field {
   @apply w-full rounded-lg border border-border bg-bg/60 px-3 py-2 text-[13px] text-fg transition-colors outline-none;

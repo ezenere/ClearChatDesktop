@@ -36,7 +36,7 @@ export function AudioSection({
   return (
     <section
       data-testid={testId}
-      className={cn('space-y-3', !first && 'border-t border-border pt-4', className)}
+      className={cn('space-y-3', !first && 'settings-section settings-divided', className)}
     >
       <div className="flex items-center gap-1.5">
         <h3 className="text-[13px] font-medium text-fg">{title}</h3>

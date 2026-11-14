@@ -50,7 +50,7 @@ function Section({
   help?: React.ReactNode
 }): React.JSX.Element {
   return (
-    <section className="space-y-2">
+    <section className="settings-section space-y-2">
       <div className="flex items-center gap-2">
         <h3 className="text-[11px] font-medium tracking-wide text-subtle uppercase">{title}</h3>
         {help && (
@@ -536,7 +536,7 @@ export function AccountSettings(): React.JSX.Element {
         <SkillsSummary />
       </Section>
 
-      <div className="flex flex-wrap items-center gap-2 border-t border-border pt-4">
+      <div className="settings-section settings-divided flex flex-wrap items-center gap-2">
         <Button
           variant="ghost"
           icon={<Lock className="size-3.5" />}

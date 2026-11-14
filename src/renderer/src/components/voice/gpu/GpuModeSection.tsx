@@ -117,7 +117,7 @@ export function GpuModeSection({
   return (
     <section
       ref={root}
-      className="border-t border-border pt-4"
+      className="settings-section settings-divided"
       data-testid="gpu-mode-section"
       data-expanded={expanded}
     >

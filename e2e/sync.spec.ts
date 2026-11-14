@@ -1307,6 +1307,9 @@ async function main(): Promise<void> {
       if (!(await B.page.getByTestId('right-panel').isVisible()))
         await B.page.getByRole('banner').getByRole('button', { name: 'Abrir painel' }).click()
       await B.page.getByTestId('right-panel').getByRole('tab', { name: 'Voz' }).click()
+      // seções recolhidas por padrão: abre a da chamada
+      const callHead = B.page.getByTestId('right-panel').getByTestId('collapse-voice-call-chat')
+      if ((await callHead.getAttribute('aria-expanded')) !== 'true') await callHead.click()
       const enabled = B.page.getByTestId('right-panel').getByTestId('voice-call-enabled')
       await enabled.waitFor()
       assert((await enabled.getAttribute('data-effective')) === 'off', 'chamada desligada no chat')

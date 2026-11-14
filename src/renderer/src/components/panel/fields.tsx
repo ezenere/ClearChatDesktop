@@ -21,41 +21,6 @@ import { Switch } from '../ui/controls'
 import { HelpTip } from '../ui/Tooltip'
 import { InheritMark } from './inherit'
 
-export function Section({
-  title,
-  children,
-  aside,
-  help,
-  id,
-  inherit
-}: {
-  title: string
-  children: ReactNode
-  aside?: ReactNode
-  /** Ajuda estática da seção → (?) ao lado do título. */
-  help?: ReactNode
-  id?: string
-  /** Unidades da herança da persona (painel do chat): marca "neste chat" + voltar a herdar. */
-  inherit?: readonly string[]
-}): React.JSX.Element {
-  return (
-    <section
-      data-section={id}
-      className="scroll-mt-2 border-b border-border/70 px-4 py-4 last:border-b-0"
-    >
-      <div className="mb-3 flex items-center gap-2">
-        <h3 className="text-[11px] font-semibold tracking-[0.06em] text-subtle uppercase">
-          {title}
-        </h3>
-        {help && <HelpTip label={title}>{help}</HelpTip>}
-        {inherit && <InheritMark units={inherit} />}
-        {aside && <div className="ml-auto flex items-center">{aside}</div>}
-      </div>
-      <div className="space-y-3">{children}</div>
-    </section>
-  )
-}
-
 // ---------------- seção recolhível ----------------
 
 /** [aberta, definir] — aberta = preferência salva (localStorage) ?? `defaultOpen`. */
@@ -190,7 +155,7 @@ export function CollapsibleSection({
         id={bodyId}
         className={cn(
           'animate-fade-in',
-          level === 'section' ? 'space-y-3 pb-4' : 'mt-1.5 space-y-2'
+          level === 'section' ? 'space-y-3 pb-5' : 'mt-1.5 space-y-2'
         )}
       >
         {children}
@@ -243,7 +208,7 @@ export function CollapsibleSection({
       data-open={open || undefined}
       className="scroll-mt-2 border-b border-border/70 px-4 last:border-b-0"
     >
-      <div className="flex items-center gap-2 py-2.5">
+      <div className="flex items-center gap-2 py-3.5">
         <h3 className="min-w-0 flex-1">
           <button
             {...buttonProps}

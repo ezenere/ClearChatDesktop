@@ -746,7 +746,10 @@ export function AudioSettings(): React.JSX.Element | null {
       </AudioSection>
 
       {/* ---- chamada de voz: modelo da chamada padrão (global) + parâmetros ---- */}
-      <section className="border-t border-border pt-4" data-testid="voice-call-model-settings">
+      <section
+        className="settings-section settings-divided"
+        data-testid="voice-call-model-settings"
+      >
         <VoiceCallModelEditor
           value={callDefaults.model}
           onChange={(model) => saveCallDefaults({ model })}

@@ -138,7 +138,10 @@ export function AutoTitleSettings(): React.JSX.Element {
   }
 
   return (
-    <section data-testid="auto-title-settings" className="space-y-3 border-t border-border pt-4">
+    <section
+      data-testid="auto-title-settings"
+      className="settings-section settings-divided space-y-3"
+    >
       <div className="flex items-center gap-1.5">
         <h3 className="text-[13px] font-medium text-fg">Título automático</h3>
         <HelpTip label="Título automático">

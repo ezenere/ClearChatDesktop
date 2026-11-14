@@ -22,7 +22,7 @@ import {
   SignatureSection,
   ToolsEditor
 } from './editors'
-import { CollapsibleSection, Section } from './fields'
+import { CollapsibleSection } from './fields'
 import { MemorySection } from '../memory/MemorySection'
 import { VoiceCallConfigSection } from '../voice/VoiceCallConfigSection'
 import { VoiceChoiceSections } from '../voice/VoiceChoiceSections'
@@ -61,7 +61,7 @@ export function MemoryTab({ chat }: { chat: Chat }): React.JSX.Element {
 }
 
 /**
- * Aba Chat: persona de origem e o uso de contexto (com "Compactar agora") visíveis; recolhidos:
+ * Aba Chat, tudo recolhido (com resumo): persona de origem, uso de contexto (com "Compactar agora"),
  * janela/compactação, opções da raiz e assinatura do app. O título é editado no cabeçalho do chat
  * (e na sidebar) e a raiz é trocada na aba Arquivos — aqui só aparece o caminho, com link.
  */
@@ -86,8 +86,8 @@ export function VoiceTab({ chat }: { chat: Chat }): React.JSX.Element {
   // a voz fica fora de `overrides`: cada campo null herda a persona ao vivo (★ por campo)
   return (
     <>
-      <VoiceChoiceSections cfg={chat.config} patch={patch} scope="chat" defaultOpen />
-      <VoiceCallConfigSection cfg={chat.config} patch={patch} defaultOpen />
+      <VoiceChoiceSections cfg={chat.config} patch={patch} scope="chat" />
+      <VoiceCallConfigSection cfg={chat.config} patch={patch} />
     </>
   )
 }
@@ -133,8 +133,18 @@ function ChatInfoSection({ chat }: { chat: Chat }): React.JSX.Element {
     setConfirmNone(false)
     void setChatPersona(chat.id, v)
   }
+  const name = origin ? origin.name : presetId ? '(persona apagada)' : 'Nenhuma'
   return (
-    <Section title="Persona">
+    <CollapsibleSection
+      id="chat-persona"
+      title="Persona"
+      summary={{
+        text: own.length
+          ? `${name} · ${own.length === 1 ? '1 campo deste chat' : `${own.length} campos deste chat`}`
+          : name,
+        changed: own.length > 0
+      }}
+    >
       <div className="flex items-center gap-2.5 rounded-lg border border-border bg-bg/40 py-1.5 pr-1.5 pl-2">
         <PresetIcon icon={origin?.icon} size="sm" />
         <div className="min-w-0 flex-1">
@@ -148,7 +158,7 @@ function ChatInfoSection({ chat }: { chat: Chat }): React.JSX.Element {
             className="-ml-1.5 h-7 border-transparent bg-transparent px-1.5 text-[12.5px] hover:border-border"
           />
           <span data-testid="chat-preset" className="sr-only">
-            {origin ? origin.name : presetId ? '(persona apagada)' : 'Nenhuma'}
+            {name}
           </span>
         </div>
         <Button
@@ -246,7 +256,7 @@ function ChatInfoSection({ chat }: { chat: Chat }): React.JSX.Element {
         // a persona salva é igual ao chat: o chat passa a segui-la por inteiro
         onSaved={(p) => void setChatPersona(chat.id, p.id, { inheritAll: true })}
       />
-    </Section>
+    </CollapsibleSection>
   )
 }
 
@@ -313,17 +323,22 @@ function ContextSection({ chat }: { chat: Chat }): React.JSX.Element {
     }
   )
   const isSub = !!session && session.depth > 0
+  const used = info.usage
+    ? `${info.usage.estimated ? '~' : ''}${formatTokens(info.usage.used)}${info.window ? ` / ${formatTokens(info.window)} · ${Math.round((info.pct ?? 0) * 100)}%` : ''}`
+    : null
   return (
     <>
-      <Section title="Contexto" id="contexto" aside={<ContextWindowInfo />}>
+      <CollapsibleSection
+        id="context"
+        title="Contexto"
+        section="contexto"
+        summary={used ?? 'sem uso ainda'}
+        aside={<ContextWindowInfo />}
+      >
         <div className="rounded-lg border border-border bg-bg/40 px-3 py-2.5 text-[12px]">
           <div className="flex items-center gap-2">
             <span className="text-muted">Em uso</span>
-            <span className="ml-auto font-mono text-fg/90 tabular-nums">
-              {info.usage
-                ? `${info.usage.estimated ? '~' : ''}${formatTokens(info.usage.used)}${info.window ? ` / ${formatTokens(info.window)} · ${Math.round((info.pct ?? 0) * 100)}%` : ''}`
-                : '—'}
-            </span>
+            <span className="ml-auto font-mono text-fg/90 tabular-nums">{used ?? '—'}</span>
           </div>
           <div className="mt-1 flex items-center gap-2">
             <span className="text-muted">Janela</span>
@@ -353,7 +368,7 @@ function ContextSection({ chat }: { chat: Chat }): React.JSX.Element {
             Subagentes compactam sozinhos ao atingir o limite.
           </p>
         )}
-      </Section>
+      </CollapsibleSection>
       <ContextSettingsSection cfg={c} patch={patch} knownWindow={info.window} info={false} />
     </>
   )

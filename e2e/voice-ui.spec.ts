@@ -80,6 +80,14 @@ async function panel(open: boolean): Promise<void> {
   await page.waitForTimeout(300)
 }
 
+/** Abre a seção recolhível `id` (todas começam fechadas; o aberto fica lembrado). */
+async function expand(scope: ReturnType<Page['locator']>, id: string): Promise<void> {
+  const btn = scope.getByTestId(`collapse-${id}`)
+  await btn.scrollIntoViewIfNeeded()
+  if ((await btn.getAttribute('aria-expanded')) !== 'true') await btn.click()
+  await scope.locator(`[data-collapse-id="${id}"][data-open]`).waitFor()
+}
+
 async function open(scenario: string, chat: string): Promise<void> {
   await page.evaluate((s) => {
     location.search = `?scenario=${s}`
@@ -134,6 +142,9 @@ async function main(): Promise<void> {
   writeFileSync(
     mainJs,
     `const { app, BrowserWindow } = require('electron')
+// nunca o microfone real: dispositivo falso do Chromium
+app.commandLine.appendSwitch('use-fake-device-for-media-stream')
+app.commandLine.appendSwitch('use-fake-ui-for-media-stream')
 app.setPath('userData', ${JSON.stringify(join(BASE, 'user-data'))})
 app.whenReady().then(() => {
   const win = new BrowserWindow({ width: 1440, height: 860, useContentSize: true, backgroundColor: '#0d0d10', show: true })
@@ -942,9 +953,11 @@ app.on('window-all-closed', () => app.quit())
     'persona: chamada desligada + modo do prompt no editor; chat da persona → telefone desabilitado com o motivo',
     async () => {
       await open('chat', 'Ideias de nomes para o app')
-      // painel do chat: aba própria "Voz" (modelo da chamada + prompt do modo voz visíveis)
+      // painel do chat: aba própria "Voz" (seções recolhidas; abrir a da chamada mostra o modelo e
+      // o prompt do modo voz)
       await panel(true)
       await page.getByTestId('right-panel').getByRole('tab', { name: 'Voz' }).click()
+      await expand(page.getByTestId('right-panel'), 'voice-call-chat')
       await page.getByTestId('right-panel').getByTestId('voice-call-enabled').waitFor()
       await page.getByTestId('right-panel').getByTestId('voice-call-model-chat').waitFor()
       await panel(false)
@@ -953,8 +966,9 @@ app.on('window-all-closed', () => app.quit())
       const row = dialog().getByTestId('preset-row').filter({ hasText: 'Revisor de código' })
       await row.getByRole('button', { name: /Editar/ }).click()
       await dialog().getByTestId('preset-editor').waitFor()
-      // aba própria "Voz" no editor de personas (seção aberta por padrão)
+      // aba própria "Voz" no editor de personas (recolhida como no painel)
       await dialog().getByRole('tab', { name: 'Voz' }).click()
+      await expand(dialog(), 'voice-call-persona')
       await dialog().getByTestId('voice-call-enabled').waitFor()
       await dialog().getByTestId('voice-call-model-persona').waitFor()
       await dialog().getByTestId('voice-call-prompt-mode').waitFor()
@@ -1214,6 +1228,7 @@ app.on('window-all-closed', () => app.quit())
     await open('chat', 'Ideias de nomes para o app')
     await panel(true)
     await page.getByTestId('right-panel').getByRole('tab', { name: 'Voz' }).click()
+    await expand(page.getByTestId('right-panel'), 'voice-call-chat')
     const g = page.getByTestId('right-panel').getByTestId('voice-call-end-call')
     await g.waitFor()
     assert.equal(await g.getAttribute('data-effective'), 'on', 'padrão: ligado')
@@ -1332,6 +1347,7 @@ app.on('window-all-closed', () => app.quit())
       // chat: ★ = o padrão global (agora desligado); escolher "Ligadas" sobrescreve só no chat
       await panel(true)
       await page.getByTestId('right-panel').getByRole('tab', { name: 'Voz' }).click()
+      await expand(page.getByTestId('right-panel'), 'voice-call-chat')
       const g = page.getByTestId('right-panel').getByTestId('voice-call-tool-phrases-toggle')
       await g.waitFor()
       assert.equal(await g.getAttribute('data-effective'), 'off', 'herda o global desligado')

@@ -79,7 +79,6 @@ import {
   ExtraBodyEditor,
   NumberInput,
   RestoreButton,
-  Section,
   ToggleRow
 } from './fields'
 import { SmartApproveSection } from './SmartApproveSection'
@@ -93,6 +92,7 @@ import {
   validateJson,
   compactionSummary,
   limitsSummary,
+  modelSummary,
   paramsSummary,
   requestSummary,
   signatureSummary,
@@ -199,8 +199,21 @@ export function ModelSection({
   requires?: readonly ChatCapability[]
   children?: ReactNode
 }): React.JSX.Element {
+  // fechada, o resumo mostra o modelo e o raciocínio (só quando o campo aparece — modelo aceita)
+  const { support, effort } = useEffort(cfg)
+  const effortShown =
+    !!effort && !(support && !support.supported.includes('reasoning_effort'))
+      ? (cfg.params.reasoning_effort ?? null)
+      : null
   return (
-    <Section title="Modelo" aside={<ModelFieldInfo side="left" />} inherit={['model']}>
+    <CollapsibleSection
+      id="model"
+      title="Modelo"
+      section="modelo"
+      summary={modelSummary(cfg.model, effortShown)}
+      aside={<ModelFieldInfo side="left" />}
+      inherit={['model']}
+    >
       <div>
         <ModelPicker
           value={{ providerId: cfg.providerId, model: cfg.model }}
@@ -213,7 +226,7 @@ export function ModelSection({
         {note && <div className="mt-1.5">{note}</div>}
       </div>
       {children}
-    </Section>
+    </CollapsibleSection>
   )
 }
 
@@ -494,8 +507,8 @@ export function RequestExtrasSection({
 }
 
 /**
- * Aba Modelo inteira (painel e editor de persona): modelo + raciocínio visíveis; system prompt,
- * parâmetros e request recolhidos (com resumo do que difere do padrão).
+ * Aba Modelo inteira (painel e editor de persona), tudo recolhido (com resumo): modelo + raciocínio,
+ * system prompt, parâmetros e request.
  */
 export function ModelEditor(
   props: CfgProps & {
@@ -828,12 +841,11 @@ export function ToolsListSection({
   const compactOn = TOOL_NAMES.filter(
     (t) => cfg.enabledTools.includes(t) && sendsCompact(t, cfg)
   ).length
-  // aberta por padrão (é o principal da aba); recolhida, o resumo mostra quantas estão ligadas
+  // recolhida (como todas as seções do painel), o resumo mostra quantas estão ligadas
   return (
     <CollapsibleSection
       id="tools-list"
       title="Ferramentas"
-      defaultOpen
       inherit={[
         ...APP_TOOL_NAMES.map((t) => `enabledTools.${t}`),
         'toolsCompact',
@@ -1145,9 +1157,8 @@ function SpillField({ max }: { max: number }): React.JSX.Element {
 }
 
 /**
- * Aba Tools inteira (painel e editor de persona), da mais usada para a menos: ferramentas,
- * aprovações (recolhida, com resumo), skills; recolhidas: Smart-Approve, subagentes, envio das
- * tools e limites.
+ * Aba Tools inteira (painel e editor de persona), da mais usada para a menos, tudo recolhido (com
+ * resumo): ferramentas, aprovações, skills, Smart-Approve, subagentes, envio das tools e limites.
  */
 export function ToolsEditor({
   chatScope,

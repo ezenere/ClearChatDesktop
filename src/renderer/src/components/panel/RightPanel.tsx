@@ -8,11 +8,13 @@ import {
   Wrench,
   X
 } from 'lucide-react'
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { Chat } from '@shared/types'
 import { cn } from '../../lib/format'
+import { PANEL_DEFAULT_WIDTH, PANEL_MIN_WIDTH } from '../../lib/panelLayout'
 import { useStore, type PanelTab } from '../../store'
 import { IconButton } from '../ui/controls'
+import { Splitter } from '../ui/Splitter'
 import { ChatTab, MemoryTab, ModelTab, ToolsTab, VoiceTab } from './ConfigTabs'
 import { Note } from './fields'
 import { ModelLabel } from '../ui/ModelLabel'
@@ -30,14 +32,24 @@ const TABS: { id: PanelTab; label: string; icon: typeof Sparkles }[] = [
 
 export function RightPanel({
   chat,
-  overlay
+  overlay,
+  width,
+  maxWidth
 }: {
   chat: Chat
   /** Janela estreita: gaveta sobreposta ao chat em vez de coluna. */
   overlay?: boolean
+  /** Largura mostrada (a escolhida no divisor, já dentro de [mínimo, maxWidth]). */
+  width: number
+  /** Máximo do divisor nesta janela (o chat mantém um mínimo). */
+  maxWidth: number
 }): React.JSX.Element {
   const tab = useStore((s) => s.panelTab)
   const setPanel = useStore((s) => s.setPanel)
+  const setPanelWidth = useStore((s) => s.setPanelWidth)
+  // aba cujo rótulo aparece: a sob o mouse (ou com o foco do teclado); senão a selecionada
+  const [peek, setPeek] = useState<PanelTab | null>(null)
+  const labelled = peek ?? tab
   const setPreview = useStore((s) => s.setPreview)
   const viewSessionId = useStore((s) => (s.view.kind === 'chat' ? s.view.sessionId : null))
   const viewSession = useStore((s) => (viewSessionId ? s.sessions[viewSessionId] : undefined))
@@ -64,31 +76,65 @@ export function RightPanel({
   return (
     <aside
       data-testid="right-panel"
+      style={{ width }}
       className={cn(
-        'flex w-[384px] max-w-[85%] shrink-0 animate-fade-in flex-col border-l border-border bg-surface',
-        overlay && 'absolute inset-y-0 right-0 z-30 shadow-popover'
+        'flex max-w-[85%] shrink-0 animate-fade-in flex-col border-l border-border bg-surface',
+        overlay ? 'absolute inset-y-0 right-0 z-30 shadow-popover' : 'relative'
       )}
     >
+      <Splitter
+        width={width}
+        min={PANEL_MIN_WIDTH}
+        max={maxWidth}
+        defaultWidth={PANEL_DEFAULT_WIDTH}
+        label="Redimensionar painel lateral"
+        testId="panel-splitter"
+        onChange={setPanelWidth}
+      />
       <div className="flex h-11 shrink-0 items-center gap-1.5 border-b border-border/70 px-2.5">
-        <div role="tablist" className="flex min-w-0 flex-1 rounded-lg bg-bg/70 p-0.5">
-          {TABS.map((t) => (
-            <button
-              key={t.id}
-              type="button"
-              role="tab"
-              aria-selected={tab === t.id}
-              onClick={() => setPanel(true, t.id)}
-              title={t.label}
-              className={cn(
-                'flex h-7 min-w-0 flex-auto items-center justify-center gap-1.5 rounded-md px-1 text-xs font-medium transition-colors',
-                tab === t.id ? 'bg-active text-fg shadow-sm' : 'text-subtle hover:text-fg'
-              )}
-            >
-              {/* 5 abas em 384px: o ícone só aparece na aba ativa (o rótulo nunca corta) */}
-              {tab === t.id && <t.icon className="size-3.5 shrink-0" />}
-              <span className="truncate">{t.label}</span>
-            </button>
-          ))}
+        <div
+          role="tablist"
+          aria-label="Configurações do chat"
+          onPointerLeave={() => setPeek(null)}
+          className="flex min-w-0 flex-1 rounded-lg bg-bg/70 p-0.5"
+        >
+          {TABS.map((t) => {
+            const shown = labelled === t.id
+            return (
+              <button
+                key={t.id}
+                type="button"
+                role="tab"
+                aria-selected={tab === t.id}
+                aria-label={t.label}
+                data-tab={t.id}
+                data-label={shown || undefined}
+                onClick={() => setPanel(true, t.id)}
+                onPointerEnter={() => setPeek(t.id)}
+                onFocus={(e) => e.currentTarget.matches(':focus-visible') && setPeek(t.id)}
+                onBlur={() => setPeek((p) => (p === t.id ? null : p))}
+                className={cn(
+                  'flex h-7 min-w-0 flex-auto items-center justify-center rounded-md px-1.5 text-xs font-medium transition-colors',
+                  tab === t.id ? 'bg-active text-fg shadow-sm' : 'text-subtle hover:text-fg'
+                )}
+              >
+                <t.icon aria-hidden className="size-3.5 shrink-0" />
+                {/* só ícone; o rótulo abre (largura 0fr → 1fr + opacidade) na aba sob o mouse ou,
+                    sem hover, na selecionada — a barra não muda de largura, as abas se acomodam */}
+                <span
+                  aria-hidden
+                  className={cn(
+                    'grid min-w-0 transition-[grid-template-columns,opacity] duration-200 ease-out motion-reduce:transition-none',
+                    shown ? 'grid-cols-[1fr] opacity-100' : 'grid-cols-[0fr] opacity-0'
+                  )}
+                >
+                  <span className="overflow-hidden">
+                    <span className="block truncate pl-1.5">{t.label}</span>
+                  </span>
+                </span>
+              </button>
+            )
+          })}
         </div>
         <IconButton
           label="Ver request"

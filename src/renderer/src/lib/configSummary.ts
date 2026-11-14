@@ -64,6 +64,13 @@ export function baseName(path: string | null | undefined): string {
 
 // ---------------- Modelo ----------------
 
+/** Seção Modelo fechada: o modelo (id curto) e o raciocínio enviado (só se o modelo o aceita). */
+export function modelSummary(model: string, effort?: string | null): SectionSummary {
+  const m = shortModel(model)
+  if (!m) return { text: 'sem modelo', changed: true }
+  return { text: effort ? `${m} · raciocínio ${effort}` : m, changed: false }
+}
+
 export function systemPromptSummary(text: string, defaultText?: string | null): SectionSummary {
   if (!text.trim()) return { text: 'vazio', changed: true }
   return text === (defaultText ?? DEFAULT_SYSTEM_PROMPT)
@@ -205,6 +212,19 @@ export function limitsSummary(cfg: Pick<ChatConfig, 'maxToolOutputChars'>): Sect
     : changedSummary([`saída máx. ${num(max)}`])
 }
 
+/** Seção Skills fechada: desligadas (padrão) ou quantas das encontradas estão ativas. */
+export function skillsSummary(
+  sc: Pick<SkillsConfig, 'enabled'>,
+  active: number,
+  total: number
+): SectionSummary {
+  if (!sc.enabled) return { text: 'desligadas', changed: false }
+  return {
+    text: total ? `ligadas · ${active}/${total} ativas` : 'ligadas · nenhuma encontrada',
+    changed: true
+  }
+}
+
 export function skillsDetailsSummary(sc: SkillsConfig): SectionSummary {
   const changes: string[] = []
   if (sc.disabled.length)
@@ -216,6 +236,17 @@ export function skillsDetailsSummary(sc: SkillsConfig): SectionSummary {
 }
 
 // ---------------- Memória ----------------
+
+/** Seção Memória fechada: desligada (padrão), ou ligada com quantas coleções vão no índice. */
+export function memorySummary(mem: Pick<MemoryConfig, 'enabled'>, indexed: number): SectionSummary {
+  if (!mem.enabled) return { text: 'desligada', changed: false }
+  return {
+    text: indexed
+      ? `ligada · ${indexed} ${indexed === 1 ? 'coleção' : 'coleções'}`
+      : 'ligada · nada vai para a API',
+    changed: true
+  }
+}
 
 export function memoryHelpSummary(mem: MemoryConfig): SectionSummary {
   if (!mem.helpPrompt.enabled) return { text: 'desligadas', changed: false }

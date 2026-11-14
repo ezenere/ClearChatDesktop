@@ -22,6 +22,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import assert from 'node:assert/strict'
+import { elementShot } from './uiHelpers.ts'
 
 const ROOT = resolve(import.meta.dirname, '..')
 const BASE = resolve(process.env.CLEARCHAT_E2E_DIR || join(tmpdir(), 'clearchat-memory-ui-e2e'))
@@ -201,16 +202,43 @@ app.on('window-all-closed', () => app.quit())
     await shot('02-tool-busca')
   })
 
+  await step('painel: tudo recolhido por padrão em todas as abas', async () => {
+    await resetCollapse()
+    const seen: string[] = []
+    for (const tab of ['Modelo', 'Chat', 'Tools', 'Memória', 'Voz']) {
+      await openPanelTab('Planejamento do TCC', tab)
+      const secs = panel().locator('[data-collapse-id]')
+      await secs.first().waitFor()
+      // nenhuma seção montada aberta, e nada fora de seção (todo bloco do corpo é recolhível)
+      assert.equal(await panel().locator('[data-collapse-id][data-open]').count(), 0, tab)
+      assert.equal(await panel().locator('section:not([data-collapse-id])').count(), 0, tab)
+      for (const id of await secs.evaluateAll((els) =>
+        els.map((e) => e.getAttribute('data-collapse-id') ?? '')
+      ))
+        seen.push(id)
+    }
+    for (const id of ['model', 'chat-persona', 'context', 'tools-list', 'skills', 'memory'])
+      assert.ok(seen.includes(id), `seção ${id}`)
+    return `${seen.length} seções fechadas`
+  })
+
   await step('painel: seções recolhíveis (abrir/fechar, lembrar, resumo, erro)', async () => {
     await resetCollapse()
     await openPanelTab('Planejamento do TCC', 'Modelo')
     const p = panel()
     const head = (id: string): ReturnType<Page['locator']> => p.getByTestId(`collapse-${id}`)
-    // padrão: avançadas fechadas; modelo e raciocínio visíveis
-    for (const id of ['system-prompt', 'params', 'request'])
+    // padrão: tudo fechado (modelo inclusive, com o modelo no resumo); abrir mostra o raciocínio
+    for (const id of ['model', 'system-prompt', 'params', 'request'])
       assert.equal(await head(id).getAttribute('aria-expanded'), 'false', `${id} fechada`)
     assert.equal(await p.getByLabel('System prompt', { exact: true }).count(), 0)
+    assert.equal(await p.getByTestId('effort-levels').count(), 0)
+    assert.match(
+      await p.locator('[data-collapse-id="model"]').getByTestId('collapse-summary').innerText(),
+      /claude-sonnet-4\.5/
+    )
+    await expand(p, 'model')
     await p.getByTestId('effort-levels').waitFor()
+    await head('model').click()
     // resumo do que difere do padrão: ligar max_tokens → "N alterado(s) · … max_tokens 4.096"
     const sum = (id: string): ReturnType<Page['locator']> =>
       p.locator(`[data-collapse-id="${id}"]`).getByTestId('collapse-summary')
@@ -316,7 +344,12 @@ app.on('window-all-closed', () => app.quit())
     await panel().getByRole('tab', { name: 'Memória' }).click()
     const p = panel().getByTestId('memory-panel')
     await p.waitFor()
-    // coleções e índice ficam recolhidos por padrão, com resumo
+    // tudo recolhido por padrão, com resumo (a seção Memória inclusive)
+    assert.match(
+      await p.locator('[data-collapse-id="memory"]').getByTestId('collapse-summary').innerText(),
+      /^ligada · \d+ coleç(ão|ões)$/
+    )
+    await expand(p, 'memory')
     assert.match(
       await p
         .locator('[data-collapse-id="memory-collections"]')
@@ -457,6 +490,7 @@ app.on('window-all-closed', () => app.quit())
 
   await step('aba Memória: desligada → nada vai para a API', async () => {
     const p = panel().getByTestId('memory-panel')
+    await expand(p, 'memory')
     await p.locator('section').first().scrollIntoViewIfNeeded()
     await p.getByRole('switch', { name: 'Memória neste chat' }).click()
     assert.equal(await p.getByTestId('memory-status').getAttribute('data-active'), 'false')
@@ -487,6 +521,149 @@ app.on('window-all-closed', () => app.quit())
     // o link foca a seção Subagentes da aba Memória (aberta)
     await panel().locator('[data-collapse-id="memory-subagents"][data-open]').waitFor()
   })
+
+  await step('aba Tools: Skills recolhível com resumo', async () => {
+    await panel().getByRole('tab', { name: 'Tools' }).click()
+    const p = panel()
+    const head = p.getByTestId('collapse-skills')
+    if ((await head.getAttribute('aria-expanded')) === 'true') await head.click()
+    assert.equal(await p.getByTestId('skills-panel').count(), 0, 'fechada: conteúdo desmontado')
+    const sum = p.locator('[data-collapse-id="skills"]').getByTestId('collapse-summary')
+    assert.match(await sum.innerText(), /^(desligadas|ligadas · .+)$/)
+    await elementShot(
+      page,
+      p.locator('[data-collapse-id="skills"]'),
+      join(SHOTS, '09b-skills-fechada.png')
+    )
+    // teclado: Enter abre, Espaço fecha
+    await head.focus()
+    await page.keyboard.press('Enter')
+    await p.getByTestId('skills-panel').waitFor()
+    assert.equal(await head.getAttribute('aria-expanded'), 'true')
+    await page.keyboard.press('Space')
+    await p.getByTestId('skills-panel').waitFor({ state: 'detached' })
+    // o link "Skills" dos subagentes abre a seção e a sub "Ajustes das skills"
+    await expand(p, 'subagents')
+    await p
+      .getByTestId('subagent-skills')
+      .getByRole('button', { name: /Skills/ })
+      .click()
+    await p.locator('[data-collapse-id="skills"][data-open]').waitFor()
+    await p.locator('[data-collapse-id="skills-details"][data-open]').waitFor()
+    await p.getByRole('switch', { name: 'Skills nos subagentes' }).waitFor()
+    await head.click()
+    await p.getByTestId('collapse-subagents').click()
+  })
+
+  await step('painel: abas só com ícone (rótulo da selecionada; o hover troca)', async () => {
+    const p = panel()
+    await p.getByRole('tab', { name: 'Memória' }).click()
+    const tabs = p.getByRole('tab')
+    assert.equal(await tabs.count(), 6)
+    // nome acessível = rótulo, mesmo sem o texto à vista
+    for (const name of ['Modelo', 'Chat', 'Tools', 'Memória', 'Voz', 'Arquivos'])
+      assert.equal(await p.getByRole('tab', { name, exact: true }).count(), 1, name)
+    const labelW = (name: string): Promise<number> =>
+      p
+        .getByRole('tab', { name, exact: true })
+        .evaluate((b) => (b.lastElementChild as HTMLElement).getBoundingClientRect().width)
+    const shownTabs = async (): Promise<string[]> =>
+      (await p
+        .locator('[role="tab"][data-label]')
+        .evaluateAll((els) => els.map((e) => e.getAttribute('aria-label') ?? ''))) as string[]
+    await page.mouse.move(400, 400)
+    await page.waitForTimeout(400)
+    assert.deepEqual(await shownTabs(), ['Memória'])
+    assert.ok((await labelW('Memória')) > 20, 'rótulo da selecionada à vista')
+    assert.ok((await labelW('Tools')) < 1, 'demais só ícone')
+    const bar = p.getByRole('tablist')
+    const before = await bar.boundingBox()
+    const req = await p.getByRole('button', { name: 'Ver request' }).boundingBox()
+    await elementShot(page, p.locator('div.h-11').first(), join(SHOTS, '09c-abas-idle.png'))
+    // hover em outra aba: o rótulo dela abre e o da selecionada recolhe; a barra não muda
+    await p.getByRole('tab', { name: 'Tools', exact: true }).hover()
+    await page.waitForTimeout(400)
+    assert.deepEqual(await shownTabs(), ['Tools'])
+    assert.ok((await labelW('Tools')) > 20)
+    assert.ok((await labelW('Memória')) < 1)
+    assert.deepEqual(await bar.boundingBox(), before, 'barra com a mesma largura')
+    assert.deepEqual(await p.getByRole('button', { name: 'Ver request' }).boundingBox(), req)
+    assert.equal(
+      await p.getByRole('tab', { name: 'Memória' }).getAttribute('aria-selected'),
+      'true',
+      'o hover não troca a aba'
+    )
+    await elementShot(page, p.locator('div.h-11').first(), join(SHOTS, '09d-abas-hover.png'))
+    // transição suave (~200 ms); com prefers-reduced-motion, nenhuma
+    const anim = (): Promise<string> =>
+      p.getByRole('tab', { name: 'Tools', exact: true }).evaluate((b) => {
+        const cs = getComputedStyle(b.lastElementChild as Element)
+        return `${cs.transitionProperty} ${cs.transitionDuration}`
+      })
+    assert.match(await anim(), /^grid-template-columns, opacity 0\.2s/)
+    await page.emulateMedia({ reducedMotion: 'reduce' })
+    assert.match(await anim(), /^none /)
+    await page.emulateMedia({ reducedMotion: null })
+    await page.mouse.move(400, 400)
+    await page.waitForTimeout(400)
+    assert.deepEqual(await shownTabs(), ['Memória'])
+  })
+
+  await step(
+    'painel: largura pelo divisor (arrastar, teclado, duplo clique, lembrada)',
+    async () => {
+      await page.evaluate(() => localStorage.removeItem('clearchat.panel.width'))
+      await page.reload()
+      await page.waitForLoadState('domcontentloaded')
+      await openPanelTab('Planejamento do TCC', 'Tools')
+      const p = panel()
+      const split = p.getByTestId('panel-splitter')
+      const width = async (): Promise<number> => Math.round((await p.boundingBox())!.width)
+      assert.equal(await width(), 384, 'padrão')
+      assert.equal(await split.getAttribute('aria-label'), 'Redimensionar painel lateral')
+      assert.equal(await split.getAttribute('aria-valuenow'), '384')
+      // arrastar para a esquerda alarga
+      const box = (await split.boundingBox())!
+      await page.mouse.move(box.x + box.width / 2, box.y + 200)
+      await page.mouse.down()
+      await page.mouse.move(box.x + box.width / 2 - 60, box.y + 200, { steps: 4 })
+      await page.mouse.move(box.x + box.width / 2 - 116, box.y + 200, { steps: 4 })
+      await page.mouse.up()
+      assert.equal(await width(), 500)
+      assert.equal(await page.evaluate(() => localStorage.getItem('clearchat.panel.width')), '500')
+      await shot('09e-painel-largo')
+      // teclado: → estreita 16 (Shift 64), End = mínimo, Home = máximo (o chat mantém 380 px)
+      await split.focus()
+      await page.keyboard.press('ArrowRight')
+      assert.equal(await width(), 484)
+      await page.keyboard.press('Shift+ArrowLeft')
+      assert.equal(await width(), 548)
+      await page.keyboard.press('End')
+      assert.equal(await width(), 320)
+      await page.keyboard.press('Home')
+      const max = Number(await split.getAttribute('aria-valuemax'))
+      const row = await page.evaluate(() => {
+        const aside = document.querySelector('[data-testid="right-panel"]')!
+        return aside.parentElement!.getBoundingClientRect().width
+      })
+      assert.equal(max, Math.min(720, Math.floor(row - 380)))
+      assert.equal(await width(), max)
+      // lembrada após recarregar
+      await page.keyboard.press('End')
+      await page.keyboard.press('Shift+ArrowLeft')
+      await page.reload()
+      await page.waitForLoadState('domcontentloaded')
+      await openPanelTab('Planejamento do TCC', 'Tools')
+      assert.equal(await width(), 384)
+      assert.equal(await page.evaluate(() => localStorage.getItem('clearchat.panel.width')), '384')
+      // duplo clique volta ao padrão
+      await split.focus()
+      await page.keyboard.press('Shift+ArrowLeft')
+      assert.equal(await width(), 448)
+      await split.dblclick()
+      assert.equal(await width(), 384)
+    }
+  )
 
   await step('ajuda (?) das opções: descrição no tooltip, não no painel', async () => {
     await panel().getByRole('tab', { name: 'Tools' }).click()
@@ -675,12 +852,20 @@ app.on('window-all-closed', () => app.quit())
   })
 
   await step('editor de personas: seção de memória', async () => {
+    await resetCollapse()
     await page.getByRole('button', { name: /^Configurações/ }).click()
     await settings().getByRole('button', { name: 'Personas', exact: true }).click()
     const row = settings().getByTestId('preset-row').filter({ hasText: 'Assistente pessoal' })
     await row.hover()
     await row.getByRole('button', { name: /Editar/ }).click()
-    await settings().getByTestId('preset-editor').getByRole('tab', { name: 'Memória' }).click()
+    const ed = settings().getByTestId('preset-editor')
+    // o editor reaproveita as seções do painel: tudo recolhido por padrão também
+    for (const tab of ['Modelo', 'Chat', 'Tools', 'Voz', 'Memória']) {
+      await ed.getByRole('tab', { name: tab }).click()
+      await ed.locator('[data-collapse-id]').first().waitFor()
+      assert.equal(await ed.locator('[data-collapse-id][data-open]').count(), 0, tab)
+    }
+    await ed.getByRole('tab', { name: 'Memória' }).click()
     const sec = settings().getByTestId('preset-memory')
     await sec.waitFor()
     await expand(sec, 'memory-collections')

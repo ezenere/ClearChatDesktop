@@ -600,7 +600,7 @@ function IntervalField(): React.JSX.Element {
   }
 
   return (
-    <section className="border-t border-border pt-4">
+    <section className="settings-section settings-divided">
       <Label
         help={
           <>

@@ -263,7 +263,11 @@ function Home({
             const Icon = CATEGORY_ICON[cat]
             const list = sharedCollections(cols, cat)
             return (
-              <section key={cat} data-testid={`memory-settings-cat-${cat}`}>
+              <section
+                key={cat}
+                data-testid={`memory-settings-cat-${cat}`}
+                className="settings-section"
+              >
                 <div className="mb-1.5 flex items-center gap-2 border-b border-border/50 pb-1.5">
                   <Icon className="size-3.5 text-muted" strokeWidth={1.75} />
                   <span className="text-[13px] font-medium text-fg/90">

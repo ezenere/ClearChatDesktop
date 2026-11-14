@@ -292,6 +292,14 @@ async function panelTab(name: string): Promise<void> {
   await panel().getByRole('tab', { name, exact: true }).click()
 }
 
+/** Abre a seção recolhível `id` (todas começam fechadas; o aberto fica lembrado). */
+async function expand(id: string, scope = panel()): Promise<void> {
+  const btn = scope.getByTestId(`collapse-${id}`)
+  await btn.scrollIntoViewIfNeeded()
+  if ((await btn.getAttribute('aria-expanded')) !== 'true') await btn.click()
+  await scope.locator(`[data-collapse-id="${id}"][data-open]`).waitFor()
+}
+
 /**
  * Abre o (?) de "Enviar tools compactadas" (o modo de envio fica lá dentro, não visível o tempo
  * todo) e devolve o elemento `tool-search-mode` dentro do tooltip.
@@ -383,6 +391,7 @@ async function main(): Promise<void> {
     'aba Tools: "Enviar tools compactadas" ligado; versão local com o motivo e o aviso; o </> mostra o prompt fixo e a tool_search',
     async () => {
       await panelTab('Tools')
+      await expand('tools-list')
       const rowEl = panel().getByTestId('tools-compact-row')
       await rowEl.waitFor()
       const sw = rowEl.getByRole('switch', { name: 'Enviar tools compactadas' })
@@ -566,6 +575,7 @@ async function main(): Promise<void> {
       await r.getByRole('button', { name: 'Editar' }).click()
       const ed = dlg.getByTestId('preset-editor')
       await ed.getByRole('tab', { name: 'Tools' }).click()
+      await expand('tools-list', ed)
       const sw = ed.getByRole('switch', { name: 'Enviar tools compactadas' })
       assert((await sw.getAttribute('aria-checked')) === 'true', 'persona: ligado (Novos chats)')
       await ed.getByTestId('tool-full-shell').click()
@@ -586,6 +596,7 @@ async function main(): Promise<void> {
       }, 'chat segue a persona')
       assert(JSON.stringify(c.config.overrides) === '{}', 'continua herdando')
       await panelTab('Tools')
+      await expand('tools-list')
       const csw = panel().getByRole('switch', { name: 'Enviar tools compactadas' })
       assert((await csw.getAttribute('aria-checked')) === 'false', 'painel mostra o herdado')
       const req = await preview()
@@ -603,6 +614,7 @@ async function main(): Promise<void> {
     'chamada de voz: a lista de tools próprias tem o </> com o que vai (compacta)',
     async () => {
       await panelTab('Voz')
+      await expand('voice-call-chat')
       const tsw = panel().getByRole('switch', { name: 'Tools próprias na chamada' })
       await tsw.scrollIntoViewIfNeeded()
       await tsw.click()
@@ -642,6 +654,7 @@ async function main(): Promise<void> {
         .click()
       await page.getByText('Pronto.').first().waitFor({ timeout: 20_000 })
       await panelTab('Tools')
+      await expand('tools-list')
       const rowEl = panel().getByTestId('tools-compact-row')
       await rowEl.scrollIntoViewIfNeeded()
       await waitFor(

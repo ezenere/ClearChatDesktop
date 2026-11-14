@@ -107,14 +107,12 @@ function Availability({
 export function VoiceChoiceSections({
   cfg,
   patch,
-  scope = 'chat',
-  defaultOpen = false
+  scope = 'chat'
 }: {
   cfg: Partial<ChatConfig>
   patch: (p: Partial<ChatConfig>) => void
   /** Nível editado: o chat (herda da persona de origem) ou a persona (herda do dispositivo). */
   scope?: 'chat' | 'persona'
-  defaultOpen?: boolean
 }): React.JSX.Element | null {
   const voiceApi = api.voice
   const voice: VoiceCallConfig = normalizeVoiceCallConfig(cfg.voice ?? null)
@@ -180,7 +178,6 @@ export function VoiceChoiceSections({
         r={res?.tts ?? null}
         where={where}
         scope={scope}
-        defaultOpen={defaultOpen}
         signature={signature}
         onChange={(tts) => set({ tts })}
       />
@@ -197,7 +194,6 @@ export function VoiceChoiceSections({
         r={res?.stt ?? null}
         where={where}
         scope={scope}
-        defaultOpen={defaultOpen}
         onChange={(stt) => set({ stt })}
       />
     </>
@@ -218,7 +214,6 @@ interface ChoiceProps<C, S> {
   r: VoiceResolution<unknown, unknown> | null
   where: string
   scope: 'chat' | 'persona'
-  defaultOpen: boolean
   /** Assinatura de app desta persona/chat (prévias/clipes da fala — headers de atribuição). */
   signature?: unknown
   onChange: (c: C | null) => void
@@ -246,7 +241,6 @@ function TtsChoiceSection(p: ChoiceProps<VoiceTtsChoice, TtsSettings>): React.JS
       id={`voice-tts-${p.scope}`}
       title="Fala"
       section="voice-tts"
-      defaultOpen={p.defaultOpen}
       summary={{
         text: own ? 'voz própria' : inherited ? 'da persona' : 'padrão do dispositivo',
         changed: !!own
@@ -350,7 +344,6 @@ function SttChoiceSection(
       id={`voice-stt-${p.scope}`}
       title="Transcrição"
       section="voice-stt"
-      defaultOpen={p.defaultOpen}
       summary={{
         text: own ? 'própria' : inherited ? 'da persona' : 'padrão do dispositivo',
         changed: !!own

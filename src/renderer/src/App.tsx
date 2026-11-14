@@ -7,7 +7,7 @@ import { Onboarding } from './components/Onboarding'
 import { RequestPreviewModal } from './components/panel/RequestPreview'
 import { RightPanel } from './components/panel/RightPanel'
 import { FileViewerPane } from './components/viewer/FileViewerPane'
-import { CHAT_MIN_WIDTH, useWidth } from './components/viewer/viewerLayout'
+import { CHAT_MIN_WIDTH, useWidth, VIEWER_MIN_WIDTH } from './components/viewer/viewerLayout'
 import { SettingsModal } from './components/SettingsModal'
 import { Sidebar } from './components/Sidebar'
 import { TopBar } from './components/TopBar'
@@ -16,6 +16,7 @@ import { SyncPrompts } from './components/sync/ChatHost'
 import { Spinner } from './components/ui/controls'
 import { TooltipProvider } from './components/ui/Tooltip'
 import { cn } from './lib/format'
+import { clampPanelWidth, panelMaxWidth } from './lib/panelLayout'
 import { currentChat, useStore } from './store'
 
 function Toasts(): React.JSX.Element {
@@ -84,7 +85,14 @@ function Main(): React.JSX.Element {
   // painel de arquivo do chat aberto: [LISTA | CHAT | ARQUIVO | CONFIGS]
   const activeFile = useStore((s) => (s.view.kind === 'chat' ? s.viewer[s.view.chatId] : undefined))
   const [rowRef, rowWidth] = useWidth<HTMLDivElement>()
-  const viewerMax = rowWidth - (panelOpen && !narrow ? 384 : 0) - CHAT_MIN_WIDTH
+  // painel lateral redimensionável: em coluna deixa o mínimo do chat (e do painel de arquivo)
+  const panelWidth = useStore((s) => s.panelWidth)
+  const panelMax = panelMaxWidth(rowWidth, {
+    overlay: narrow,
+    reserved: CHAT_MIN_WIDTH + (activeFile ? VIEWER_MIN_WIDTH : 0)
+  })
+  const panelShown = clampPanelWidth(panelWidth, panelMax)
+  const viewerMax = rowWidth - (panelOpen && !narrow ? panelShown : 0) - CHAT_MIN_WIDTH
 
   if (view.kind === 'chat' && chat) {
     return (
@@ -99,7 +107,9 @@ function Main(): React.JSX.Element {
               onClick={() => setPanel(false)}
             />
           )}
-          {panelOpen && <RightPanel chat={chat} overlay={narrow} />}
+          {panelOpen && (
+            <RightPanel chat={chat} overlay={narrow} width={panelShown} maxWidth={panelMax} />
+          )}
         </div>
       </div>
     )

@@ -17,7 +17,7 @@ export function ModelPill({
   providerId: string
   model: string
 }): React.JSX.Element {
-  const setPanel = useStore((s) => s.setPanel)
+  const focusConfig = useStore((s) => s.focusConfig)
   const provider = useStore((s) => s.providers.find((p) => p.id === providerId))
   const level = useBarLevel('model-pill')
   const [vendor, name] = model.includes('/')
@@ -48,7 +48,8 @@ export function ModelPill({
         aria-label={`Modelo: ${provider?.name ?? 'provedor removido'} · ${model || 'sem modelo'}`}
         onClick={(e) => {
           e.stopPropagation()
-          setPanel(true, 'model')
+          // abre a aba Modelo já com a seção do modelo aberta (as seções começam recolhidas)
+          focusConfig('modelo')
         }}
         className={cn(
           'no-drag flex h-7 min-w-0 shrink-0 items-center gap-1.5 rounded-lg text-[11.5px] whitespace-nowrap text-subtle transition-colors hover:bg-hover hover:text-fg',

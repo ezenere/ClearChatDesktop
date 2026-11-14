@@ -28,8 +28,7 @@ import {
   useEffect,
   useRef,
   useState,
-  type KeyboardEvent as ReactKeyboardEvent,
-  type PointerEvent as ReactPointerEvent
+  type KeyboardEvent as ReactKeyboardEvent
 } from 'react'
 import type { Chat } from '@shared/types'
 import type { ViewerText } from '@shared/ipc'
@@ -45,6 +44,7 @@ import { errorMessage } from '../../lib/api'
 import { useStore, VIEWER_DEFAULT_WIDTH, type ActiveFile } from '../../store'
 import { useHostInfo } from '../sync/hooks'
 import { Button, IconButton, Spinner, Switch } from '../ui/controls'
+import { Splitter } from '../ui/Splitter'
 import { Tip } from '../ui/Tooltip'
 import { Markdown } from '../chat/Markdown'
 import { contributeCtx } from '../../lib/contextMenu'
@@ -53,68 +53,6 @@ import { stepZoom, VIEWER_MIN_WIDTH } from './viewerLayout'
 
 /** null = ajustar (imagem/PDF: cabe no painel); número = escala (1 = 100%). */
 type Zoom = number | null
-
-// ---------------- divisor ----------------
-
-function Splitter({
-  width,
-  min,
-  max,
-  onChange
-}: {
-  width: number
-  min: number
-  max: number
-  onChange: (w: number, persist: boolean) => void
-}): React.JSX.Element {
-  const drag = useRef<{ x: number; w: number } | null>(null)
-  const clamp = (w: number): number => Math.round(Math.min(max, Math.max(min, w)))
-  const onKey = (e: ReactKeyboardEvent): void => {
-    const step = e.shiftKey ? 64 : 16
-    let next: number | null = null
-    // o painel fica à direita do divisor: ← alarga, → estreita
-    if (e.key === 'ArrowLeft') next = width + step
-    else if (e.key === 'ArrowRight') next = width - step
-    else if (e.key === 'Home') next = max
-    else if (e.key === 'End') next = min
-    if (next == null) return
-    e.preventDefault()
-    onChange(clamp(next), true)
-  }
-  return (
-    <div
-      role="separator"
-      aria-orientation="vertical"
-      aria-label="Redimensionar painel de arquivo"
-      aria-valuenow={Math.round(width)}
-      aria-valuemin={min}
-      aria-valuemax={max}
-      tabIndex={0}
-      data-testid="viewer-splitter"
-      onKeyDown={onKey}
-      onDoubleClick={() => onChange(clamp(VIEWER_DEFAULT_WIDTH), true)}
-      onPointerDown={(e: ReactPointerEvent<HTMLDivElement>) => {
-        if (e.button !== 0) return
-        e.preventDefault()
-        e.currentTarget.setPointerCapture(e.pointerId)
-        drag.current = { x: e.clientX, w: width }
-      }}
-      onPointerMove={(e) => {
-        if (!drag.current) return
-        onChange(clamp(drag.current.w + (drag.current.x - e.clientX)), false)
-      }}
-      onPointerUp={(e) => {
-        if (!drag.current) return
-        drag.current = null
-        e.currentTarget.releasePointerCapture(e.pointerId)
-        onChange(clamp(width), true)
-      }}
-      className="group/split absolute inset-y-0 -left-1 z-10 flex w-2 cursor-col-resize justify-center outline-none"
-    >
-      <span className="h-full w-px bg-transparent transition-colors group-hover/split:bg-accent/50 group-focus-visible/split:bg-accent" />
-    </div>
-  )
-}
 
 // ---------------- conteúdo ----------------
 
@@ -735,7 +673,15 @@ export function FileViewerPane({
       style={{ width: shown }}
       className="relative flex shrink-0 animate-fade-in flex-col border-l border-border bg-surface"
     >
-      <Splitter width={shown} min={VIEWER_MIN_WIDTH} max={max} onChange={setWidth} />
+      <Splitter
+        width={shown}
+        min={VIEWER_MIN_WIDTH}
+        max={max}
+        defaultWidth={VIEWER_DEFAULT_WIDTH}
+        label="Redimensionar painel de arquivo"
+        testId="viewer-splitter"
+        onChange={setWidth}
+      />
       <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border/70 pr-1.5 pl-3">
         <Icon className={cn('size-4 shrink-0', tone)} />
         <Tip label={resource?.info.path ?? file.path} side="bottom">
