@@ -4,7 +4,8 @@
 // (editor de personas, chat sem persona, chat antigo ainda não migrado) não há contexto e nada
 // aparece.
 import { RotateCcw } from 'lucide-react'
-import { useMemo, type ReactNode } from 'react'
+import { useCallback, useMemo, type ReactNode } from 'react'
+import { mcpLabel } from '@shared/mcp'
 import {
   inheritanceActive,
   inheritedUnitValue,
@@ -103,7 +104,16 @@ export function InheritMark({
   className?: string
 }): React.JSX.Element | null {
   const ctx = useInherit()
+  const servers = useStore((s) => s.mcp)
+  const mcpName = useCallback(
+    (id: string): string | null => {
+      const v = servers?.find((x) => x.server.id === id)
+      return v ? mcpLabel(v.server) : null
+    },
+    [servers]
+  )
   if (!ctx) return null
+  const nameOf = (u: string): string => unitLabel(u, mcpName)
   const own = units.filter(ctx.isOwn)
   if (!own.length) return null
   const one = own.length === 1 ? own[0] : null
@@ -119,7 +129,7 @@ export function InheritMark({
           Herdado: {ctx.inheritedText(one)} — {ctx.source(one)}
         </span>
       ) : (
-        <span className="mt-0.5 block text-subtle">{own.map(unitLabel).join(', ')}</span>
+        <span className="mt-0.5 block text-subtle">{own.map(nameOf).join(', ')}</span>
       )}
     </span>
   )
@@ -131,7 +141,7 @@ export function InheritMark({
         data-units={own.join(' ')}
         aria-label={
           one
-            ? `Voltar a herdar da persona “${ctx.personaName}” (${unitLabel(one)})`
+            ? `Voltar a herdar da persona “${ctx.personaName}” (${nameOf(one)})`
             : `Voltar a herdar da persona “${ctx.personaName}” (${own.length} campos)`
         }
         onClick={(e) => {

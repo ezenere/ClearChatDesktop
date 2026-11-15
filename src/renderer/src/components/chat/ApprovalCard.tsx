@@ -36,6 +36,8 @@ import { ListEntryEditor, SmartMissingNote } from '../approvals/ApprovalControls
 import { Button } from '../ui/controls'
 import { C } from '../ui/Tooltip'
 import { SmartApproveLine } from './SmartApprove'
+import { isMcpToolName } from '@shared/mcp'
+import { McpApprovalPrompt } from '../mcp/McpCards'
 
 type Choice = { allow: boolean; pattern?: string }
 
@@ -52,6 +54,9 @@ export function ApprovalPrompt({
   const approve = useStore((s) => s.approve)
   const focusConfig = useStore((s) => s.focusConfig)
   const who = fromSubagent ? 'o subagente' : 'o agente'
+  // conector (MCP): conector · tool, o que o servidor declara e os argumentos formatados
+  if (isMcpToolName(request.toolName))
+    return <McpApprovalPrompt request={request} fromSubagent={fromSubagent} />
   if (request.check && isListItem(request.check.item))
     return (
       <ListsPrompt

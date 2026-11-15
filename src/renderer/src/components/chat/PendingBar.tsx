@@ -11,6 +11,7 @@ import { cn, sessionLabel } from '../../lib/format'
 import { useStore, type SubFailure } from '../../store'
 import { C, Tip } from '../ui/Tooltip'
 import { ApprovalWithDetail } from './ToolCard'
+import { toolDisplayName } from '../../lib/mcp'
 
 export function PendingBar({
   session,
@@ -130,7 +131,7 @@ function ApprovalQueue({
           {who}
         </span>
         <span className="shrink-0 text-faint">·</span>
-        <C>{cur.toolName}</C>
+        <C>{toolDisplayName(cur.toolName)}</C>
         <span className="flex-1" />
         {queue.length > 1 && (
           <span className="flex shrink-0 items-center gap-0.5">

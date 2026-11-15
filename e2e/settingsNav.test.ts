@@ -20,7 +20,7 @@ test('grupos, ordem e rótulos (todas as abas, uma vez cada)', () => {
     SETTINGS_NAV.map((g) => [g.label, g.items.map((i) => i.label)]),
     [
       ['Geral', ['Novos chats', 'Personas', 'Áudio']],
-      ['Agente', ['Aprovações', 'Memórias', 'Skills', 'Pesquisa na web']],
+      ['Agente', ['Aprovações', 'Memórias', 'Skills', 'Conectores', 'Pesquisa na web']],
       ['Conexões', ['Provedores', 'Conta']]
     ]
   )
@@ -30,6 +30,7 @@ test('grupos, ordem e rótulos (todas as abas, uma vez cada)', () => {
     'approvals',
     'audio',
     'defaults',
+    'mcp',
     'memory',
     'presets',
     'providers',
@@ -37,12 +38,14 @@ test('grupos, ordem e rótulos (todas as abas, uma vez cada)', () => {
     'web'
   ])
   assert.equal(settingsNavItem('audio').label, 'Áudio')
+  // título da página quando difere do rótulo
+  assert.equal(settingsNavItem('mcp').title, 'Conectores · Servidores MCP')
   for (const i of SETTINGS_NAV_ITEMS) assert(i.keywords.length >= 5, `${i.id} sem palavras-chave`)
 })
 
 test('busca vazia: tudo, sem "melhor"', () => {
   const r = filterSettingsNav('   ')
-  assert.equal(r.total, 9)
+  assert.equal(r.total, 10)
   assert.equal(r.best, null)
   assert.equal(r.groups.length, 3)
 })
@@ -63,6 +66,11 @@ test('palavras-chave levam à aba e aparecem como dica', () => {
   assert.equal(filterSettingsNav('tavily').best?.id, 'web')
   assert.equal(filterSettingsNav('sincronização').best?.id, 'account')
   assert.equal(filterSettingsNav('título automático').best?.id, 'defaults')
+  // conectores (MCP)
+  assert.deepEqual(ids('mcp'), ['mcp'])
+  assert.deepEqual(ids('oauth'), ['mcp'])
+  assert.equal(filterSettingsNav('stdio').best?.id, 'mcp')
+  assert.equal(filterSettingsNav('conector').best?.id, 'mcp')
 })
 
 test('grupos sem resultado somem; nada → total 0', () => {

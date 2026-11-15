@@ -48,7 +48,8 @@ const KEY_LABELS: Record<string, string> = {
   confineToRoot: 'Confinar ferramentas à raiz',
   sandboxBash: 'Shell em sandbox',
   memory: 'Memória',
-  skills: 'Skills'
+  skills: 'Skills',
+  mcpSubagents: 'Conectores nos subagentes'
 }
 
 const PARAM_LABELS: Record<string, string> = {
@@ -56,10 +57,14 @@ const PARAM_LABELS: Record<string, string> = {
   extraBody: 'Body extra (JSON)'
 }
 
-/** Nome legível de uma unidade (`params.temperature` → "temperature"). */
-export function unitLabel(unit: string): string {
+/**
+ * Nome legível de uma unidade (`params.temperature` → "temperature"). `mcpName` resolve o id de um
+ * conector (`mcpServers.<id>`) para o rótulo do cadastro.
+ */
+export function unitLabel(unit: string, mcpName?: (id: string) => string | null): string {
   const key = keyOfUnit(unit)
   const sub = unit.slice(key.length + 1)
+  if (key === 'mcpServers') return `Conector ${mcpName?.(sub) ?? sub}`
   if (key === 'params') return PARAM_LABELS[sub] ?? sub
   if (key === 'enabledTools') return `Tool ${toolLabel(sub)}`
   if (key === 'toolsFull') return `Tool ${toolLabel(sub)} vai completa`
@@ -99,6 +104,18 @@ export function unitValueText(
   }
   if (key === 'enabledTools') return onOff(value, true)
   if (key === 'toolsFull') return value ? 'completa' : 'compacta'
+  if (key === 'mcpServers') {
+    const c = (value ?? null) as { on?: boolean; off?: unknown[]; instructions?: boolean } | null
+    if (!c?.on) return 'desligado'
+    const off = Array.isArray(c.off) ? c.off.length : 0
+    return [
+      'ligado',
+      off && `${off} ${off === 1 ? 'tool desligada' : 'tools desligadas'}`,
+      c.instructions && 'com instruções'
+    ]
+      .filter(Boolean)
+      .join(' · ')
+  }
   if (key === 'approvalModes')
     return value
       ? modeLabel(sub as ApprovalItem, value as ApprovalMode)

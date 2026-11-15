@@ -4,6 +4,7 @@ import { useStore } from '../store'
 import { Tip } from './ui/Tooltip'
 import { barAttrs, BarLevelsContext, useBarCollapse, useBarLevel } from '../lib/useBarCollapse'
 import { cn } from '../lib/format'
+import { toolDisplayName } from '../lib/mcp'
 
 /**
  * Aprovações pendentes em OUTROS chats (as do chat aberto ficam no card da conversa ou na fila acima
@@ -28,8 +29,9 @@ function ApprovalIndicator(): React.JSX.Element | null {
     <Tip
       label={
         <span>
-          <span className="text-warning">{first.toolName}</span> aguardando aprovação em “
-          {chat?.title ?? 'chat'}”{nChats > 1 ? ` (e em mais ${nChats - 1} chat(s))` : ''}
+          <span className="text-warning">{toolDisplayName(first.toolName)}</span> aguardando
+          aprovação em “{chat?.title ?? 'chat'}”
+          {nChats > 1 ? ` (e em mais ${nChats - 1} chat(s))` : ''}
         </span>
       }
       side="bottom"

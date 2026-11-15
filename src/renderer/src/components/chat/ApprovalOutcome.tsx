@@ -5,7 +5,7 @@
 //   (Esc / clique fora desafixa).
 // - NEGADA/BLOQUEADA: faixa compacta de uma linha, visível (por que não rodou), que expande ao clicar.
 import * as RT from '@radix-ui/react-tooltip'
-import { Ban, Check, ChevronRight, Lock, ShieldCheck, ShieldX } from 'lucide-react'
+import { Ban, Check, ChevronRight, Lock, Plug, ShieldCheck, ShieldX } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 import { categoryLabel } from '@shared/smartApprove'
 import type { MessageMeta } from '@shared/types'
@@ -25,6 +25,19 @@ const ITEM_BY: Record<OutcomeItem['by'], { text: string; cls: string }> = {
   edits: { text: 'aceitar edições na raiz', cls: 'text-success/90' },
   denied: { text: 'você negou', cls: 'text-danger/90' },
   blocked: { text: 'blacklist', cls: 'text-danger/90' }
+}
+
+/** Item do registro quando não é um item das Aprovações (tool de conector → "Conector"). */
+function ItemTag({ meta }: { meta: MessageMeta }): React.JSX.Element | null {
+  if (meta.approval?.item !== 'mcp') return null
+  return (
+    <span
+      data-testid="approval-item-mcp"
+      className="inline-flex shrink-0 items-center gap-1 rounded bg-hover px-1.5 py-px text-[10.5px] font-normal text-muted"
+    >
+      <Plug className="size-2.5" /> Conector
+    </span>
+  )
 }
 
 /** Detalhes (tooltip do selo ou faixa expandida): título, itens com veredito, juiz. */
@@ -51,6 +64,7 @@ export function ApprovalDetails({
         >
           {approved ? <ShieldCheck className="size-3.5" /> : <ShieldX className="size-3.5" />}
           {outcome.title}
+          <ItemTag meta={meta} />
         </div>
       )}
       {outcome.items.length > 0 && (
@@ -208,6 +222,7 @@ export function DeniedStrip({
             <ShieldX className="size-3.5 shrink-0 text-danger/90" />
           )}
           <span className="shrink-0 font-medium text-danger/90">{outcome.title}</span>
+          <ItemTag meta={meta} />
           {outcome.deniedBy === 'smart' && sa?.category && (
             <span
               data-testid="strip-category"

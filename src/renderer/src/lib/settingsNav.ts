@@ -14,6 +14,8 @@ export interface SettingsNavItem {
   id: SettingsTab
   /** Rótulo (e nome acessível do botão — os testes e2e clicam por ele, `exact: true`). */
   label: string
+  /** Título da página quando difere do rótulo (ex.: "Conectores · Servidores MCP"). */
+  title?: string
   /** Termos das configurações dentro da aba (minúsculas; acentos são ignorados na busca). */
   keywords: string[]
   /** Sub-telas da aba com termos próprios (casar um deles abre a sub-tela). */
@@ -186,6 +188,27 @@ export const SETTINGS_NAV: SettingsNavGroup[] = [
           'reescanear',
           'precedência',
           'abrir pasta'
+        ]
+      },
+      {
+        id: 'mcp',
+        label: 'Conectores',
+        title: 'Conectores · Servidores MCP',
+        keywords: [
+          'mcp',
+          'model context protocol',
+          'conector',
+          'servidor mcp',
+          'oauth',
+          'stdio',
+          'http',
+          'ferramentas externas',
+          'importar',
+          'claude desktop',
+          'claude code',
+          'cursor',
+          'ativar neste computador',
+          'formulário'
         ]
       },
       {

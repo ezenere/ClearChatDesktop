@@ -7,6 +7,7 @@ import {
   Globe,
   Lightbulb,
   MessageSquarePlus,
+  Plug,
   Search,
   Server,
   ShieldCheck,
@@ -27,6 +28,7 @@ const ICONS: Record<SettingsTab, LucideIcon> = {
   approvals: ShieldCheck,
   memory: BrainCircuit,
   skills: Lightbulb,
+  mcp: Plug,
   web: Globe,
   providers: Server,
   account: CircleUserRound

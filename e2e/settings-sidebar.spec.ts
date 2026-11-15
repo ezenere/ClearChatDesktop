@@ -32,10 +32,14 @@ const ORDER = [
   'Aprovações',
   'Memórias',
   'Skills',
+  'Conectores',
   'Pesquisa na web',
   'Provedores',
   'Conta'
 ]
+
+/** Título da página quando difere do rótulo da barra. */
+const TITLES: Record<string, string> = { Conectores: 'Conectores · Servidores MCP' }
 
 let app: ElectronApplication
 let page: Page
@@ -180,7 +184,7 @@ app.on('window-all-closed', () => app.quit())
       await page.waitForTimeout(150)
       const st = await activeState()
       assert.deepEqual(st.active, [label], `ativo errado em ${label}`)
-      assert.equal(st.title, label)
+      assert.equal(st.title, TITLES[label] ?? label)
     }
     // Áudio é longo: rolar o conteúdo não rola a barra lateral
     await tabBtn('Áudio').click()
@@ -202,7 +206,7 @@ app.on('window-all-closed', () => app.quit())
     await tabBtn('Skills').click()
     const top = await page.getByTestId('settings-content').evaluate((e) => e.scrollTop)
     assert.equal(top, 0, 'troca de aba manteve a rolagem')
-    out.push(`9 abas · Áudio rola ${r.scrolled}px sem mexer na barra`)
+    out.push(`${ORDER.length} abas · Áudio rola ${r.scrolled}px sem mexer na barra`)
     for (const [label, name] of [
       ['Áudio', 'audio'],
       ['Aprovações', 'aprovacoes'],

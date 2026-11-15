@@ -33,6 +33,7 @@ import {
   ScrollText,
   Activity,
   MessageCircleQuestion,
+  Plug,
   WifiOff,
   type LucideIcon
 } from 'lucide-react'
@@ -62,6 +63,8 @@ import { isMemoryTool, memoryToolSummary } from '../../lib/memory'
 import { MEMORY_TOOL_ICONS, MemoryToolBody } from '../memory/MemoryToolCard'
 import { isSkillTool, skillToolSummary } from '../../lib/skills'
 import { SKILL_TOOL_ICONS, SkillToolBody } from '../skills/SkillToolCard'
+import { McpToolBody } from '../mcp/McpCards'
+import { useMcpToolRef } from '../mcp/hooks'
 
 // Partial + string: tools novas (ex.: memória, do contrato do backend) caem no Wrench/no mapa delas.
 const ICONS: Partial<Record<ToolName, LucideIcon>> = {
@@ -384,7 +387,10 @@ export function ToolCard({
   const question = useStore((s) =>
     name === 'ask_user' ? s.questions.find((q) => q.toolCallId === call.id) : undefined
   )
-  const Icon = ICONS[name] ?? Wrench
+  // conector (MCP): `mcp__<servidor>__<tool>` → "Conector <título> · <tool>" pelo cadastro
+  const mcp = useMcpToolRef(call.name)
+  const elicitPending = useStore((s) => !!mcp && s.mcpElicits.some((r) => r.toolCallId === call.id))
+  const Icon = mcp ? Plug : (ICONS[name] ?? Wrench)
   const isDelegate = name === 'delegate_task'
   const resultText =
     result && result.message.role === 'tool' ? toolContentText(result.message.content) : ''
@@ -414,7 +420,7 @@ export function ToolCard({
     ? 'streaming'
     : approval || hosted.length
       ? 'approval'
-      : question && !result
+      : (question || elicitPending) && !result
         ? 'input'
         : run?.judging
           ? 'judging'
@@ -424,10 +430,11 @@ export function ToolCard({
               ? (result.meta.toolStatus ?? 'ok')
               : 'pending'
 
-  const expanded = open || !!approval
+  // o card de aprovação de um conector já mostra os argumentos formatados (não duplica)
+  const expanded = open || (!!approval && !mcp)
   const subId = result?.meta.subSessionId ?? subSession?.id
-  const label = TOOL_LABELS[name] ?? toolLabel(call.name)
-  let sum = summary(call.name, args)
+  const label = mcp ? `Conector ${mcp.serverLabel}` : (TOOL_LABELS[name] ?? toolLabel(call.name))
+  let sum = mcp ? mcp.toolTitle : summary(call.name, args)
   if (targetChat)
     sum = [
       `→ ${targetChat.title || 'Novo chat'}`,
@@ -467,7 +474,8 @@ export function ToolCard({
     <div
       ref={anchorRef}
       data-anchor={anchor}
-      data-testid={isDelegate ? 'delegate-card' : undefined}
+      data-testid={isDelegate ? 'delegate-card' : mcp ? 'mcp-tool-card' : undefined}
+      data-mcp-tool={mcp ? mcp.toolName : undefined}
       className={cn(
         'my-2 overflow-hidden rounded-xl border bg-surface/70 transition-colors',
         approval || hosted.length
@@ -491,11 +499,22 @@ export function ToolCard({
           )}
         />
         <Icon
-          className={cn('size-3.5 shrink-0', isDelegate ? 'text-accent-strong' : 'text-muted')}
+          className={cn(
+            'size-3.5 shrink-0',
+            isDelegate || mcp ? 'text-accent-strong' : 'text-muted'
+          )}
         />
         <span className="shrink-0 text-[12.5px] font-medium text-fg/90">{label}</span>
         {sum && (
-          <span className="min-w-0 flex-1 truncate font-mono text-[11.5px] text-subtle">{sum}</span>
+          <span
+            className={cn(
+              'min-w-0 flex-1 truncate text-[11.5px] text-subtle',
+              // título de tool de conector em texto; nomes/comandos em mono
+              !(mcp && mcp.toolTitle !== mcp.toolName) && 'font-mono'
+            )}
+          >
+            {sum}
+          </span>
         )}
         {!sum && <span className="flex-1" />}
         {shellRel && (
@@ -612,6 +631,10 @@ export function ToolCard({
 
       {isSkillTool(call.name) && !streaming && (
         <SkillToolBody name={call.name} args={args} result={result} resultText={resultText} />
+      )}
+
+      {mcp && !streaming && (
+        <McpToolBody result={result} resultText={resultText} pending={elicitPending && !result} />
       )}
 
       {name === 'process_start' && !streaming && (

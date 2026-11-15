@@ -103,6 +103,7 @@ import {
 } from '../../lib/configSummary'
 import { useMemoryCollections } from '../memory/hooks'
 import { SkillsSection, SubagentSkillsLine } from '../skills/SkillsSection'
+import { McpSection } from '../mcp/McpSection'
 
 export interface CfgProps {
   cfg: ChatConfig
@@ -1170,7 +1171,8 @@ function SpillField({ max }: { max: number }): React.JSX.Element {
 
 /**
  * Aba Tools inteira (painel e editor de persona), da mais usada para a menos, tudo recolhido (com
- * resumo): ferramentas, aprovações, skills, Smart-Approve, subagentes, envio das tools e limites.
+ * resumo): ferramentas, aprovações, skills, conectores, Smart-Approve, subagentes, envio das tools
+ * e limites.
  */
 export function ToolsEditor({
   chatScope,
@@ -1190,6 +1192,7 @@ export function ToolsEditor({
       <ToolsListSection {...props} chatId={chatId} />
       <ChatApprovalSection {...props} chatScope={chatScope} />
       <SkillsSection {...props} chatScope={chatScope} />
+      <McpSection {...props} chatScope={chatScope} chatId={chatId} />
       <SmartApproveSection {...props} chatId={chatId} />
       <SubagentSection {...props} chatScope={chatScope} onOpenMemory={onOpenMemory} />
       <ToolsPromptSection {...props} />

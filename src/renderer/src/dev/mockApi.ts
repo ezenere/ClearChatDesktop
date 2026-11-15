@@ -14,7 +14,16 @@ import {
   type SkillsDiscovery,
   type SkillsSettings
 } from '@shared/skills'
-import { parseMcpImport, type McpServerView } from '@shared/mcp'
+import {
+  mcpCommandText,
+  mcpFormContent,
+  mcpFormFromRequest,
+  normalizeMcpServer,
+  parseMcpImport,
+  validateMcpName,
+  type McpServerView,
+  type McpTransport
+} from '@shared/mcp'
 import type {
   ClearApi,
   TtsClipsView,
@@ -104,6 +113,7 @@ import type {
   AgentEvent,
   ApprovalRequest,
   Chat,
+  McpElicitRequest,
   ModelInfo,
   Preset,
   ProcessInfo,
@@ -1327,6 +1337,172 @@ export function createMockApi(scenario: string): ClearApi {
       }))
     })
   }
+  // Conectores (MCP) — cenário "mcp" (VITE_CLEAR_MOCK=1, ?scenario=mcp): um chat com tools do
+  // conector "playwright" (ok, erro e uma pedindo dados num formulário pendente) e outro com uma
+  // aprovação de tool de conector pendente.
+  const mcpElicits: McpElicitRequest[] = []
+  if (scenario === 'mcp') {
+    const mcpCfg = { ...cfg, mcpServers: { mcp_demo_pw: { on: true } } }
+    chats.unshift(
+      {
+        id: 'cmcp2',
+        title: 'Intranet: relatório semanal',
+        config: mcpCfg,
+        mainSessionId: 'smcp2',
+        createdAt: now - 50_000,
+        updatedAt: now - 20_000
+      },
+      {
+        id: 'cmcp',
+        title: 'Preços com o navegador',
+        config: mcpCfg,
+        mainSessionId: 'smcp',
+        createdAt: now - 90_000,
+        updatedAt: now - 10_000
+      }
+    )
+    const sess = (sid: string, cid: string, status: Session['status']): Session => ({
+      id: sid,
+      chatId: cid,
+      parentSessionId: null,
+      parentToolCallId: null,
+      depth: 0,
+      model: cfg.model,
+      title: 'Principal',
+      task: null,
+      status,
+      createdAt: now - 90_000
+    })
+    sessions.push(sess('smcp', 'cmcp', 'running'), sess('smcp2', 'cmcp2', 'awaiting_approval'))
+    const call = (tid: string, name: string, args: unknown): StoredMessage['message'] => ({
+      role: 'assistant',
+      content: '',
+      tool_calls: [
+        { id: tid, type: 'function', function: { name, arguments: JSON.stringify(args) } }
+      ]
+    })
+    const navArgs = { url: 'https://exemplo.com/precos' }
+    messages.push(
+      msg(
+        'smcp',
+        {
+          role: 'user',
+          content: 'Abra a página de preços do exemplo.com e me diga qual é o plano mais barato.'
+        },
+        {},
+        now - 80_000
+      ),
+      msg('smcp', call('tc_mcp1', 'mcp__playwright__browser_navigate', navArgs), {}, now - 70_000),
+      msg(
+        'smcp',
+        {
+          role: 'tool',
+          tool_call_id: 'tc_mcp1',
+          content:
+            '### Página\n- URL: https://exemplo.com/precos\n- Título: Preços — Exemplo\n\n### Snapshot\n- heading "Planos" [ref=e3]\n- link "Básico — R$ 19/mês" [ref=e7]\n- link "Pro — R$ 49/mês" [ref=e9]'
+        },
+        {
+          toolStatus: 'ok',
+          approval: {
+            item: 'mcp',
+            mode: 'lists',
+            userAllowed: [`mcp__playwright__browser_navigate ${JSON.stringify(navArgs)}`]
+          }
+        },
+        now - 65_000
+      ),
+      msg(
+        'smcp',
+        call('tc_mcp2', 'mcp__playwright__browser_click', { element: 'Plano Pro', ref: 'e12' }),
+        {},
+        now - 60_000
+      ),
+      msg(
+        'smcp',
+        {
+          role: 'tool',
+          tool_call_id: 'tc_mcp2',
+          content:
+            'Erro: Ref e12 not found in the current page snapshot. Try capturing new snapshot.'
+        },
+        { toolStatus: 'error' },
+        now - 58_000
+      ),
+      msg(
+        'smcp',
+        call('tc_mcp3', 'mcp__playwright__browser_take_screenshot', { fullPage: true }),
+        {},
+        now - 30_000
+      ),
+      msg(
+        'smcp2',
+        { role: 'user', content: 'Entre na intranet e baixe o relatório desta semana.' },
+        {},
+        now - 40_000
+      ),
+      msg(
+        'smcp2',
+        call('tc_mcp4', 'mcp__playwright__browser_navigate', {
+          url: 'https://intranet.exemplo.com/relatorios'
+        }),
+        {},
+        now - 30_000
+      )
+    )
+    approvals.push({
+      id: 'a_mcp',
+      chatId: 'cmcp2',
+      sessionId: 'smcp2',
+      toolCallId: 'tc_mcp4',
+      toolName: 'mcp__playwright__browser_navigate' as ApprovalRequest['toolName'],
+      args: { url: 'https://intranet.exemplo.com/relatorios' },
+      createdAt: now
+    })
+    const form = mcpFormFromRequest({
+      message: 'Como salvar a captura de tela?',
+      requestedSchema: {
+        type: 'object',
+        properties: {
+          filename: { type: 'string', title: 'Nome do arquivo', minLength: 3 },
+          format: {
+            type: 'string',
+            title: 'Formato',
+            oneOf: [
+              { const: 'png', title: 'PNG' },
+              { const: 'jpeg', title: 'JPEG' }
+            ],
+            default: 'png'
+          },
+          width: { type: 'integer', title: 'Largura (px)', minimum: 320, maximum: 3840 },
+          fullPage: { type: 'boolean', title: 'Página inteira', default: true },
+          notify: {
+            type: 'string',
+            title: 'Avisar por e-mail',
+            format: 'email',
+            description: 'Opcional — o servidor manda o link quando terminar.'
+          },
+          tags: {
+            type: 'array',
+            title: 'Etiquetas',
+            items: { enum: ['preços', 'concorrência', 'arquivo'] }
+          }
+        },
+        required: ['filename', 'width']
+      }
+    })
+    if (form)
+      mcpElicits.push({
+        id: 'el1',
+        chatId: 'cmcp',
+        sessionId: 'smcp',
+        toolCallId: 'tc_mcp3',
+        serverId: 'mcp_demo_pw',
+        serverLabel: 'Navegador (Playwright)',
+        form,
+        createdAt: now
+      })
+  }
+
   const resolveQuestion = (qid: string, content: string, meta: StoredMessage['meta']): void => {
     const q = questions.find((x) => x.id === qid)
     if (!q) return
@@ -2528,9 +2704,21 @@ export function createMockApi(scenario: string): ClearApi {
                 {
                   name: 'browser_click',
                   description: 'Clica num elemento.',
-                  inputSchema: { type: 'object', properties: { ref: { type: 'string' } } }
+                  inputSchema: { type: 'object', properties: { ref: { type: 'string' } } },
+                  annotations: { destructiveHint: true, openWorldHint: true }
+                },
+                {
+                  name: 'browser_take_screenshot',
+                  title: 'Captura de tela',
+                  description: 'Tira uma captura da página atual (pode pedir o formato).',
+                  inputSchema: {
+                    type: 'object',
+                    properties: { fullPage: { type: 'boolean' } }
+                  },
+                  annotations: { readOnlyHint: true }
                 }
               ],
+              instructions: 'Use browser_snapshot antes de clicar: os refs mudam a cada navegação.',
               server: { name: 'playwright', version: '0.0.41' },
               at: now
             },
@@ -2541,8 +2729,11 @@ export function createMockApi(scenario: string): ClearApi {
             state: 'ready',
             era: 'legacy',
             protocolVersion: '2025-06-18',
-            toolCount: 3,
-            log: [],
+            toolCount: 4,
+            log: [
+              '[stderr] Playwright MCP 0.0.41 em stdio',
+              'conectado · protocolo 2025-06-18 · 4 tools'
+            ],
             connectedAt: now
           },
           local: { activated: 'npx -y @playwright/mcp@latest', era: 'legacy' },
@@ -2574,25 +2765,33 @@ export function createMockApi(scenario: string): ClearApi {
         emit({ type: 'mcp-changed' })
         return delay(v)
       }
+      const cmd = (t: McpTransport): string | undefined =>
+        t.type === 'stdio' ? mcpCommandText(t) : undefined
+      // login OAuth simulado: "abre o navegador" e conclui em ~1 s (ou Cancelar)
+      const logins = new Map<string, (r: { ok: true } | { ok: false; error: string }) => void>()
       return {
         list: () => delay(views.map((v) => ({ ...v }))),
         create: async (input) => {
+          const err = validateMcpName(input.name)
+          if (err) throw new Error(err)
+          if (views.some((x) => x.server.name === input.name))
+            throw new Error(`Já existe um conector chamado "${input.name}".`)
+          const server = normalizeMcpServer({
+            ...input,
+            id: `mcp_${Date.now()}_${views.length}`,
+            approval: input.approval ?? { mode: 'ask' },
+            createdAt: Date.now(),
+            updatedAt: Date.now()
+          })
+          if (!server) throw new Error('Configuração do conector inválida.')
           const v: McpServerView = {
-            server: {
-              ...input,
-              id: `mcp_${Date.now()}`,
-              approval: input.approval ?? { mode: 'ask' },
-              createdAt: Date.now(),
-              updatedAt: Date.now()
-            },
+            server,
             status:
-              input.transport.type === 'stdio'
+              server.transport.type === 'stdio'
                 ? { state: 'unavailable', unavailable: 'not-activated', log: [] }
                 : { state: 'idle', log: [] },
             local: {},
-            ...(input.transport.type === 'stdio'
-              ? { commandText: [input.transport.command, ...input.transport.args].join(' ') }
-              : {}),
+            ...(cmd(server.transport) ? { commandText: cmd(server.transport) } : {}),
             hasLogin: false
           }
           views.push(v)
@@ -2600,7 +2799,15 @@ export function createMockApi(scenario: string): ClearApi {
         },
         update: async (id, patch) => {
           const v = find(id)
-          v.server = { ...v.server, ...patch, updatedAt: Date.now() }
+          v.server =
+            normalizeMcpServer({ ...v.server, ...patch, updatedAt: Date.now() }) ?? v.server
+          const c = cmd(v.server.transport)
+          if (c) {
+            v.commandText = c
+            // comando mudou depois de ativado → pede ativar de novo
+            if (v.local.activated && v.local.activated !== c)
+              v.status = { state: 'unavailable', unavailable: 'command-changed', log: [] }
+          }
           return changed(v)
         },
         delete: async (id) => {
@@ -2630,14 +2837,24 @@ export function createMockApi(scenario: string): ClearApi {
           v.status = { ...v.status, state: 'idle' }
           return changed(v)
         },
-        login: async (id) => {
-          const v = find(id)
-          v.hasLogin = true
-          v.status = { state: 'ready', toolCount: 0, log: [] }
-          await changed(null)
-          return { ok: true as const }
+        login: (id) =>
+          new Promise((resolve) => {
+            const v = find(id)
+            const t = setTimeout(() => {
+              logins.delete(id)
+              v.hasLogin = true
+              v.status = { state: 'ready', toolCount: 0, log: ['login OAuth concluído'] }
+              void changed(null).then(() => resolve({ ok: true as const }))
+            }, 1200)
+            logins.set(id, (r) => {
+              clearTimeout(t)
+              logins.delete(id)
+              resolve(r)
+            })
+          }),
+        cancelLogin: async (id) => {
+          logins.get(id)?.({ ok: false, error: 'Login cancelado.' })
         },
-        cancelLogin: async () => {},
         logout: async (id) => {
           const v = find(id)
           v.hasLogin = false
@@ -2649,10 +2866,61 @@ export function createMockApi(scenario: string): ClearApi {
             text,
             views.map((v) => v.server.name)
           ),
-        knownConfigs: async () => [],
-        readKnownConfig: async () => '{}',
-        pendingElicitations: async () => [],
-        answerElicitation: async () => ({ ok: true as const })
+        knownConfigs: async () =>
+          scenario === 'mcp'
+            ? [{ app: 'Claude Desktop', path: `${HOME}/.config/Claude/claude_desktop_config.json` }]
+            : [],
+        readKnownConfig: async () =>
+          JSON.stringify({
+            mcpServers: {
+              filesystem: {
+                command: 'npx',
+                args: ['-y', '@modelcontextprotocol/server-filesystem', `${HOME}/Documentos`]
+              },
+              linear: { type: 'sse', url: 'https://mcp.linear.app/sse' },
+              quebrado: { type: 'websocket' }
+            }
+          }),
+        pendingElicitations: () => delay(mcpElicits),
+        answerElicitation: async (eid, action, values) => {
+          const r = mcpElicits.find((x) => x.id === eid)
+          if (!r) return { ok: true as const }
+          let content: Record<string, unknown> | undefined
+          if (action === 'accept') {
+            const res = mcpFormContent(r.form, values ?? {})
+            if (Object.keys(res.errors).length) return { ok: false as const, errors: res.errors }
+            content = res.content
+          }
+          mcpElicits.splice(mcpElicits.indexOf(r), 1)
+          emit({ type: 'mcp-elicit-done', id: eid })
+          // o servidor conclui a tool com a resposta (o resultado volta ao chat)
+          ;(window as unknown as { __mockMcpAnswer?: unknown }).__mockMcpAnswer = {
+            action,
+            content
+          }
+          if (r.sessionId && r.toolCallId) {
+            const m = msg(
+              r.sessionId,
+              {
+                role: 'tool',
+                tool_call_id: r.toolCallId,
+                content:
+                  action === 'accept'
+                    ? `Captura salva: ${String(content?.filename ?? 'captura')}.${String(content?.format ?? 'png')} (${String(content?.width ?? '?')} px)`
+                    : `O usuário ${action === 'decline' ? 'recusou' : 'cancelou'} o formulário.`
+              },
+              { toolStatus: action === 'accept' ? 'ok' : 'cancelled' }
+            )
+            messages.push(m)
+            emit({ type: 'message-added', message: m })
+            const ss = sessions.find((x) => x.id === r.sessionId)
+            if (ss) {
+              ss.status = 'idle'
+              emit({ type: 'session-updated', session: { ...ss } })
+            }
+          }
+          return { ok: true as const }
+        }
       }
     })(),
     skills: (() => {

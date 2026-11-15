@@ -38,6 +38,7 @@ import { useAttachmentSupport } from './attachmentSupport'
 import { useHistoryIncompatibility } from '../../lib/chatCompat'
 import { CompactBanner, ContextMeter } from './ContextMeter'
 import { QuestionForm } from './AskUser'
+import { McpElicitForm } from '../mcp/McpElicitForm'
 import { RetryForm } from './RetryCard'
 import { PendingBar } from './PendingBar'
 import { SkillChip, SkillPickerButton } from '../skills/SkillPicker'
@@ -317,7 +318,16 @@ export function Composer({
   const question = useStore((s) => s.questions.find((q) => q.sessionId === session.id))
   /** Falha de conexão aguardando decisão nesta sessão: card no lugar do campo de texto. */
   const retry = useStore((s) => s.retries.find((r) => r.sessionId === session.id))
-  const blocked = !!question || !!retry
+  /**
+   * Formulário de um conector (elicitação MCP) de uma tool desta sessão — na principal, também os
+   * de outras sessões do chat (subagentes não abertos): no lugar do campo de texto, como o ask_user.
+   */
+  const elicit = useStore(
+    (s) =>
+      s.mcpElicits.find((r) => r.sessionId === session.id) ??
+      (session.depth === 0 ? s.mcpElicits.find((r) => r.chatId === session.chatId) : undefined)
+  )
+  const blocked = !!question || !!retry || !!elicit
   const host = useHostInfo(session.chatId)
   const hostOffline = host?.mode === 'host-offline'
   /** Arquivo selecionado que a próxima mensagem menciona (1.13.0, `meta.openFile`). */
@@ -711,13 +721,14 @@ export function Composer({
             // chamada de voz NESTE chat: a barra da chamada ocupa o lugar do composer (sem digitar
             // no rascunho por engano); fila e aprovações seguem acima, pergunta/retry num card
             <>
-              {(question || retry) && (
+              {(question || elicit || retry) && (
                 <div
                   data-testid="voice-call-blocking-card"
                   className="mb-2 rounded-2xl border border-border bg-surface shadow-[0_8px_30px_-12px_rgb(0_0_0/0.7)]"
                 >
                   {question && <QuestionForm key={question.id} request={question} />}
-                  {!question && retry && <RetryForm key={retry.id} request={retry} />}
+                  {!question && elicit && <McpElicitForm key={elicit.id} request={elicit} />}
+                  {!question && !elicit && retry && <RetryForm key={retry.id} request={retry} />}
                 </div>
               )}
               <VoiceCallDock />
@@ -753,7 +764,8 @@ export function Composer({
                   : announce}
               </span>
               {question && <QuestionForm key={question.id} request={question} />}
-              {!question && retry && <RetryForm key={retry.id} request={retry} />}
+              {!question && elicit && <McpElicitForm key={elicit.id} request={elicit} />}
+              {!question && !elicit && retry && <RetryForm key={retry.id} request={retry} />}
               {!blocked && (pending.length > 0 || pendingSkills.length > 0) && (
                 <div
                   className="flex flex-wrap gap-2 px-3 pt-3"
@@ -1132,7 +1144,7 @@ export function Composer({
                         {busy ? (
                           <ComposerStatus
                             text={
-                              question || session.status === 'awaiting_input'
+                              question || elicit || session.status === 'awaiting_input'
                                 ? 'Aguardando sua resposta'
                                 : retry || session.status === 'awaiting_retry'
                                   ? 'Aguardando sua decisão (falha de conexão)'

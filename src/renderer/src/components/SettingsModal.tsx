@@ -22,6 +22,7 @@ import { ApprovalsHelp, ApprovalsSettings } from './approvals/ApprovalsSettings'
 import { WebSearchSettings } from './web/WebSearchSettings'
 import { MemoryHelp, MemorySettings } from './memory/MemorySettings'
 import { SkillsSettings } from './skills/SkillsSettings'
+import { McpHelp, McpSettings } from './mcp/McpSettings'
 import { AccountSettings } from './sync/AccountSettings'
 import { VersionFooter } from './UpdateNotice'
 import { AutoTitleSettings } from './AutoTitleSettings'
@@ -355,7 +356,7 @@ export function SettingsModal(): React.JSX.Element {
               id="settings-panel-title"
               className="text-[15px] font-semibold tracking-tight text-fg"
             >
-              {item.label}
+              {item.title ?? item.label}
             </h3>
             {/* a introdução de cada página mora no (?) ao lado do título (sem linha solta) */}
             {tab === 'providers' && (
@@ -368,6 +369,7 @@ export function SettingsModal(): React.JSX.Element {
             {tab === 'presets' && !editingPreset && <PresetsHelp />}
             {tab === 'approvals' && <ApprovalsHelp />}
             {tab === 'memory' && <MemoryHelp />}
+            {tab === 'mcp' && <McpHelp />}
             {tab === 'audio' && <AudioTitleAside />}
           </div>
           <SettingsPanel
@@ -442,6 +444,8 @@ function SettingsPanel({
         <MemorySettings />
       ) : tab === 'skills' ? (
         <SkillsSettings />
+      ) : tab === 'mcp' ? (
+        <McpSettings />
       ) : tab === 'web' ? (
         <WebSearchSettings />
       ) : tab === 'audio' ? (

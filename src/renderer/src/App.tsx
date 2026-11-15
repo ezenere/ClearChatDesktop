@@ -13,6 +13,7 @@ import { Sidebar } from './components/Sidebar'
 import { TopBar } from './components/TopBar'
 import { VoiceCallController } from './components/voice/VoiceCallDock'
 import { SyncPrompts } from './components/sync/ChatHost'
+import { McpElicitDock } from './components/mcp/McpElicitForm'
 import { Spinner } from './components/ui/controls'
 import { TooltipProvider } from './components/ui/Tooltip'
 import { cn } from './lib/format'
@@ -170,6 +171,7 @@ function App(): React.JSX.Element {
           <SettingsModal />
           <RequestPreviewModal />
           <SyncPrompts />
+          <McpElicitDock />
         </div>
       )}
       <Toasts />

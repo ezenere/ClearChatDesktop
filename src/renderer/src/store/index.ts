@@ -7,6 +7,7 @@ import type {
   AttachmentInfo,
   Chat,
   ChatConfig,
+  McpElicitRequest,
   ModelInfo,
   Preset,
   ProcessInfo,
@@ -27,6 +28,7 @@ import type {
   VoiceCallTimelineEvent
 } from '@shared/ipc'
 import type { MemoryCollection } from '@shared/memory'
+import type { McpServerView } from '@shared/mcp'
 import type {
   ChatHostInfo,
   LiveChatView,
@@ -94,6 +96,7 @@ export type SettingsTab =
   | 'approvals'
   | 'memory'
   | 'skills'
+  | 'mcp'
   | 'web'
   | 'audio'
 
@@ -288,6 +291,12 @@ interface State {
   skillsFocus: string | null
   /** Skills escolhidas na lâmpada do composer, ainda não enviadas (por sessão; nomes). */
   pendingSkills: Record<string, string[]>
+  /** Conectores (MCP): cadastro + estado deste aparelho (null = ainda não carregado). */
+  mcp: McpServerView[] | null
+  /** Conector a destacar/abrir em Configurações → Conectores (id). */
+  mcpFocus: string | null
+  /** Formulários de conectores (elicitação) aguardando o usuário. */
+  mcpElicits: McpElicitRequest[]
   /** Sync: conta/conexão (null = ainda não carregado). */
   sync: SyncStatus | null
   /** Sync: host de execução / divergência por chat. */
@@ -393,6 +402,16 @@ interface Actions {
   setPendingSkills(sessionId: string, names: string[]): void
   /** Abre Configurações → Skills (opcionalmente destacando uma skill). */
   openSkills(name?: string | null): void
+  /** Relê os conectores (cadastro + estado deste aparelho). */
+  loadMcp(): Promise<void>
+  /** Abre Configurações → Conectores (opcionalmente abrindo um conector). */
+  openMcp(id?: string | null): void
+  /** Responde a um formulário de conector; `{ok:false}` = erros por campo (o pedido continua). */
+  answerMcpElicit(
+    id: string,
+    action: 'accept' | 'decline' | 'cancel',
+    values?: Record<string, unknown>
+  ): Promise<{ ok: true } | { ok: false; errors: Record<string, string> }>
   /** Anexa arquivos (arrastar/colar) ao composer da sessão. */
   addFiles(sessionId: string, files: File[]): Promise<void>
   /** Seletor nativo de arquivos (main lê e salva). */
@@ -608,6 +627,9 @@ export const useStore = create<Store>()((set, get) => ({
   skillsTick: 0,
   skillsFocus: null,
   pendingSkills: {},
+  mcp: null,
+  mcpFocus: null,
+  mcpElicits: [],
   sync: null,
   chatHosts: {},
   liveChats: [],
@@ -649,6 +671,7 @@ export const useStore = create<Store>()((set, get) => ({
             })
         )
       )
+    if (scopes.includes('mcp')) tasks.push(g.loadMcp())
     if (scopes.includes('approvals'))
       tasks.push(
         api.approvals
@@ -790,6 +813,8 @@ export const useStore = create<Store>()((set, get) => ({
       hostList,
       update,
       liveList,
+      mcpList,
+      mcpElicits,
       ...values
     ] = await Promise.all([
       safe(() => api.providers.list(), [] as Provider[]),
@@ -805,6 +830,8 @@ export const useStore = create<Store>()((set, get) => ({
       safe(() => api.sync.chatStates(), [] as ChatHostInfo[]),
       safe(() => api.updates.status(), null as UpdateStatus | null),
       safe(() => api.sync.liveChats(), [] as LiveChatView[]),
+      safe(() => api.mcp.list(), null as McpServerView[] | null),
+      safe(() => api.mcp.pendingElicitations(), [] as McpElicitRequest[]),
       ...SETTINGS_KEYS.map((k) => safe(() => api.settings.get<string>(k), null))
     ])
     const settings = Object.fromEntries(
@@ -828,6 +855,8 @@ export const useStore = create<Store>()((set, get) => ({
       // um `update-status` pode ter chegado durante o boot: fica o mais recente
       update: get().update?.checkedAt ? get().update : (update as UpdateStatus | null),
       liveChats: liveList as LiveChatView[],
+      mcp: mcpList as McpServerView[] | null,
+      mcpElicits: mcpElicits as McpElicitRequest[],
       booted: true
     })
   },
@@ -1212,6 +1241,33 @@ export const useStore = create<Store>()((set, get) => ({
 
   openSkills(name) {
     set({ settingsOpen: true, settingsTab: 'skills', skillsFocus: name ?? null })
+  },
+
+  async loadMcp() {
+    try {
+      const [list, elicits] = await Promise.all([
+        api.mcp.list(),
+        api.mcp.pendingElicitations().catch(() => get().mcpElicits)
+      ])
+      set({ mcp: list, mcpElicits: elicits })
+    } catch (err) {
+      console.warn('[clearchat] conectores:', errorMessage(err))
+    }
+  },
+
+  openMcp(id) {
+    set({ settingsOpen: true, settingsTab: 'mcp', mcpFocus: id ?? null })
+  },
+
+  async answerMcpElicit(id, action, values) {
+    try {
+      const r = await api.mcp.answerElicitation(id, action, values)
+      if (r.ok) set((s) => ({ mcpElicits: s.mcpElicits.filter((x) => x.id !== id) }))
+      return r
+    } catch (err) {
+      get().toast(`Falha ao responder o formulário: ${errorMessage(err)}`, 'error')
+      return { ok: false as const, errors: {} }
+    }
   },
 
   async addFiles(sessionId, files) {
@@ -1773,6 +1829,17 @@ function applyEvent(e: AgentEvent): void {
     case 'skills-changed':
       set((s) => ({ skillsTick: s.skillsTick + 1 }))
       break
+    case 'mcp-changed':
+      scheduleMcpReload()
+      break
+    case 'mcp-elicit':
+      set((s) => ({
+        mcpElicits: [...s.mcpElicits.filter((r) => r.id !== e.request.id), e.request]
+      }))
+      break
+    case 'mcp-elicit-done':
+      set((s) => ({ mcpElicits: s.mcpElicits.filter((r) => r.id !== e.id) }))
+      break
     case 'sync-status':
       set({ sync: e.status })
       break
@@ -1836,6 +1903,16 @@ function scheduleScopes(scopes: SyncScope[]): void {
     pendingScopes.clear()
     void useStore.getState().reloadScopes(list)
   }, 120)
+}
+
+// Rajadas de `mcp-changed` (conectar, tools, login…) → uma recarga da lista de conectores.
+let mcpReload: ReturnType<typeof setTimeout> | null = null
+function scheduleMcpReload(): void {
+  if (mcpReload) clearTimeout(mcpReload)
+  mcpReload = setTimeout(() => {
+    mcpReload = null
+    void useStore.getState().loadMcp()
+  }, 80)
 }
 
 // Rajadas de `memory-changed` (extração grava várias) → uma recarga só das coleções.
