@@ -13,11 +13,11 @@ import {
   type McpServerDef
 } from '@shared/mcp'
 import type { Chat, McpElicitRequest } from '@shared/types'
-import { emit } from '../events'
+import { emit, onAgentEvent } from '../events'
 import { setMcpSource } from '../agent/request'
 import { userEnv } from '../tools/shellEnv'
 import { cleanEnv, configureMcpManager, mcpManager, type McpCallOwner } from './manager'
-import { mcpLocal, mcpRepo, onMcpStoreChange } from './store'
+import { mcpLocal, mcpRepo, notifyMcpStore, onMcpStoreChange } from './store'
 import { configureMcpOAuth, mcpAuthProvider } from './oauth'
 
 /** Servidores do cadastro que rodam neste aparelho (stdio ativado; HTTP sempre). */
@@ -143,6 +143,10 @@ export function initMcp(
   onMcpStoreChange(() => {
     void mcpManager.reconcile()
     emit({ type: 'mcp-changed' })
+  })
+  // sync aplicou conectores de outro aparelho (SQL direto): reconcilia as conexões e avisa a UI
+  onAgentEvent((e) => {
+    if (e.type === 'sync-data-changed' && e.scopes.includes('mcp')) notifyMcpStore()
   })
   setMcpSource({
     entries: (chat: Pick<Chat, 'config'>) =>

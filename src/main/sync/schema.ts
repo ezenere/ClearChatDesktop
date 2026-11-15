@@ -130,13 +130,14 @@ END;`
 
 /**
  * Versão dos triggers (recria quando muda — ex.: chaves novas ou removidas em SYNC_SETTING_KEYS;
- * '4' = as settings de voz saíram, protocolo 1.9.0).
+ * '4' = as settings de voz saíram, protocolo 1.9.0; '5' = conectores `mcp_servers`, 1.14.0).
  */
-const TRIGGERS_VERSION = '4'
+const TRIGGERS_VERSION = '5'
 
 function triggerSql(): string {
   return [
     triggersFor('providers', 'provider', 'id', 'NULL', 'NULL'),
+    triggersFor('mcp_servers', 'mcp_server', 'id', 'NULL', 'NULL'),
     triggersFor('presets', 'preset', 'id', 'NULL', 'NULL'),
     triggersFor('chats', 'chat', 'id', 'NEW.id', 'OLD.id'),
     triggersFor('sessions', 'session', 'id', 'NEW.chat_id', 'OLD.chat_id'),
@@ -155,6 +156,7 @@ function triggerSql(): string {
 
 const TRIGGER_TABLES = [
   'providers',
+  'mcp_servers',
   'presets',
   'chats',
   'sessions',

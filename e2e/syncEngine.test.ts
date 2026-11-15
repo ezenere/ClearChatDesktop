@@ -3221,3 +3221,147 @@ test('cliente antigo — id de setting e campos que ele não conhece não quebra
     tts: { backend: 'local' }
   })
 })
+
+// ---------------- conectores (MCP, protocolo 1.14.0 — §4.3.10) ----------------
+
+const addMcp = (conn: Database.Database, id: string, name: string, extra: any = {}): void => {
+  conn
+    .prepare('INSERT INTO mcp_servers (id, data_json, created_at, updated_at) VALUES (?, ?, ?, ?)')
+    .run(
+      id,
+      JSON.stringify({
+        name,
+        transport: {
+          type: 'stdio',
+          command: 'npx',
+          args: ['-y', `@x/${name}`],
+          env: { TOKEN: 's3' }
+        },
+        approval: { mode: 'ask', tools: { list: 'always' } },
+        tools: { tools: [{ name: 'list', inputSchema: { type: 'object' } }], at: 1 },
+        ...extra
+      }),
+      1,
+      1
+    )
+}
+
+test('1.14.0: conector vai e volta (cifrado, por campo); ativação e tokens ficam em cada aparelho', async () => {
+  const email = await newAccount()
+  const A = device('A')
+  const id = `mcp_${randomUUID()}`
+  addMcp(A.conn, id, 'github')
+  putSetting(A.conn, 'mcpLocal', { [id]: { activated: 'npx -y @x/github', era: 'legacy' } })
+  putSetting(A.conn, 'mcpAuth', { [id]: 'enc:segredo' })
+  const { chatId } = addChat(A.conn, 'Com conector')
+  A.conn.prepare('UPDATE chats SET config_json = ? WHERE id = ?').run(
+    JSON.stringify({
+      ...chatCfg(A.conn, chatId),
+      mcpServers: { [id]: { on: true, off: ['x'] } }
+    }),
+    chatId
+  )
+  await login(A, email)
+  await settled(A)
+  const online = onlinePlain(A, email, 'mcp_server', id)
+  assert.equal(online.name, 'github')
+  assert.deepEqual(online.transport.env, { TOKEN: 's3' })
+  assert.deepEqual(online.approval, { mode: 'ask', tools: { list: 'always' } })
+  assert.deepEqual(onlinePlain(A, email, 'chat', chatId).config.mcpServers, {
+    [id]: { on: true, off: ['x'] }
+  })
+  // estado do aparelho nunca vira registro
+  assert.ok(
+    !srv.records(srv.userIdOf(email)!).some((r: any) => r.type === 'setting' && /mcp/i.test(r.id)),
+    'mcpLocal/mcpAuth não sobem'
+  )
+  const B = device('B')
+  await login(B, email)
+  await settled(B)
+  const row = B.conn.prepare('SELECT data_json FROM mcp_servers WHERE id = ?').get(id) as any
+  assert.equal(JSON.parse(row.data_json).name, 'github')
+  assert.equal(B.conn.prepare("SELECT value FROM settings WHERE key = 'mcpLocal'").get(), undefined)
+  // edição por campo: B muda a aprovação, A muda o título — os dois ficam
+  const patch = (d: Dev, fn: (x: any) => void): void => {
+    const r = d.conn.prepare('SELECT data_json FROM mcp_servers WHERE id = ?').get(id) as any
+    const x = JSON.parse(r.data_json)
+    fn(x)
+    d.conn
+      .prepare('UPDATE mcp_servers SET data_json = ?, updated_at = ? WHERE id = ?')
+      .run(JSON.stringify(x), Date.now(), id)
+  }
+  patch(B, (x) => (x.approval = { mode: 'always' }))
+  patch(A, (x) => (x.title = 'GitHub'))
+  await synced(A, B)
+  for (const d of [A, B]) {
+    const x = JSON.parse(
+      (d.conn.prepare('SELECT data_json FROM mcp_servers WHERE id = ?').get(id) as any).data_json
+    )
+    assert.equal(x.title, 'GitHub', d.name)
+    assert.deepEqual(x.approval, { mode: 'always' }, d.name)
+  }
+  // apagar em A apaga em B
+  A.conn.prepare('DELETE FROM mcp_servers WHERE id = ?').run(id)
+  await synced(A, B)
+  assert.equal(B.conn.prepare('SELECT id FROM mcp_servers WHERE id = ?').get(id), undefined)
+})
+
+test('1.14.0: primeiro login — conector de mesmo nome vira o online; a escolha do chat acompanha o id', async () => {
+  const email = await newAccount()
+  const A = device('A')
+  const idA = `mcp_${randomUUID()}`
+  addMcp(A.conn, idA, 'notion')
+  await login(A, email)
+  await settled(A)
+  const B = device('B')
+  const idB = `mcp_${randomUUID()}`
+  addMcp(B.conn, idB, 'notion')
+  const { chatId } = addChat(B.conn, 'Chat de B')
+  B.conn
+    .prepare('UPDATE chats SET config_json = ? WHERE id = ?')
+    .run(
+      JSON.stringify({ ...chatCfg(B.conn, chatId), mcpServers: { [idB]: { on: true } } }),
+      chatId
+    )
+  await login(B, email)
+  assert.equal(B.eng.phase(), 'merge')
+  await B.eng.resolveMerge('local')
+  await settled(B)
+  const ids = (B.conn.prepare('SELECT id FROM mcp_servers').all() as any[]).map((r) => r.id)
+  assert.deepEqual(ids, [idA], 'um só conector, com o id online')
+  assert.deepEqual(chatCfg(B.conn, chatId).mcpServers, { [idA]: { on: true } })
+})
+
+test('1.14.0: servidor antigo (sem features.mcpServers) — o resto sincroniza, o conector espera', async () => {
+  const old = await startFakeSyncServer({ mcpServers: false, hostDropGraceMs: 400 })
+  try {
+    const email = `old-${Date.now()}@teste.dev`
+    await old.createAccount({ email, password: PASSWORD })
+    const A = device('A', { server: old })
+    const id = `mcp_${randomUUID()}`
+    addMcp(A.conn, id, 'local')
+    const pid = addProvider(A.conn, { name: 'OR' })
+    await A.eng.init()
+    await A.eng.requestCode(email)
+    await A.eng.verifyCode(email, old.lastCode(email)!)
+    await A.eng.unlock(PASSWORD, true)
+    await waitFor(
+      () =>
+        old.records(old.userIdOf(email)!).some((r: any) => r.type === 'provider' && r.id === pid),
+      'provedor online'
+    )
+    await sleep(300)
+    assert.ok(!old.records(old.userIdOf(email)!).some((r: any) => r.type === 'mcp_server'))
+    assert.ok(
+      (
+        A.conn
+          .prepare("SELECT COUNT(*) AS n FROM sync_dirty WHERE type = 'mcp_server'")
+          .get() as any
+      ).n >= 1,
+      'pendente para quando o servidor aceitar'
+    )
+    assert.equal(A.eng.status().error ?? null, null, 'sem erro de sync')
+  } finally {
+    await old.close()
+  }
+})

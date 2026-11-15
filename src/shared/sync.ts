@@ -1,5 +1,6 @@
 // Tipos do sync compartilhados entre main e renderer (IPC `sync:*` e eventos). O protocolo em si
 // está em docs/SYNC_PROTOCOL.md; o cliente roda no main (src/main/sync/).
+import { mcpServersOn } from './mcp'
 import { COMPUTER_TOOL_NAMES } from './deviceTools'
 import type { Session, StoredMessage } from './types'
 
@@ -26,6 +27,8 @@ export interface SyncServerInfo {
   push?: boolean
   /** Instância com chats só ao vivo (`features.liveChats`, desde 1.8.0, §23). */
   liveChats?: boolean
+  /** Instância que guarda conectores (`features.mcpServers`, desde 1.14.0, §4.3.10). */
+  mcpServers?: boolean
 }
 
 export type SyncConnection = 'disabled' | 'offline' | 'connecting' | 'online' | 'error'
@@ -225,6 +228,8 @@ export interface DivergenceDetails {
 /** O que mudou nas tabelas locais por causa do sync (o renderer recarrega). */
 export type SyncScope =
   | 'providers'
+  /** Conectores (MCP, desde 1.14.0). */
+  | 'mcp'
   | 'presets'
   | 'settings'
   | 'chats'
@@ -246,7 +251,7 @@ export interface TakeoverOptions {
 
 /**
  * Ferramentas locais (§8.9) = as tools "só no computador" da §4.3.6 (`present_file` inclusive, desde
- * 1.10.0). `usesLocalTools` recebe a config EFETIVA do chat (herança ao vivo da persona).
+ * 1.10.0), as skills ligadas e, desde 1.14.0, qualquer conector (MCP) ligado. `usesLocalTools` recebe a config EFETIVA do chat (herança ao vivo da persona).
  */
 export const LOCAL_TOOLS: readonly string[] = COMPUTER_TOOL_NAMES
 /** O chat usa ferramentas locais (§8.9)? — sobre a config efetiva, com a voz em camadas. */
@@ -254,6 +259,7 @@ export function usesLocalTools(config: {
   enabledTools?: unknown
   skills?: unknown
   voice?: unknown
+  mcpServers?: unknown
 }): boolean {
   const list = (v: unknown): string[] =>
     Array.isArray(v) ? v.filter((t): t is string => typeof t === 'string') : []
@@ -262,7 +268,10 @@ export function usesLocalTools(config: {
   const tools = [...list(config.enabledTools), ...list(voice.tools?.enabledTools)]
   const skills = (config.skills ?? {}) as { enabled?: unknown }
   return (
-    tools.some((t) => LOCAL_TOOLS.includes(t === 'bash' ? 'shell' : t)) || skills.enabled === true
+    tools.some((t) => LOCAL_TOOLS.includes(t === 'bash' ? 'shell' : t)) ||
+    skills.enabled === true ||
+    // conectores (desde 1.14.0): rodam no host (stdio ativado nele; login OAuth por aparelho)
+    mcpServersOn(config).length > 0
   )
 }
 

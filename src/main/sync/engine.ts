@@ -1980,6 +1980,9 @@ export class SyncEngine {
       })
     for (const d of dirty) {
       if (!isRecordType(d.type) || this.inflight.has(key(d.type, d.id))) continue
+      // conectores (1.14.0): servidor que não os anuncia recusaria o lote inteiro — ficam
+      // pendentes até o servidor ser atualizado (§4.3.10)
+      if (d.type === 'mcp_server' && !this.info?.mcpServers) continue
       const rec = this.record(d.type, d.id)
       if (rec?.opaque) {
         drop(d.type, d.id, d.mark)
@@ -2952,6 +2955,7 @@ export class SyncEngine {
         const order = [
           'setting',
           'provider',
+          'mcp_server',
           'preset',
           'memory_collection',
           'memory',
@@ -3072,6 +3076,7 @@ export class SyncEngine {
       // 3) tudo que é local e não tem registro online → envio
       for (const type of [
         'provider',
+        'mcp_server',
         'preset',
         'memory_collection',
         'memory',
@@ -3174,6 +3179,11 @@ export class SyncEngine {
           (normName(p.name) === normName(l.name) || (!!l.apiKey && p.apiKey === l.apiKey))
       )
     }
+    // conectores: o mesmo nome curto é o mesmo conector (o nome vai no nome das tools)
+    for (const id of listLocalIds(this.conn, 'mcp_server')) {
+      const l = buildLocal(this.conn, 'mcp_server', id)!.plain
+      pick('mcp_server', id, live('mcp_server'), (p) => p.name === l.name)
+    }
     for (const id of listLocalIds(this.conn, 'preset')) {
       const l = buildLocal(this.conn, 'preset', id)!.plain
       pick(
@@ -3219,6 +3229,7 @@ export class SyncEngine {
       const [type, oldId] = k.split('|')
       const table: Record<string, string> = {
         provider: 'providers',
+        mcp_server: 'mcp_servers',
         preset: 'presets',
         memory_collection: 'memory_collections',
         memory: 'memories'
@@ -3250,6 +3261,17 @@ export class SyncEngine {
       }
       set(cfg, 'providerId', 'provider')
       set(cfg, 'presetId', 'preset')
+      // conectores: a escolha é por id do servidor (chaves de `mcpServers`)
+      const mcp = cfg.mcpServers as Plain | undefined
+      if (mcp && typeof mcp === 'object')
+        for (const k of Object.keys(mcp)) {
+          const n = get('mcp_server', k)
+          if (n && n !== k) {
+            mcp[n] = mcp[k]
+            delete mcp[k]
+            changed = true
+          }
+        }
       if (cfg.smartApprove && typeof cfg.smartApprove === 'object') {
         const sa = cfg.smartApprove as Plain
         set(sa, 'providerId', 'provider')
@@ -3952,6 +3974,7 @@ export class SyncEngine {
   /** Lista de nomes de escopo para o renderer recarregar. */
   static readonly ALL_SCOPES: SyncScope[] = [
     'providers',
+    'mcp',
     'presets',
     'settings',
     'chats',

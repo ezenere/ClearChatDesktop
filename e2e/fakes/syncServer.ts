@@ -50,6 +50,8 @@ export interface FakeSyncOptions {
   push?: boolean
   /** true → features.liveChats e os frames live.* (chats só ao vivo, §23, desde 1.8.0). */
   liveChats?: boolean
+  /** false → servidor anterior a 1.14.0: sem `features.mcpServers` e recusa o tipo `mcp_server`. */
+  mcpServers?: boolean
   log?: (line: string) => void
 }
 
@@ -318,7 +320,8 @@ const TYPES = new Set([
   'chat',
   'session',
   'message',
-  'skill'
+  'skill',
+  'mcp_server'
 ])
 const CONTENT = new Set(['session', 'message'])
 const COMMAND_KINDS = new Set([
@@ -408,6 +411,7 @@ export async function startFakeSyncServer(opts: FakeSyncOptions = {}): Promise<F
     accessTtlS: opts.accessTtlS ?? 3600,
     push: !!opts.push,
     liveChats: !!opts.liveChats,
+    mcpServers: opts.mcpServers !== false,
     log: opts.log ?? ((): void => {})
   }
 
@@ -1005,7 +1009,11 @@ export async function startFakeSyncServer(opts: FakeSyncOptions = {}): Promise<F
 
   function validateItem(it: any): void {
     if (!it || typeof it !== 'object') throw err('invalid_request', { reason: 'item' })
-    if (typeof it.type !== 'string' || !TYPES.has(it.type))
+    if (
+      typeof it.type !== 'string' ||
+      !TYPES.has(it.type) ||
+      (it.type === 'mcp_server' && !o.mcpServers)
+    )
       throw err('invalid_request', { reason: 'unknown_type', type: it.type })
     if (typeof it.id !== 'string' || !ID_RE.test(it.id))
       throw err('invalid_request', { reason: 'id', id: it.id })
@@ -1386,7 +1394,8 @@ export async function startFakeSyncServer(opts: FakeSyncOptions = {}): Promise<F
           landing: true,
           gateway: false,
           push: o.push ? { providers: ['fcm'] } : null,
-          liveChats: o.liveChats
+          liveChats: o.liveChats,
+          ...(o.mcpServers ? { mcpServers: true } : {})
         },
         links: {
           download: 'https://github.com/ezenere/ClearChatDesktop/releases',

@@ -1,6 +1,6 @@
 # ClearChat Sync — Protocolo v1 (contrato)
 
-> **Versão do protocolo: 1.13.0** · status: contrato inicial (ainda sem implementação) · data: 2026-11-14
+> **Versão do protocolo: 1.14.0** · status: contrato inicial (ainda sem implementação) · data: 2026-11-15
 >
 > ⚠️ **AVISO — CONTRATO COMPARTILHADO ENTRE OS REPOSITÓRIOS**
 > Fonte única: `docs/SYNC_PROTOCOL.md` e `docs/test-vectors/` do repositório pai `ezenere/ClearChat`.
@@ -356,6 +356,7 @@ repositórios) e todo cliente que mostra conversas (app, site, mobile) DEVE pass
 | `session` | `sessions.id` | `chatId` | **conteúdo do chat** (§8) | tabela `sessions` |
 | `message` | `messages.id` | `chatId` (do chat da sessão) | **conteúdo do chat** (§8) | tabela `messages` |
 | `skill` | `sk_…` (§3.12) | null | LWW (inteiro) | pasta da skill (opt-in, §13) |
+| `mcp_server` | `mcp_…` (id do app) | null | LWW por campo | tabela `mcp_servers` (conectores, desde 1.14.0, §4.3.10) |
 
 Tipo **reservado** (não usar em v1): `key_grant` (concessão de chaves a um gateway, §21).
 
@@ -375,7 +376,7 @@ Todo plaintext é um objeto JSON com `sv` (versão do esquema do tipo, hoje `1`)
 `environment`/`capture`/`capturePrompts`/`thinkingTokens`/`cache` (os dois últimos desde 1.4.1), `ContextCaptureConfig.thinkingTokens`/`cache` (desde 1.4.1),
 `MessageMeta.autoTitle`/`presentFiles`/`reasoningMs`; desde 1.5.0, tipos do app com o áudio (depois do 0.9.0):
 `ChatConfig.voice` (§4.3.6), `MessageMeta.voice`/`voiceCall` e `MessageMeta.kind: 'voice-call'` (§4.3.8),
-`VoiceCallConfig.endCall`/`promptMode`; desde 1.10.0, `ChatConfig.overrides` — herança ao vivo da persona, §4.3.6; desde 1.11.0, `ChatConfig.toolsCompact`/`toolsFull` e as tools `datetime`/`search_tool`, §4.3.6; desde 1.12.0, `ApiMessage.native`, `MessageMeta.toolSearch` e a tool `tool_search` (antes `search_tool`), §4.3.6/§4.3.8; desde 1.13.0, `MessageMeta.openFile`, §4.3.8). Leitores DEVEM ignorar campos
+`VoiceCallConfig.endCall`/`promptMode`; desde 1.10.0, `ChatConfig.overrides` — herança ao vivo da persona, §4.3.6; desde 1.11.0, `ChatConfig.toolsCompact`/`toolsFull` e as tools `datetime`/`search_tool`, §4.3.6; desde 1.12.0, `ApiMessage.native`, `MessageMeta.toolSearch` e a tool `tool_search` (antes `search_tool`), §4.3.6/§4.3.8; desde 1.13.0, `MessageMeta.openFile`, §4.3.8; desde 1.14.0, `ChatConfig.mcpServers`/`mcpSubagents` — conectores, §4.3.10). Leitores DEVEM ignorar campos
 desconhecidos e DEVEM preservá-los ao regravar (merge por campo); escritores NÃO DEVEM enviar `undefined`.
 
 #### 4.3.1 `provider`
@@ -616,6 +617,7 @@ ChatConfig.overrides?: { [unidade: string]: true }   // unidades próprias do ch
   | `enabledTools.<tool>` | se a tool `<tool>` está em `enabledTools` (cada tool é uma unidade; renomes de tool do app valem também para o nome da unidade) |
   | `toolsFull.<tool>` | se a tool `<tool>` está em `toolsFull` (desde 1.11.0 — tools compactadas, abaixo) |
   | `approvalModes.<item>` | `approvalModes[<item>]` (cada item de aprovação) |
+  | `mcpServers.<id>` | `mcpServers[<id>]` (desde 1.14.0 — cada conector é uma unidade; ausente = desligado, §4.3.10) |
   | `appSignature` | `appSignature` + `appSignatureCustom` |
   | `smartApprove`, `memory`, `skills` | a seção inteira |
   | qualquer outra chave de `PresetConfig` (`systemPrompt`, `nativeTools`, `toolsInPrompt`, `toolsPromptText`, `envInPrompt`, `cacheEnabled`, `subagentSystemPrompt`, `acceptEditsInRoot`, `contextWindow`, `compactThreshold`, `autoCompact`, `compactPrompt`, `maxToolOutputChars`, `confineToRoot`, `sandboxBash` e as que vierem) | a própria chave |
@@ -1005,6 +1007,64 @@ leitores derivam a mesma mãe.
 ```
 Ver §13 (formato do bundle).
 
+#### 4.3.10 `mcp_server` (conectores — desde 1.14.0)
+
+Um **conector** = um servidor MCP (Model Context Protocol) cujas tools o agente pode usar. O registro é
+o **cadastro da conta**; o que roda e o login ficam em cada aparelho (§4.4); a escolha de quais
+conectores valem em cada persona/chat fica em `ChatConfig.mcpServers` (abaixo).
+
+```ts
+{ sv: 1,
+  name: string,            // nome curto: /^[a-z0-9](?:[a-z0-9-]{0,22}[a-z0-9])?$/ (vai no nome das tools)
+  title?: string,          // rótulo livre
+  transport:
+    | { type: 'stdio', command: string, args: string[], env: Record<string, string>, cwd?: string }
+    | { type: 'http', url: string /* http(s) */, headers: Record<string, string> },
+  oauth?: boolean,         // só http: login OAuth (por aparelho)
+  approval: { mode: 'ask' | 'smart' | 'always', tools?: Record<string /* nome da tool */, 'ask' | 'smart' | 'always'> },
+  timeoutMs?: number,      // teto de uma chamada (≥ 1000; ausente = 120000)
+  tools?: { tools: { name: string, title?: string, description?: string, inputSchema: object,
+                     annotations?: { title?: string, readOnlyHint?: boolean, destructiveHint?: boolean,
+                                     idempotentHint?: boolean, openWorldHint?: boolean } }[],
+            instructions?: string, server?: { name: string, version?: string, title?: string }, at: number },
+  createdAt: number, updatedAt: number }
+```
+- **Merge por campo** (§7.5): editar a aprovação num aparelho e o título em outro mantém os dois.
+- `env` e `headers` PODEM conter segredos (vão cifrados como tudo no registro; nunca em logs).
+- `tools` = a **última lista vista** por qualquer aparelho que conectou (aparelhos que não executam o
+  conector — celular, ou computador sem ativação — mostram e deixam escolher as tools por ela). Escritores
+  só regravam quando a lista muda (sem churn a cada conexão). As descrições/anotações são do SERVIDOR:
+  NÃO confiáveis (nunca liberam aprovação sozinhas).
+- **stdio é um programa rodando na máquina**: nenhum aparelho DEVE executar um conector stdio recebido
+  pelo sync sem o usuário confirmar **naquele aparelho** ("Ativar neste computador", mostrando o comando
+  exato — `command` + `args` + `cwd`). A confirmação vale para o comando exato: mudou (por qualquer
+  aparelho) → precisa confirmar de novo. Celular não executa stdio.
+- **OAuth por aparelho**: os tokens e as credenciais de cliente NUNCA vão no registro (o OAuth 2.1 troca
+  o refresh token a cada renovação; aparelhos com o mesmo token se derrubariam). Cada aparelho faz o
+  próprio login.
+- Registro com campos inválidos/desconhecidos (transporte de versão futura): leitores DEVEM preservá-lo
+  como opaco (não gravar uma versão parcial).
+- **Servidor** (§6.2): instâncias ≥ 1.14.0 anunciam `features.mcpServers: true` e aceitam o tipo. Clientes
+  NÃO DEVEM enviar `mcp_server` a um servidor sem a feature (ele recusaria o lote inteiro): o registro fica
+  pendente até o servidor ser atualizado.
+- Apagar o conector NÃO mexe nas configs que o citam: ids sem conector são ignorados (sem efeito).
+
+**Escolha por persona/chat** (`ChatConfig`/`PresetConfig`, desde 1.14.0):
+```ts
+mcpServers?: Record<string /* id do mcp_server */, { on: boolean, off?: string[] /* tools desligadas */,
+                                                      instructions?: boolean /* padrão false */ }>
+mcpSubagents?: boolean   // subagentes recebem as tools dos conectores ligados (padrão false)
+```
+- Ausente = desligado. Cada conector é uma unidade da herança (`mcpServers.<id>`, §4.3.6).
+- **Nomes das tools no modelo**: `mcp__<name>__<tool>`, só `[A-Za-z0-9_-]`, até 64 caracteres (o que
+  passar → cortado + `_` + 6 caracteres de hash FNV-1a em base 36 do nome original; colisão → mesmo
+  sufixo com `id/tool`). O host manda ao modelo só os conectores ligados que ele executa.
+- `instructions: true` → as instruções do servidor vão no fim do system prompt, marcadas
+  (`<mcp_server_instructions server="<name>">…</mcp_server_instructions>`); padrão desligado (nada
+  escondido vai ao modelo).
+- **Aprovação**: `approval` do registro (exceção da tool → padrão do conector); `smart` sem juiz
+  configurado → pergunta. O registro de aprovação da mensagem usa o item `mcp`.
+
 ### 4.4 Local do dispositivo (NUNCA sincronizado)
 
 | Item | Onde fica no app | Motivo |
@@ -1014,6 +1074,8 @@ Ver §13 (formato do bundle).
 | `defaultCwd` | `settings` | pasta padrão desta máquina |
 | settings de voz `audioInput`, `sttSettings`, `ttsSettings`, `voiceCallDefaults` (desde 1.9.0; antes sincronizavam, §4.3.2) | `settings` | dependem do que está instalado/configurado em cada máquina; a voz que sincroniza é a da persona/chat (`config.voice.tts`/`stt`) |
 | `skillsSettings` (locais de skills, `projectSkills`) | `settings` | pastas desta máquina |
+| `mcpLocal` — por conector: stdio ativado neste computador (o comando exato confirmado), ajustes do aparelho (`args`/`env`/`cwd`) e a era do protocolo MCP descoberta (desde 1.14.0) | `settings` | o que roda nesta máquina |
+| `mcpAuth` — login OAuth dos conectores (tokens, credenciais de cliente por emissor, porta do callback), cifrado pelo cofre do sistema (desde 1.14.0) | `settings` | o OAuth 2.1 troca o refresh token a cada renovação: cada aparelho tem o seu login |
 | `toolSearchCaps` (desde 1.12.0) | `settings` | falhas da busca nativa por provedor+modelo (24 h) — o que este dispositivo já viu falhar |
 | `presetsSeeded`, `migration.*` (`toolShellRename`, `approvalModes`, `smartApproveItems`, `searchIndex`, `messageTree`) | `settings` | estado de migração local |
 | `updateDismissedVersion` (aviso de versão nova dispensado) | `settings` | cada instalação tem a sua versão do app |
@@ -1166,6 +1228,8 @@ Clientes chamam antes de login (validação do servidor escolhido) e a cada cone
 - `liveChats` (desde 1.8.0): `true` = o servidor entende chats só ao vivo (§23: `live.*`, `history.*`,
   `chat.update`). Ausente (servidor < 1.8.0) ou `false` = sem suporte: os clientes escondem a escolha e
   todo chat novo é online, como antes (§23.2).
+- `mcpServers` (desde 1.14.0): `true` = o servidor aceita registros `mcp_server` (§4.3.10). Ausente =
+  servidor anterior: os clientes não os enviam (ficam pendentes).
 - `links.signup` ausente quando `signupOpen` é falso. `gateway` é reservado (§21; sempre `false` em v1).
 - Cliente com protocolo fora de `[protocol.min, protocol.max]` → "Este servidor usa uma versão
   incompatível do protocolo (servidor X–Y, app Z) — atualize o app/servidor" e não sincroniza.
@@ -1755,7 +1819,8 @@ expiração nem entrega na reconexão.
   find_files, write_file, edit_file, shell, process_start, process_logs, process_list, process_stop`
   (e `present_file`, desde 1.10.0 — as tools "só no computador" da §4.3.6)
   (também em `config.voice.tools.enabledTools`, as tools liberadas na chamada de voz — desde 1.5.0), **ou**
-  `config.skills.enabled`.
+  `config.skills.enabled`, **ou** (desde 1.14.0) algum conector ligado em `config.mcpServers` (rodam no
+  host: stdio ativado nele, login OAuth por aparelho).
 - Ao assumir/trocar o host de um chat com ferramentas locais **que já rodou num computador** (desde
   1.10.0: registro com `hostCwd`; sem `hostCwd` as ferramentas locais nunca rodaram e a troca é livre — o
   padrão de tools inclui as do computador, então quase todo chat as tem na lista), o cliente DEVE
@@ -2020,6 +2085,7 @@ Num chat só ao vivo o `snapshot` ganha `live: { lseq }` (o `lseq` atual do host
 | `memory` | (depois de remapear a coleção) mesma coleção e título igual (sem caixa/acento) |
 | `chat` / `session` / `message` | só por id |
 | `skill` | não entra no merge (opt-in, §13) |
+| `mcp_server` | mesmo `name` (o nome curto vai no nome das tools) — desde 1.14.0 |
 
 5. **Remapeamento** de referências locais (ids locais deduplicados → ids online): `ChatConfig.providerId`,
    `ChatConfig.smartApprove.providerId`, `ChatConfig.smartApprove.capture.providerId`,
@@ -2029,7 +2095,7 @@ Num chat só ao vivo o `snapshot` ganha `live: { lseq }` (o `lseq` atual do host
    `sttSettings.api.providerId`, `ttsSettings.api.providerId` e `voiceCallDefaults.model.providerId`
    (desde 1.5.0); `ChatConfig.presetId`, setting
    `defaultPresetId`; `ChatConfig.memory.collections[]` e `writeTo` (chats e personas), `Memory.collectionId`;
-   `Memory.supersedesId`. Metadados informativos em `MessageMeta` (inclusive `voice`/`voiceCall`) não
+   `Memory.supersedesId`; as chaves de `ChatConfig.mcpServers` (chats e personas, desde 1.14.0). Metadados informativos em `MessageMeta` (inclusive `voice`/`voiceCall`) não
    são remapeados. `ChatConfig.overrides` (desde 1.10.0) não tem ids; depois do merge, as unidades
    herdadas dos chats seguem a persona e os padrões de "Novos chats" que venceram (herança ao vivo,
    §4.3.6) — a persona online vencedora pode mudar os campos herdados dos chats locais.
@@ -2578,6 +2644,7 @@ gastem o limite do dono do e-mail ou o bloqueiem.
 | 1.11.0 | 2026-11-13 | Adições compatíveis — **tools compactadas** (§4.3.6): `ChatConfig.toolsCompact` (padrão ligado) e `toolsFull` (as que vão completas); tool compacta = nome + descrição curta do app (1–20 palavras) com esquema vazio; `search_tool` automática (só com alguma tool compacta, nunca escolhível) devolve a definição completa; prompt fixo curto no fim do system prompt; textos do app visíveis na UI; erro de argumentos devolve a definição completa; vale para memória/skills, subagentes, chamada de voz (menos `end_call`) e o texto gerado do modo tools no prompt; unidades de herança `toolsCompact` e `toolsFull.<tool>`. Tool **`datetime`** (`format` opcional, códigos `strftime`, fuso do aparelho que roda o turno; no padrão de tools; o system prompt continua sem data). Apps < 1.11.0 ignoram os campos novos e mostram as tools novas como desconhecidas. Sem mudança no servidor além da versão. |
 | 1.12.0 | 2026-11-13 | Adições compatíveis — **busca nativa de ferramentas** (§4.3.6): com a compactação, o host escolhe por request a busca nativa da Anthropic (host oficial, Claude 4.5+: tools completas com `defer_loading` + `tool_search_tool_regex_20251119`, cache numa tool não adiada, prompt fixo nativo visível) ou a do OpenRouter (Messages API + `openrouter:tool_search`, só para modelos servidos por ela e chats compatíveis), e senão a versão local de 1.11.0 com aviso na UI; queda para a local quando o provedor recusa, lembrada por 24 h no dispositivo (`toolSearchCaps`, §4.4); `search_tool` renomeada `tool_search` (alias de leitura, histórico não regravado); `ApiMessage.native` (blocos da resposta, sem pensamento, reenviados só ao mesmo provedor/API/modelo e se ainda batem com a forma canônica) e `MessageMeta.toolSearch` (§4.3.8). Apps < 1.12.0 ignoram `native` e mostram `tool_search` como desconhecida. Sem mudança no servidor além da versão. |
 | 1.13.0 | 2026-11-14 | Adição compatível — **arquivo selecionado** na mensagem do usuário: `MessageMeta.openFile { path }` (o arquivo aberto na pré-visualização ou mencionado pelo menu do arquivo ao enviar); o host acrescenta à mensagem enviada ao modelo um texto fixo com o caminho, e os clientes mostram uma linha "Arquivo selecionado: …" com o texto exato visível (§4.3.8); os comandos remotos `send`/`force` levam `meta: { openFile }` (§8.6). Hosts < 1.13.0 ignoram o campo. Sem mudança no servidor além da versão. |
+| 1.14.0 | 2026-11-15 | Adição compatível — **conectores (servidores MCP)**: registro `mcp_server` (LWW por campo; cadastro da conta: transporte stdio/HTTP, OAuth, aprovação por conector/tool, teto, última lista de tools vista) e a escolha por persona/chat em `ChatConfig.mcpServers` (unidade da herança por conector) e `mcpSubagents` (§4.3.10, §4.3.6). Estado do aparelho nunca sincronizado: stdio só roda depois de "Ativar neste computador" (comando exato; muda → confirma de novo), login OAuth e tokens por aparelho (`mcpLocal`/`mcpAuth`, §4.4). Servidor: aceita o tipo e anuncia `features.mcpServers` (§6.2); clientes só enviam o tipo com a feature. Merge do primeiro login deduplica conectores pelo nome e remapeia as chaves de `mcpServers` (§12). Conector ligado conta como ferramenta local na troca de host (§8.9). Apps < 1.14.0 ignoram o tipo (opaco) e preservam os campos da config. |
 
 ---
 

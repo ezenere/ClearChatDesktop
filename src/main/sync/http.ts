@@ -106,7 +106,8 @@ export async function fetchServerInfo(base: string, timeoutMs = 10_000): Promise
     signupUrl: typeof links.signup === 'string' ? links.signup : undefined,
     insecure: base.startsWith('http://'),
     push: !!features.push,
-    liveChats: features.liveChats === true
+    liveChats: features.liveChats === true,
+    mcpServers: features.mcpServers === true
   }
 }
 

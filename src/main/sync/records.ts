@@ -7,6 +7,7 @@ import { freezeChatsOfPreset } from '../chatInherit'
 import type Database from 'better-sqlite3'
 import { homedir } from 'node:os'
 import { providerKind } from '@shared/providerKinds'
+import { normalizeMcpServer } from '@shared/mcp'
 import type { AgentEvent, ApiMessage, MessageMeta, Session, StoredMessage } from '@shared/types'
 import type { SyncScope } from '@shared/sync'
 import { toBranchSel, type BranchSel } from '@shared/branches'
@@ -23,6 +24,8 @@ export type RecordType =
   | 'session'
   | 'message'
   | 'skill'
+  // conectores (servidores MCP, desde 1.14.0 — §4.3.10)
+  | 'mcp_server'
 
 export const RECORD_TYPES: RecordType[] = [
   'provider',
@@ -33,12 +36,20 @@ export const RECORD_TYPES: RecordType[] = [
   'chat',
   'session',
   'message',
-  'skill'
+  'skill',
+  'mcp_server'
 ]
 export const isRecordType = (t: string): t is RecordType => (RECORD_TYPES as string[]).includes(t)
 
 /** Tipos LWW por campo (merge 3-way em conflito, §7.5). */
-export const FIELD_LWW: RecordType[] = ['provider', 'preset', 'memory_collection', 'memory', 'chat']
+export const FIELD_LWW: RecordType[] = [
+  'provider',
+  'preset',
+  'memory_collection',
+  'memory',
+  'chat',
+  'mcp_server'
+]
 /** Conteúdo do chat (regras de host, §8). */
 export const isContent = (t: string): boolean => t === 'session' || t === 'message'
 
@@ -339,6 +350,21 @@ export function buildLocal(
   extra: { hostCwd?: unknown } = {}
 ): LocalRecord | null {
   switch (type) {
+    case 'mcp_server': {
+      const r = conn.prepare('SELECT * FROM mcp_servers WHERE id = ?').get(id) as
+        { data_json: string; created_at: number; updated_at: number } | undefined
+      if (!r) return null
+      let data: Plain = {}
+      try {
+        data = JSON.parse(r.data_json) as Plain
+      } catch {
+        /* registro local corrompido: vai vazio (o leitor descarta) */
+      }
+      return {
+        scope: null,
+        plain: clean({ sv: 1, ...data, createdAt: r.created_at, updatedAt: r.updated_at })
+      }
+    }
     case 'provider': {
       const r = conn.prepare('SELECT * FROM providers WHERE id = ?').get(id) as
         | {
@@ -590,6 +616,8 @@ export function listLocalIds(conn: Database.Database, type: RecordType): string[
   switch (type) {
     case 'provider':
       return col('SELECT id FROM providers ORDER BY created_at')
+    case 'mcp_server':
+      return col('SELECT id FROM mcp_servers ORDER BY created_at')
     case 'preset':
       return col('SELECT id FROM presets ORDER BY created_at')
     case 'memory_collection':
@@ -771,6 +799,22 @@ export function applyRemote(
 ): ApplyResult {
   const res = newResult()
   switch (type) {
+    case 'mcp_server': {
+      // registro inválido (versão futura com outro transporte etc.): não grava — o próximo pull
+      // de um app que o entenda o aplica; o servidor guarda o registro como está
+      const n = normalizeMcpServer({ ...p, id })
+      if (!n) break
+      const { id: _id, createdAt, updatedAt, ...data } = n
+      void _id
+      conn
+        .prepare(
+          `INSERT INTO mcp_servers (id, data_json, created_at, updated_at) VALUES (?, ?, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET data_json = excluded.data_json, created_at = excluded.created_at, updated_at = excluded.updated_at`
+        )
+        .run(id, JSON.stringify(data), createdAt || Date.now(), updatedAt || Date.now())
+      res.scopes.add('mcp')
+      break
+    }
     case 'provider': {
       conn
         .prepare(
@@ -1047,6 +1091,10 @@ export function deleteLocal(conn: Database.Database, type: string, id: string): 
     case 'provider':
       conn.prepare('DELETE FROM providers WHERE id = ?').run(id)
       res.scopes.add('providers')
+      break
+    case 'mcp_server':
+      conn.prepare('DELETE FROM mcp_servers WHERE id = ?').run(id)
+      res.scopes.add('mcp')
       break
     case 'preset': {
       // §7.7 (desde 1.10.0): os chats locais que ainda apontam para ela congelam ANTES (a cópia
