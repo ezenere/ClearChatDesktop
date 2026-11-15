@@ -1110,6 +1110,8 @@ export type AgentEvent =
   | { type: 'memory-changed'; collectionId: string | null; memoryId: string | null }
   /** Locais de skills mudaram ou "Reescanear" (Configurações → Skills): listas recarregam. */
   | { type: 'skills-changed' }
+  /** Conectores (MCP): cadastro, estado do aparelho ou conexões mudaram — a UI relê. */
+  | { type: 'mcp-changed' }
   /** Chat apagado fora da UI (sync: apagado em outro dispositivo / divergência descartada). */
   | { type: 'chat-deleted'; chatId: string }
   /** Sync: estado da conta/conexão mudou. */

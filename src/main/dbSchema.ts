@@ -14,6 +14,16 @@ CREATE TABLE IF NOT EXISTS providers (
   created_at   INTEGER NOT NULL
 );
 
+-- Conectores (servidores MCP, SPEC → "Conectores (MCP)"): o registro sincronizado (mcp_server);
+-- data_json = McpServerDef sem id/datas. O estado do aparelho (ativado aqui, ajustes, era, tokens
+-- OAuth) fica em settings locais (mcpLocal / mcpAuth) — nunca sincroniza.
+CREATE TABLE IF NOT EXISTS mcp_servers (
+  id         TEXT PRIMARY KEY,
+  data_json  TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS settings (
   key   TEXT PRIMARY KEY,
   value TEXT
