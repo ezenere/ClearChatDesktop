@@ -272,6 +272,45 @@ export function mcpAvailability(
   return local.activated === now ? { ok: true } : { ok: false, reason: 'command-changed' }
 }
 
+// ---------------- visão para a UI ----------------
+
+export type McpState = 'idle' | 'connecting' | 'ready' | 'error' | 'needs-auth' | 'unavailable'
+
+/** Estado da conexão neste aparelho. */
+export interface McpStatus {
+  state: McpState
+  error?: string
+  /** stdio não ativado / comando mudou / celular. */
+  unavailable?: 'phone' | 'not-activated' | 'command-changed'
+  era?: 'legacy' | 'modern'
+  protocolVersion?: string
+  toolCount?: number
+  /** Últimas linhas do stderr (stdio) e eventos da conexão. */
+  log: string[]
+  connectedAt?: number
+}
+
+/** Um conector como a tela de Conectores o mostra (cadastro + estado deste aparelho). */
+export interface McpServerView {
+  server: McpServerDef
+  status: McpStatus
+  local: McpLocalState
+  /** stdio: o comando exato que "Ativar neste computador" vai gravar (com os ajustes locais). */
+  commandText?: string
+  /** HTTP com OAuth: este aparelho tem login. */
+  hasLogin: boolean
+}
+
+/** O que a tela manda ao criar/editar (o resto do registro é do app). */
+export interface McpServerInput {
+  name: string
+  title?: string
+  transport: McpTransport
+  oauth?: boolean
+  approval?: { mode: McpApprovalMode; tools?: Record<string, McpApprovalMode> }
+  timeoutMs?: number
+}
+
 // ---------------- escolha por persona/chat ----------------
 
 /** `ChatConfig.mcpServers[<id do servidor>]`. */

@@ -185,6 +185,25 @@ export const IPC = {
     getSettings: 'approvals:getSettings',
     updateSettings: 'approvals:updateSettings'
   },
+  mcp: {
+    list: 'mcp:list',
+    create: 'mcp:create',
+    update: 'mcp:update',
+    delete: 'mcp:delete',
+    activate: 'mcp:activate',
+    deactivate: 'mcp:deactivate',
+    setOverride: 'mcp:setOverride',
+    reconnect: 'mcp:reconnect',
+    disconnect: 'mcp:disconnect',
+    login: 'mcp:login',
+    cancelLogin: 'mcp:cancelLogin',
+    logout: 'mcp:logout',
+    parseImport: 'mcp:parseImport',
+    knownConfigs: 'mcp:knownConfigs',
+    readKnownConfig: 'mcp:readKnownConfig',
+    pendingElicitations: 'mcp:pendingElicitations',
+    answerElicitation: 'mcp:answerElicitation'
+  },
   skills: {
     getSettings: 'skills:getSettings',
     updateSettings: 'skills:updateSettings',
@@ -1351,6 +1370,50 @@ export interface ClearApi {
     updateSettings(
       patch: Partial<import('./types').ApprovalSettings>
     ): Promise<import('./types').ApprovalSettings>
+  }
+  /**
+   * Conectores (servidores MCP — Configurações → Conectores; escolha por persona/chat em
+   * `ChatConfig.mcpServers`). Ver SPEC → "Conectores (MCP)". Mudanças emitem `mcp-changed`.
+   */
+  mcp: {
+    /** Cadastro + estado deste aparelho (conexão, ativado aqui, login). */
+    list(): Promise<import('./mcp').McpServerView[]>
+    create(input: import('./mcp').McpServerInput): Promise<import('./mcp').McpServerView>
+    update(
+      id: string,
+      patch: Partial<import('./mcp').McpServerInput>
+    ): Promise<import('./mcp').McpServerView>
+    /** Apaga o conector (e o login/estado deste aparelho). */
+    delete(id: string): Promise<void>
+    /** stdio: "Ativar neste computador" grava o comando exato mostrado; conecta. */
+    activate(id: string): Promise<import('./mcp').McpServerView>
+    deactivate(id: string): Promise<import('./mcp').McpServerView>
+    /** Ajustes deste aparelho (stdio: args/env/cwd); null = sem ajuste. */
+    setOverride(
+      id: string,
+      override: import('./mcp').McpLocalState['override'] | null
+    ): Promise<import('./mcp').McpServerView>
+    /** Conecta de novo (Testar/Reconectar) e devolve o estado. */
+    reconnect(id: string): Promise<import('./mcp').McpServerView>
+    disconnect(id: string): Promise<import('./mcp').McpServerView>
+    /** Login OAuth neste aparelho (abre o navegador; espera até 5 min). */
+    login(id: string): Promise<{ ok: true } | { ok: false; error: string }>
+    cancelLogin(id: string): Promise<void>
+    logout(id: string): Promise<import('./mcp').McpServerView>
+    /** JSON de outro app → itens importáveis (nada é gravado). */
+    parseImport(
+      text: string
+    ): Promise<{ items: import('./mcp').McpImportItem[]; skipped: string[] } | { error: string }>
+    /** Configs de outros apps que existem nesta máquina (Claude Desktop, Claude Code, Cursor). */
+    knownConfigs(): Promise<{ app: string; path: string }[]>
+    /** Só os servidores de um desses arquivos (JSON `{"mcpServers": …}`). */
+    readKnownConfig(path: string): Promise<string>
+    pendingElicitations(): Promise<import('./types').McpElicitRequest[]>
+    answerElicitation(
+      id: string,
+      action: 'accept' | 'decline' | 'cancel',
+      values?: Record<string, unknown>
+    ): Promise<{ ok: true } | { ok: false; errors: Record<string, string> }>
   }
   /** Skills (Configurações → Skills; seleção por chat em ChatConfig.skills). Ver SPEC → Skills. */
   skills: {

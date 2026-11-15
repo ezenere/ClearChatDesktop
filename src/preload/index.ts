@@ -128,6 +128,25 @@ const api: FullClearApi = {
     refreshSnapshot: (sessionId) => invoke(IPC.memory.refreshSnapshot, sessionId),
     extractNow: (sessionId) => invoke(IPC.memory.extractNow, sessionId)
   },
+  mcp: {
+    list: () => invoke(IPC.mcp.list),
+    create: (input) => invoke(IPC.mcp.create, input),
+    update: (id, patch) => invoke(IPC.mcp.update, id, patch),
+    delete: (id) => invoke(IPC.mcp.delete, id),
+    activate: (id) => invoke(IPC.mcp.activate, id),
+    deactivate: (id) => invoke(IPC.mcp.deactivate, id),
+    setOverride: (id, override) => invoke(IPC.mcp.setOverride, id, override),
+    reconnect: (id) => invoke(IPC.mcp.reconnect, id),
+    disconnect: (id) => invoke(IPC.mcp.disconnect, id),
+    login: (id) => invoke(IPC.mcp.login, id),
+    cancelLogin: (id) => invoke(IPC.mcp.cancelLogin, id),
+    logout: (id) => invoke(IPC.mcp.logout, id),
+    parseImport: (text) => invoke(IPC.mcp.parseImport, text),
+    knownConfigs: () => invoke(IPC.mcp.knownConfigs),
+    readKnownConfig: (path) => invoke(IPC.mcp.readKnownConfig, path),
+    pendingElicitations: () => invoke(IPC.mcp.pendingElicitations),
+    answerElicitation: (id, action, values) => invoke(IPC.mcp.answerElicitation, id, action, values)
+  },
   skills: {
     getSettings: () => invoke(IPC.skills.getSettings),
     updateSettings: (patch) => invoke(IPC.skills.updateSettings, patch),

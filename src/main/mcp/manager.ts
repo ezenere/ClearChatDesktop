@@ -17,25 +17,13 @@ import {
   mcpAvailability,
   normalizeToolsCache,
   type McpServerDef,
+  type McpStatus,
   type McpToolInfo,
   type McpTransport
 } from '@shared/mcp'
 import { mcpLocal, mcpRepo } from './store'
 
-export type McpState = 'idle' | 'connecting' | 'ready' | 'error' | 'needs-auth' | 'unavailable'
-
-export interface McpStatus {
-  state: McpState
-  error?: string
-  /** stdio não ativado / comando mudou / celular. */
-  unavailable?: 'phone' | 'not-activated' | 'command-changed'
-  era?: 'legacy' | 'modern'
-  protocolVersion?: string
-  toolCount?: number
-  /** Últimas linhas do stderr (stdio) e eventos da conexão. */
-  log: string[]
-  connectedAt?: number
-}
+export type { McpState, McpStatus } from '@shared/mcp'
 
 /** Quem chamou a tool (para o formulário de elicitação aparecer no chat certo). */
 export interface McpCallOwner {

@@ -14,6 +14,7 @@ import {
   type SkillsDiscovery,
   type SkillsSettings
 } from '@shared/skills'
+import { parseMcpImport, type McpServerView } from '@shared/mcp'
 import type {
   ClearApi,
   TtsClipsView,
@@ -2491,6 +2492,169 @@ export function createMockApi(scenario: string): ClearApi {
         return delay(approvalSettings)
       }
     },
+    // conectores (MCP) de demonstração: um local ativado e conectado, um remoto pedindo login
+    mcp: (() => {
+      const now = Date.now()
+      const views: McpServerView[] = [
+        {
+          server: {
+            id: 'mcp_demo_pw',
+            name: 'playwright',
+            title: 'Navegador (Playwright)',
+            transport: {
+              type: 'stdio',
+              command: 'npx',
+              args: ['-y', '@playwright/mcp@latest'],
+              env: {}
+            },
+            approval: { mode: 'ask', tools: { browser_snapshot: 'always' } },
+            tools: {
+              tools: [
+                {
+                  name: 'browser_navigate',
+                  description: 'Abre uma URL na aba atual.',
+                  inputSchema: {
+                    type: 'object',
+                    properties: { url: { type: 'string' } },
+                    required: ['url']
+                  }
+                },
+                {
+                  name: 'browser_snapshot',
+                  description: 'Captura a árvore de acessibilidade da página.',
+                  inputSchema: { type: 'object', properties: {} },
+                  annotations: { readOnlyHint: true }
+                },
+                {
+                  name: 'browser_click',
+                  description: 'Clica num elemento.',
+                  inputSchema: { type: 'object', properties: { ref: { type: 'string' } } }
+                }
+              ],
+              server: { name: 'playwright', version: '0.0.41' },
+              at: now
+            },
+            createdAt: now - 1000,
+            updatedAt: now - 1000
+          },
+          status: {
+            state: 'ready',
+            era: 'legacy',
+            protocolVersion: '2025-06-18',
+            toolCount: 3,
+            log: [],
+            connectedAt: now
+          },
+          local: { activated: 'npx -y @playwright/mcp@latest', era: 'legacy' },
+          commandText: 'npx -y @playwright/mcp@latest',
+          hasLogin: false
+        },
+        {
+          server: {
+            id: 'mcp_demo_notion',
+            name: 'notion',
+            title: 'Notion',
+            transport: { type: 'http', url: 'https://mcp.notion.com/mcp', headers: {} },
+            oauth: true,
+            approval: { mode: 'smart' },
+            createdAt: now,
+            updatedAt: now
+          },
+          status: { state: 'needs-auth', error: 'Precisa entrar (OAuth) neste aparelho.', log: [] },
+          local: {},
+          hasLogin: false
+        }
+      ]
+      const find = (id: string): McpServerView => {
+        const v = views.find((x) => x.server.id === id)
+        if (!v) throw new Error('Conector não encontrado.')
+        return v
+      }
+      const changed = <T>(v: T): Promise<T> => {
+        emit({ type: 'mcp-changed' })
+        return delay(v)
+      }
+      return {
+        list: () => delay(views.map((v) => ({ ...v }))),
+        create: async (input) => {
+          const v: McpServerView = {
+            server: {
+              ...input,
+              id: `mcp_${Date.now()}`,
+              approval: input.approval ?? { mode: 'ask' },
+              createdAt: Date.now(),
+              updatedAt: Date.now()
+            },
+            status:
+              input.transport.type === 'stdio'
+                ? { state: 'unavailable', unavailable: 'not-activated', log: [] }
+                : { state: 'idle', log: [] },
+            local: {},
+            ...(input.transport.type === 'stdio'
+              ? { commandText: [input.transport.command, ...input.transport.args].join(' ') }
+              : {}),
+            hasLogin: false
+          }
+          views.push(v)
+          return changed(v)
+        },
+        update: async (id, patch) => {
+          const v = find(id)
+          v.server = { ...v.server, ...patch, updatedAt: Date.now() }
+          return changed(v)
+        },
+        delete: async (id) => {
+          views.splice(views.indexOf(find(id)), 1)
+          await changed(null)
+        },
+        activate: async (id) => {
+          const v = find(id)
+          v.local = { ...v.local, activated: v.commandText }
+          v.status = { state: 'ready', toolCount: v.server.tools?.tools.length ?? 0, log: [] }
+          return changed(v)
+        },
+        deactivate: async (id) => {
+          const v = find(id)
+          v.local = { ...v.local, activated: undefined }
+          v.status = { state: 'unavailable', unavailable: 'not-activated', log: [] }
+          return changed(v)
+        },
+        setOverride: async (id, override) => {
+          const v = find(id)
+          v.local = { ...v.local, override: override ?? undefined }
+          return changed(v)
+        },
+        reconnect: async (id) => changed(find(id)),
+        disconnect: async (id) => {
+          const v = find(id)
+          v.status = { ...v.status, state: 'idle' }
+          return changed(v)
+        },
+        login: async (id) => {
+          const v = find(id)
+          v.hasLogin = true
+          v.status = { state: 'ready', toolCount: 0, log: [] }
+          await changed(null)
+          return { ok: true as const }
+        },
+        cancelLogin: async () => {},
+        logout: async (id) => {
+          const v = find(id)
+          v.hasLogin = false
+          v.status = { state: 'needs-auth', log: [] }
+          return changed(v)
+        },
+        parseImport: async (text) =>
+          parseMcpImport(
+            text,
+            views.map((v) => v.server.name)
+          ),
+        knownConfigs: async () => [],
+        readKnownConfig: async () => '{}',
+        pendingElicitations: async () => [],
+        answerElicitation: async () => ({ ok: true as const })
+      }
+    })(),
     skills: (() => {
       // skills fictícias (só para o modo mock da UI)
       let settings: SkillsSettings = defaultSkillsSettings()

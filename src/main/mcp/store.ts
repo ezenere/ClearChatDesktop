@@ -9,9 +9,9 @@ import {
   normalizeToolsCache,
   effectiveTransport,
   validateMcpName,
-  type McpApprovalMode,
   type McpLocalState,
   type McpServerDef,
+  type McpServerInput,
   type McpToolsCache,
   type McpTransport
 } from '@shared/mcp'
@@ -49,14 +49,7 @@ export function serverData(s: McpServerDef): Record<string, unknown> {
   return rest
 }
 
-export interface McpServerInput {
-  name: string
-  title?: string
-  transport: McpTransport
-  oauth?: boolean
-  approval?: { mode: McpApprovalMode; tools?: Record<string, McpApprovalMode> }
-  timeoutMs?: number
-}
+export type { McpServerInput } from '@shared/mcp'
 
 let listeners: (() => void)[] = []
 /** Avisos de mudança (o main liga ao evento `mcp-changed` e ao gerenciador de conexões). */

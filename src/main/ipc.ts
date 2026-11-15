@@ -1,6 +1,11 @@
 // Registro dos handlers IPC (ipcMain.handle) — um para cada canal em `IPC` (src/shared/ipc.ts).
 // Handlers recebem os argumentos posicionais na mesma ordem da API do preload.
 import { withoutStaleNative } from '@shared/toolSearch'
+import * as mcpApi from './mcp/api'
+import * as mcpOAuth from './mcp/oauth'
+import { mcpManager } from './mcp/manager'
+import { answerElicitation, pendingElicitations } from './mcp'
+import type { McpLocalState, McpServerInput } from '@shared/mcp'
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import {
   ALL_CHANNELS,
@@ -1066,6 +1071,40 @@ export function registerIpc(): void {
       setWebSearchKey(engine, key),
     [IPC.webSearch.revealKey]: (engine: SearchEngineId) => revealWebSearchKey(engine),
     [IPC.webSearch.test]: (engine: SearchEngineId) => testWebSearchEngine(engine),
+
+    // ---- conectores (SPEC → "Conectores (MCP)") ----
+    [IPC.mcp.list]: () => mcpApi.listViews(),
+    [IPC.mcp.create]: (input: McpServerInput) => mcpApi.createServer(input),
+    [IPC.mcp.update]: (id: string, patch: Partial<McpServerInput>) =>
+      mcpApi.updateServer(id, patch),
+    [IPC.mcp.delete]: (id: string) => mcpApi.deleteServer(id),
+    [IPC.mcp.activate]: (id: string) => mcpApi.activate(id),
+    [IPC.mcp.deactivate]: (id: string) => mcpApi.deactivate(id),
+    [IPC.mcp.setOverride]: (id: string, o: McpLocalState['override'] | null) =>
+      mcpApi.setOverride(id, o),
+    [IPC.mcp.reconnect]: async (id: string) => {
+      await mcpManager.reconnect(id)
+      return mcpApi.serverView(id)
+    },
+    [IPC.mcp.disconnect]: async (id: string) => {
+      await mcpManager.disconnect(id)
+      return mcpApi.serverView(id)
+    },
+    [IPC.mcp.login]: (id: string) => mcpOAuth.mcpLogin(id),
+    [IPC.mcp.cancelLogin]: (id: string) => mcpOAuth.cancelMcpLogin(id),
+    [IPC.mcp.logout]: async (id: string) => {
+      await mcpOAuth.mcpLogout(id)
+      return mcpApi.serverView(id)
+    },
+    [IPC.mcp.parseImport]: (text: string) => mcpApi.parseImport(String(text ?? '')),
+    [IPC.mcp.knownConfigs]: () => mcpApi.knownConfigPaths(),
+    [IPC.mcp.readKnownConfig]: (path: string) => mcpApi.readKnownConfig(String(path)),
+    [IPC.mcp.pendingElicitations]: () => pendingElicitations(),
+    [IPC.mcp.answerElicitation]: (
+      id: string,
+      action: 'accept' | 'decline' | 'cancel',
+      values?: Record<string, unknown>
+    ) => answerElicitation(id, action, values ?? {}),
 
     // ---- skills (SPEC → Skills) ----
     [IPC.skills.getSettings]: () => skills.getSkillsSettings(),
