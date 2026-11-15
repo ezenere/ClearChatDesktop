@@ -8,7 +8,15 @@
 // Rodar: npm run test:unit
 import { after, test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import {
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  truncateSync,
+  writeFileSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
@@ -21,6 +29,7 @@ import {
   PRESENT_FILE_LIMITS,
   presentResultText,
   presentTitleBlock,
+  sniffMagic,
   VIEWER_HTML_CSP,
   VIEWER_LIMITS,
   viewerAssetMime,
@@ -32,6 +41,7 @@ import {
   checkPresented,
   grantedPath,
   openViewerFile,
+  parseByteRange,
   readViewerText,
   registerPresented,
   serveViewerRequest,
@@ -555,4 +565,90 @@ test('readViewerText: teto de 5 MB com aviso; registerPresented concede e anota 
   assert.ok(reg2.has(join(ROOT, 'docs', 'relatorio.md')))
   assert.ok(!reg2.has(join(ROOT, 'x.md'))) // com erro: não concede
   assert.deepEqual(await registerPresented({ files: [] }, null, reg2), { files: [] })
+})
+
+// ---------------- vídeo (prévia no painel) ----------------
+
+const ftyp = (brand: string): Uint8Array =>
+  Uint8Array.from([0, 0, 0, 0x18, ...Buffer.from('ftyp' + brand), 0, 0, 2, 0])
+
+test('vídeo: extensão, assinatura (ftyp/EBML, fora HEIF/AVIF), mime e rótulo', () => {
+  for (const n of ['a.mp4', 'a.M4V', 'a.webm', 'a.ogv', 'a.mov', 'a.mkv'])
+    assert.equal(kindFromName(n), 'video', n)
+  for (const n of ['a.avi', 'a.wmv', 'a.flv', 'a.3gp']) assert.equal(kindFromName(n), 'binary', n)
+  assert.equal(detectViewerKind('gravacao.mp4', new Uint8Array([0, 1, 2, 0xff])), 'video')
+  assert.deepEqual(sniffMagic(ftyp('isom')), { kind: 'video', ext: 'mp4' })
+  assert.deepEqual(sniffMagic(ftyp('qt  ')), { kind: 'video', ext: 'mov' })
+  assert.equal(sniffMagic(ftyp('heic')), null)
+  assert.equal(sniffMagic(ftyp('avif')), null)
+  const ebml = (doc: string): Uint8Array =>
+    Uint8Array.from([0x1a, 0x45, 0xdf, 0xa3, 0x9f, 0x42, 0x82, 0x84, ...Buffer.from(doc)])
+  assert.deepEqual(sniffMagic(ebml('webm')), { kind: 'video', ext: 'webm' })
+  assert.deepEqual(sniffMagic(ebml('matroska')), { kind: 'video', ext: 'mkv' })
+  assert.equal(detectViewerKind('sem-extensao', ftyp('mp42')), 'video')
+  assert.equal(viewerMime('video', 'a.webm'), 'video/webm')
+  assert.equal(viewerMime('video', 'a.mov'), 'video/quicktime')
+  assert.equal(viewerMime('video', 'gravacao', ebml('webm')), 'video/webm')
+  assert.equal(viewerMime('video', 'gravacao'), 'video/mp4')
+})
+
+test('parseByteRange: a-b, a-, -n, fora do arquivo, inválido / vários intervalos', () => {
+  assert.deepEqual(parseByteRange('bytes=0-99', 1000), { start: 0, end: 99 })
+  assert.deepEqual(parseByteRange('bytes=500-', 1000), { start: 500, end: 999 })
+  assert.deepEqual(parseByteRange('bytes=900-5000', 1000), { start: 900, end: 999 })
+  assert.deepEqual(parseByteRange('bytes=-100', 1000), { start: 900, end: 999 })
+  assert.deepEqual(parseByteRange('bytes=-5000', 1000), { start: 0, end: 999 })
+  assert.equal(parseByteRange('bytes=1000-', 1000), 'unsatisfiable')
+  assert.equal(parseByteRange('bytes=50-10', 1000), 'unsatisfiable')
+  assert.equal(parseByteRange('bytes=-0', 1000), 'unsatisfiable')
+  assert.equal(parseByteRange('bytes=0-', 0), 'unsatisfiable')
+  assert.equal(parseByteRange(null, 1000), null)
+  assert.equal(parseByteRange('bytes=-', 1000), null)
+  assert.equal(parseByteRange('bytes=0-1,5-9', 1000), null)
+  assert.equal(parseByteRange('items=0-1', 1000), null)
+})
+
+test('serveViewerRequest: Range → 206/416 e vídeo acima do teto dos outros tipos', async () => {
+  const reg = new ViewerRegistry()
+  const bytes = Buffer.alloc(4096)
+  for (let i = 0; i < bytes.length; i++) bytes[i] = i % 251
+  const path = join(ROOT, 'clipe.mp4')
+  writeFileSync(path, bytes)
+  const g = reg.grant(path, 'video')
+  const url = viewerUrl(g.token, 'clipe.mp4')
+  let r = await serveViewerRequest(url, reg)
+  assert.equal(r.status, 200)
+  assert.equal(r.headers.get('content-type'), 'video/mp4')
+  assert.equal(r.headers.get('accept-ranges'), 'bytes')
+  assert.equal(r.headers.get('content-length'), '4096')
+  r = await serveViewerRequest(url, reg, 'bytes=100-199')
+  assert.equal(r.status, 206)
+  assert.equal(r.headers.get('content-range'), 'bytes 100-199/4096')
+  assert.equal(r.headers.get('content-length'), '100')
+  assert.equal(Buffer.from(await r.arrayBuffer()).equals(bytes.subarray(100, 200)), true)
+  r = await serveViewerRequest(url, reg, 'bytes=4000-')
+  assert.equal(r.status, 206)
+  assert.equal(Buffer.from(await r.arrayBuffer()).equals(bytes.subarray(4000)), true)
+  r = await serveViewerRequest(url, reg, 'bytes=9000-')
+  assert.equal(r.status, 416)
+  assert.equal(r.headers.get('content-range'), 'bytes */4096')
+  // acima do teto (arquivo esparso, sem gravar 200 MB): vídeo serve aos pedaços, imagem 413
+  const big = join(TMP, 'grande.mp4')
+  writeFileSync(big, '')
+  truncateSync(big, VIEWER_LIMITS.binaryMaxBytes + 1)
+  const bigVideo = reg.grant(big, 'video')
+  r = await serveViewerRequest(viewerUrl(bigVideo.token, 'grande.mp4'), reg, 'bytes=0-15')
+  assert.equal(r.status, 206)
+  assert.equal(r.headers.get('content-range'), `bytes 0-15/${VIEWER_LIMITS.binaryMaxBytes + 1}`)
+  assert.equal((await r.arrayBuffer()).byteLength, 16)
+  const bigPng = join(TMP, 'grande.png')
+  writeFileSync(bigPng, '')
+  truncateSync(bigPng, VIEWER_LIMITS.binaryMaxBytes + 1)
+  const bigImage = reg.grant(bigPng, 'image')
+  assert.equal((await serveViewerRequest(viewerUrl(bigImage.token, 'grande.png'), reg)).status, 413)
+  // os outros tipos também aceitam Range (PDF do Chromium pede aos pedaços)
+  const md = reg.grant(join(ROOT, 'docs', 'relatorio.md'), 'markdown')
+  r = await serveViewerRequest(viewerUrl(md.token, 'relatorio.md'), reg, 'bytes=0-1')
+  assert.equal(r.status, 206)
+  assert.equal(await r.text(), '# ')
 })

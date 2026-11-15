@@ -74,7 +74,8 @@ app.on('second-instance', () => {
 
 // clearchat-attachment://<sha256>.<ext> → arquivo do store de anexos (miniaturas no renderer).
 // clearchat-file://<token>/<nome> → arquivo da allowlist do visualizador (present_file / aba
-// Arquivos). Sem supportFetchAPI/corsEnabled: o renderer só usa em <img>/<iframe>; texto vem por IPC.
+// Arquivos). Sem supportFetchAPI/corsEnabled: o renderer só usa em <img>/<iframe>/<video> (stream:
+// pedidos com Range para o vídeo tocar e avançar); texto vem por IPC.
 protocol.registerSchemesAsPrivileged([
   {
     scheme: ATTACHMENT_SCHEME,
@@ -210,7 +211,9 @@ app.whenReady().then(() => {
   // Visualizador de arquivos: só tokens emitidos pelo main (ver fileViewer.ts). Temporários de
   // arquivos remotos abertos no app: userData/tmp-viewer (limpa o que sobrou da última execução)
   setViewerTempDir(join(app.getPath('userData'), 'tmp-viewer'))
-  protocol.handle(VIEWER_SCHEME, (req) => serveViewerRequest(req.url))
+  protocol.handle(VIEWER_SCHEME, (req) =>
+    serveViewerRequest(req.url, undefined, req.headers.get('range'))
+  )
   setViewerDeviceSource(() => {
     const e = syncEngine()
     return e?.active && e.deviceId ? { id: e.deviceId, name: e.deviceName } : null

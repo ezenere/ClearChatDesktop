@@ -301,6 +301,8 @@ export function createRemoteSources(
   /** Quanto a prévia precisa do arquivo. */
   function neededBytes(kind: ViewerKind, size: number, headLen: number): number {
     if (kind === 'image' || kind === 'pdf' || kind === 'html') return size
+    // vídeo toca do blob inteiro; acima do teto só o começo (painel: "grande demais", Salvar como…)
+    if (kind === 'video') return size <= opts.maxFileBytes ? size : Math.min(size, headLen)
     if (kind === 'binary') return Math.min(size, headLen)
     return Math.min(size, VIEWER_LIMITS.textMaxBytes)
   }

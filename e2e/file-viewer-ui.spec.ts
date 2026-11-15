@@ -553,6 +553,48 @@ app.on('window-all-closed', () => app.quit())
     await page.waitForTimeout(200)
   })
 
+  await step('vídeo: toca no painel (sem zoom) e o que não toca cai no sem prévia', async () => {
+    await page.getByRole('tab', { name: 'Arquivos' }).click()
+    const entry = (name: string): ReturnType<Page['locator']> =>
+      page.getByTestId('right-panel').getByTestId('files-entry').filter({ hasText: name })
+    await entry('demo.webm').click()
+    const video = viewer().getByTestId('viewer-video')
+    await video.waitFor()
+    assert.equal(await viewer().getByTestId('viewer-body').getAttribute('data-kind'), 'video')
+    const duration = await video.evaluate(
+      (v: HTMLVideoElement) =>
+        new Promise<number>((res) =>
+          v.readyState >= 1
+            ? res(v.duration)
+            : v.addEventListener('loadedmetadata', () => res(v.duration), { once: true })
+        )
+    )
+    assert.ok(duration > 0.5 && duration < 2, `duração ${duration}`)
+    // toca de verdade (sem trilha de áudio; mudo por garantia)
+    await video.evaluate(async (v: HTMLVideoElement) => {
+      v.muted = true
+      await v.play()
+    })
+    await page.waitForTimeout(500)
+    const t = await video.evaluate((v: HTMLVideoElement) => v.currentTime)
+    assert.ok(t > 0, `currentTime ${t}`)
+    assert.equal(await viewer().getByRole('button', { name: 'Aumentar zoom' }).count(), 0)
+    await shot('05d-video')
+    await entry('gravacao.mkv').click()
+    await viewer().getByTestId('viewer-unsupported').waitFor()
+    assert.equal(
+      await viewer().getByTestId('viewer-unsupported-reason').innerText(),
+      'O player embutido não toca este vídeo.'
+    )
+    assert.ok(
+      (await viewer().getByTestId('viewer-unsupported').innerText()).includes('Abrir arquivo')
+    )
+    await shot('05e-video-unsupported')
+    await viewer().getByRole('button', { name: 'Fechar painel de arquivo' }).click()
+    await viewer().waitFor({ state: 'detached' })
+    return `${duration.toFixed(2)} s, tocou até ${t.toFixed(2)} s`
+  })
+
   // ---------------- controle remoto: arquivos do host pelo sync (fonte remota) ----------------
   const HROOT = '/srv/escritorio/vendas'
   const hostState = (mode: 'remote' | 'host-offline'): Promise<void> =>

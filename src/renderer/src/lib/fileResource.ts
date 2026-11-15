@@ -110,9 +110,11 @@ export function resourceFromBytes(
   } = {}
 ): ViewerResource {
   let url: string | null = null
-  const binaryKinds: ViewerKind[] = ['image', 'pdf', 'html']
+  const binaryKinds: ViewerKind[] = ['image', 'pdf', 'html', 'video']
   const served = opts.blob ?? bytes
-  if (binaryKinds.includes(info.kind) && served.length <= VIEWER_LIMITS.binaryMaxBytes)
+  // vídeo só com o arquivo inteiro (acima do teto do host vem só o começo: sem prévia)
+  const whole = info.kind !== 'video' || bytes.length >= info.size
+  if (binaryKinds.includes(info.kind) && whole && served.length <= VIEWER_LIMITS.binaryMaxBytes)
     url = URL.createObjectURL(new Blob([served as BlobPart], { type: info.mime }))
   return {
     info,

@@ -370,7 +370,8 @@ function Unsupported({
   onSaveAs,
   onExternal,
   onRun,
-  note
+  note,
+  reason = 'Este tipo de arquivo não tem pré-visualização.'
 }: {
   resource: ViewerResource
   onFolder?: () => void
@@ -378,6 +379,8 @@ function Unsupported({
   onExternal?: () => void
   onRun?: () => void
   note?: string
+  /** Por que não há prévia (padrão: o tipo não tem). */
+  reason?: string
 }): React.JSX.Element {
   const { name, size, typeLabel } = resource.info
   const { icon: Icon, tone } = fileIcon(name, 'binary')
@@ -394,8 +397,8 @@ function Unsupported({
         <div className="mt-0.5 text-xs text-subtle">
           {typeLabel} · {formatBytes(size)}
         </div>
-        <div className="mt-2 text-xs text-faint">
-          Este tipo de arquivo não tem pré-visualização.
+        <div data-testid="viewer-unsupported-reason" className="mt-2 text-xs text-faint">
+          {reason}
         </div>
         {note && (
           <div
@@ -432,6 +435,39 @@ function Unsupported({
           </Button>
         )}
       </div>
+    </div>
+  )
+}
+
+/**
+ * Vídeo: controles nativos, ajustado ao painel (local: clearchat-file:// com Range; remoto: blob).
+ * Codec/contêiner que o Chromium não toca → `fallback` (o "sem prévia" com abrir/salvar).
+ */
+function VideoView({
+  url,
+  name,
+  fallback
+}: {
+  url: string
+  name: string
+  fallback: React.ReactNode
+}): React.JSX.Element {
+  const [failed, setFailed] = useState(false)
+  if (failed) return <>{fallback}</>
+  return (
+    <div
+      data-testid="viewer-video-box"
+      className="flex h-full w-full items-center justify-center bg-black"
+    >
+      <video
+        data-testid="viewer-video"
+        src={url}
+        controls
+        preload="metadata"
+        aria-label={name}
+        onError={() => setFailed(true)}
+        className="h-full w-full object-contain"
+      />
     </div>
   )
 }
@@ -537,7 +573,7 @@ export function FileViewerPane({
   const runFile = acts.run
     ? () => void run(() => acts.run!(), 'Não foi possível executar o arquivo')
     : undefined
-  const zoomable = !!resource && kind !== 'binary'
+  const zoomable = !!resource && kind !== 'binary' && kind !== 'video'
 
   // do modo Ajustar, +/− partem da escala real (imagem) — não de 100%
   const base = (z: Zoom): number => z ?? (kind === 'image' ? fitScale : 1)
@@ -624,6 +660,17 @@ export function FileViewerPane({
       )
   } else if (resource) {
     const url = resource.url
+    const unsupported = (reason?: string): React.JSX.Element => (
+      <Unsupported
+        resource={resource}
+        onFolder={showInFolder}
+        onSaveAs={saveAs}
+        onExternal={openExternal}
+        onRun={runFile}
+        note={acts.note}
+        reason={reason}
+      />
+    )
     body =
       kind === 'image' && url ? (
         <ImageView
@@ -637,15 +684,18 @@ export function FileViewerPane({
         <PdfView url={url} name={resource.info.name} zoom={zoom} />
       ) : kind === 'html' && url ? (
         <HtmlView url={url} name={resource.info.name} zoom={effZoom} scripts={scripts} />
+      ) : kind === 'video' ? (
+        url ? (
+          <VideoView
+            url={url}
+            name={resource.info.name}
+            fallback={unsupported('O player embutido não toca este vídeo.')}
+          />
+        ) : (
+          unsupported('Vídeo grande demais para tocar do host.')
+        )
       ) : kind === 'binary' ? (
-        <Unsupported
-          resource={resource}
-          onFolder={showInFolder}
-          onSaveAs={saveAs}
-          onExternal={openExternal}
-          onRun={runFile}
-          note={acts.note}
-        />
+        unsupported()
       ) : (
         <TextKinds resource={resource} zoom={effZoom} onOpenExternal={openExternal} />
       )
@@ -791,7 +841,7 @@ export function FileViewerPane({
         data-zoom={zoom == null ? 'fit' : String(zoom)}
         className={cn(
           'min-h-0 flex-1',
-          kind === 'image' || kind === 'pdf' || kind === 'html'
+          kind === 'image' || kind === 'pdf' || kind === 'html' || kind === 'video'
             ? 'overflow-hidden'
             : 'overflow-auto'
         )}

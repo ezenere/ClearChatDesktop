@@ -795,7 +795,8 @@ export interface MessageMeta {
 }
 
 /** Tipo de visualização de um arquivo no painel (SPEC → "Visualizador de arquivos"). */
-export type ViewerKind = 'markdown' | 'html' | 'image' | 'pdf' | 'code' | 'text' | 'binary'
+export type ViewerKind =
+  'markdown' | 'html' | 'image' | 'pdf' | 'video' | 'code' | 'text' | 'binary'
 
 /** Um arquivo de uma chamada de present_file (na ordem pedida pelo modelo). */
 export interface PresentedFile {

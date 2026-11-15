@@ -33,6 +33,8 @@ export function fileIcon(name: string, kind?: ViewerKind): { icon: LucideIcon; t
       return { icon: FileImage, tone: 'text-emerald-400/90' }
     case 'pdf':
       return { icon: FileText, tone: 'text-danger/90' }
+    case 'video':
+      return { icon: FileVideo, tone: 'text-violet-400/90' }
     case 'code':
       return { icon: FileCode, tone: 'text-warning/90' }
     default:

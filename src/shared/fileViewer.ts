@@ -88,6 +88,20 @@ export const VIEWER_IMAGE_MIMES: Record<string, string> = {
 }
 
 /**
+ * Vídeos com prévia no painel (<video> do Chromium/Electron, que traz H.264/AAC/VP8/VP9/AV1). Codec
+ * que não toca (HEVC num .mov/.mkv, por exemplo) cai no "sem prévia" com os botões de abrir/salvar.
+ * avi/wmv/flv/3gp ficam como binário (o Chromium não abre esses contêineres).
+ */
+export const VIEWER_VIDEO_MIMES: Record<string, string> = {
+  mp4: 'video/mp4',
+  m4v: 'video/mp4',
+  webm: 'video/webm',
+  ogv: 'video/ogg',
+  mov: 'video/quicktime',
+  mkv: 'video/x-matroska'
+}
+
+/**
  * Extensão → linguagem do highlight.js (`highlight.js/lib/common`, o mesmo conjunto do markdown).
  * Extensão de código fora daqui vira texto puro.
  */
@@ -180,7 +194,7 @@ const BINARY_EXTS = new Set(
   (
     'zip gz tgz bz2 xz zst 7z rar tar jar war ear apk aab ipa exe dll so dylib bin o a lib obj ' +
     'class pyc pyo wasm dmg iso img deb rpm msi pkg doc docx xls xlsx ppt pptx odt ods odp key ' +
-    'pages numbers epub mobi mp3 wav ogg oga flac m4a aac opus mid midi mp4 m4v mkv mov avi webm ' +
+    'pages numbers epub mobi mp3 wav ogg oga flac m4a aac opus mid midi avi ' +
     'wmv flv 3gp sqlite sqlite3 db mdb ttf otf woff woff2 eot psd ai sketch fig xcf heic heif ' +
     'tif tiff raw cr2 nef dng blend fbx glb gltf stl pdb npy npz pkl pt onnx safetensors parquet'
   ).split(/\s+/)
@@ -196,6 +210,7 @@ export function kindFromName(name: string): ViewerKind | null {
   const ext = fileExtOf(name)
   const base = baseName(name)
   if (VIEWER_IMAGE_MIMES[ext]) return 'image'
+  if (VIEWER_VIDEO_MIMES[ext]) return 'video'
   if (ext === 'pdf') return 'pdf'
   if (ext === 'md' || ext === 'markdown' || ext === 'mdx' || ext === 'mdown') return 'markdown'
   if (ext === 'html' || ext === 'htm' || ext === 'xhtml') return 'html'
@@ -243,8 +258,10 @@ export function looksBinary(head: Uint8Array): boolean {
   return !validUtf8(b)
 }
 
-/** Assinatura de imagem/PDF nos bytes iniciais (arquivo sem extensão conhecida). */
-export function sniffMagic(head: Uint8Array): { kind: 'image' | 'pdf'; ext: string } | null {
+/** Assinatura de imagem/PDF/vídeo nos bytes iniciais (arquivo sem extensão conhecida). */
+export function sniffMagic(
+  head: Uint8Array
+): { kind: 'image' | 'pdf' | 'video'; ext: string } | null {
   const at = (i: number, ...bytes: number[]): boolean => bytes.every((v, k) => head[i + k] === v)
   const ascii = (i: number, s: string): boolean =>
     [...s].every((ch, k) => head[i + k] === ch.charCodeAt(0))
@@ -254,16 +271,28 @@ export function sniffMagic(head: Uint8Array): { kind: 'image' | 'pdf'; ext: stri
   if (ascii(0, 'RIFF') && ascii(8, 'WEBP')) return { kind: 'image', ext: 'webp' }
   if (ascii(0, 'BM') && head.length > 14) return { kind: 'image', ext: 'bmp' }
   if (ascii(0, '%PDF')) return { kind: 'pdf', ext: 'pdf' }
+  // ISO BMFF (`ftyp` no byte 4): mp4/m4v/mov — fora as marcas de imagem (HEIF/AVIF)
+  if (ascii(4, 'ftyp') && head.length >= 12) {
+    const brand = String.fromCharCode(...head.subarray(8, 12))
+    if (!/^(heic|heix|heim|heis|hevc|hevx|mif1|msf1|avif|avis)$/.test(brand))
+      return { kind: 'video', ext: brand === 'qt  ' ? 'mov' : 'mp4' }
+  }
+  // EBML (Matroska/WebM): o DocType diz qual
+  if (at(0, 0x1a, 0x45, 0xdf, 0xa3)) {
+    const txt = String.fromCharCode(...head.subarray(0, Math.min(head.length, 64)))
+    return { kind: 'video', ext: txt.includes('webm') ? 'webm' : 'mkv' }
+  }
   return null
 }
 
 /**
- * Tipo final: extensão manda para imagem/PDF/binário conhecido; texto/código/markdown/HTML com
- * bytes binários vira binário; desconhecido → assinatura (imagem/PDF) → texto × binário.
+ * Tipo final: extensão manda para imagem/PDF/vídeo/binário conhecido; texto/código/markdown/HTML
+ * com bytes binários vira binário; desconhecido → assinatura (imagem/PDF/vídeo) → texto × binário.
  */
 export function detectViewerKind(name: string, head: Uint8Array): ViewerKind {
   const byName = kindFromName(name)
-  if (byName === 'image' || byName === 'pdf' || byName === 'binary') return byName
+  if (byName === 'image' || byName === 'pdf' || byName === 'video' || byName === 'binary')
+    return byName
   if (byName) return looksBinary(head) ? 'binary' : byName
   const magic = sniffMagic(head)
   if (magic) return magic.kind
@@ -277,6 +306,12 @@ export function viewerMime(kind: ViewerKind, name: string, head?: Uint8Array): s
     if (m) return m
     const magic = head ? sniffMagic(head) : null
     return magic ? (VIEWER_IMAGE_MIMES[magic.ext] ?? 'application/octet-stream') : 'image/png'
+  }
+  if (kind === 'video') {
+    const m = VIEWER_VIDEO_MIMES[fileExtOf(name)]
+    if (m) return m
+    const magic = head ? sniffMagic(head) : null
+    return (magic && VIEWER_VIDEO_MIMES[magic.ext]) || 'video/mp4'
   }
   if (kind === 'pdf') return 'application/pdf'
   if (kind === 'html') return 'text/html; charset=utf-8'
@@ -308,6 +343,8 @@ export function viewerTypeLabel(kind: ViewerKind, name: string): string {
       return `Imagem ${ext ? ext.toUpperCase() : ''}`.trim()
     case 'pdf':
       return 'Documento PDF'
+    case 'video':
+      return `Vídeo ${ext ? ext.toUpperCase() : ''}`.trim()
     case 'code':
       return `Código${ext ? ` (.${ext})` : ''}`
     case 'text':

@@ -12,6 +12,7 @@ import type {
 } from '@shared/types'
 import type { ClearApi, ViewerFile } from '@shared/ipc'
 import { classifyFileAction } from '@shared/fileActions'
+import { mockBrokenVideoUrl, mockVideoUrl } from './mockVideo'
 import {
   codeLanguage,
   detectViewerKind,
@@ -66,11 +67,23 @@ const SIZES: Record<string, number> = {
   'grafico-vendas.png': 48_213,
   'dados-brutos.zip': 2_481_920,
   'notas.txt': NOTES_TXT.length,
-  'deploy.sh': DEPLOY_SH.length
+  'deploy.sh': DEPLOY_SH.length,
+  'demo.webm': 3563,
+  'gravacao.mkv': 64
 }
 
 const kindOf = (name: string): ViewerKind =>
   name.endsWith('.png') ? 'image' : detectViewerKind(name, new TextEncoder().encode('texto'))
+
+/** URL do arquivo no mock: imagem → SVG; vídeo → blob (demo.webm toca; gravacao.mkv não). */
+const mockUrl = (kind: ViewerKind, name: string, token: string): string =>
+  kind === 'image'
+    ? CHART_URL
+    : kind === 'video'
+      ? name === 'demo.webm'
+        ? mockVideoUrl()
+        : mockBrokenVideoUrl()
+      : `clearchat-file://${token}/${encodeURIComponent(name)}`
 
 /** Seeds do chat com present_file (chamado pelo mockApi). */
 export function seedViewerScenario(o: {
@@ -113,7 +126,9 @@ export function seedViewerScenario(o: {
     { name: 'relatorio.md', isDir: false, size: SIZES['relatorio.md'] },
     { name: 'grafico-vendas.png', isDir: false, size: SIZES['grafico-vendas.png'] },
     { name: 'dados-brutos.zip', isDir: false, size: SIZES['dados-brutos.zip'] },
-    { name: 'notas.txt', isDir: false, size: SIZES['notas.txt'] }
+    { name: 'notas.txt', isDir: false, size: SIZES['notas.txt'] },
+    { name: 'demo.webm', isDir: false, size: SIZES['demo.webm'] },
+    { name: 'gravacao.mkv', isDir: false, size: SIZES['gravacao.mkv'] }
   ]
   const file = (name: string, extra: Partial<PresentedFile> = {}): PresentedFile => ({
     path: `${root}/${name}`,
@@ -232,7 +247,7 @@ export function createMockViewer(o: {
     const language = kind === 'code' ? codeLanguage(name) : undefined
     return {
       token,
-      url: kind === 'image' ? CHART_URL : `clearchat-file://${token}/${encodeURIComponent(name)}`,
+      url: mockUrl(kind, name, token),
       path,
       name,
       size: SIZES[name] ?? 1834,

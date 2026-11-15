@@ -148,16 +148,42 @@ export async function readHead(
   }
 }
 
+/**
+ * Cabeçalho `Range` (um intervalo de bytes: `bytes=a-b`, `bytes=a-` ou `bytes=-n`) → o trecho a
+ * servir; 'unsatisfiable' = fora do arquivo (416); null = sem Range utilizável (serve tudo, 200 —
+ * inclusive vários intervalos, que o <video> não pede).
+ */
+export function parseByteRange(
+  header: string | null | undefined,
+  size: number
+): { start: number; end: number } | 'unsatisfiable' | null {
+  const m = /^\s*bytes\s*=\s*(\d*)\s*-\s*(\d*)\s*$/i.exec(header ?? '')
+  if (!m || (!m[1] && !m[2])) return null
+  if (!m[1]) {
+    // sufixo: os últimos n bytes
+    const n = Number(m[2])
+    if (!n || size === 0) return 'unsatisfiable'
+    return { start: Math.max(0, size - n), end: size - 1 }
+  }
+  const start = Number(m[1])
+  const end = m[2] ? Math.min(Number(m[2]), size - 1) : size - 1
+  if (start >= size || end < start) return 'unsatisfiable'
+  return { start, end }
+}
+
 /** Resposta do protocolo clearchat-file:// (handler registrado em index.ts). */
 export async function serveViewerRequest(
   url: string,
-  registry: ViewerRegistry = viewerRegistry
+  registry: ViewerRegistry = viewerRegistry,
+  /** Cabeçalho `Range` do pedido (o <video> busca aos pedaços para tocar/avançar). */
+  range?: string | null
 ): Promise<Response> {
   const r = registry.resolve(url)
   if ('error' in r) return plain(r.error, r.error === 400 ? 'bad request' : 'not found')
   try {
     let target: string
     let mime: string
+    let video = false
     const headers: Record<string, string> = { ...SECURITY_HEADERS }
     if (r.kind === 'file') {
       // o arquivo não pode ter virado outra coisa (symlink trocado) desde a concessão
@@ -165,6 +191,7 @@ export async function serveViewerRequest(
       target = r.grant.file
       mime = viewerMime(r.grant.kind, target, await readHead(target, 16))
       if (r.grant.kind === 'html') headers['content-security-policy'] = VIEWER_HTML_CSP
+      video = r.grant.kind === 'video'
     } else {
       const real = await fs.realpath(r.path)
       if (!isInside(r.grant.dir, real)) return plain(403, 'forbidden')
@@ -173,8 +200,24 @@ export async function serveViewerRequest(
     }
     const st = await fs.stat(target)
     if (!st.isFile()) return plain(404, 'not found')
-    if (st.size > VIEWER_LIMITS.binaryMaxBytes) return plain(413, 'too large')
+    // vídeo vai aos pedaços (Range): sem o teto dos outros tipos, que são lidos inteiros
+    if (!video && st.size > VIEWER_LIMITS.binaryMaxBytes) return plain(413, 'too large')
     headers['content-type'] = mime
+    headers['accept-ranges'] = 'bytes'
+    const part = parseByteRange(range, st.size)
+    if (part === 'unsatisfiable')
+      return new Response(null, {
+        status: 416,
+        headers: { ...SECURITY_HEADERS, 'content-range': `bytes */${st.size}` }
+      })
+    if (part) {
+      headers['content-range'] = `bytes ${part.start}-${part.end}/${st.size}`
+      headers['content-length'] = String(part.end - part.start + 1)
+      const body = Readable.toWeb(
+        createReadStream(target, { start: part.start, end: part.end })
+      ) as unknown as ReadableStream
+      return new Response(body, { status: 206, headers })
+    }
     headers['content-length'] = String(st.size)
     const body = Readable.toWeb(createReadStream(target)) as unknown as ReadableStream
     return new Response(body, { status: 200, headers })
