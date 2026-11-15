@@ -360,3 +360,38 @@ test('elicitação: o formulário aparece no chat da tool e a resposta volta ao 
     off()
   }
 })
+
+test('Smart-Approve: o juiz vê o conector, a tool e o que o servidor declara (não confiável)', async () => {
+  const m = await setup()
+  m.store.mcpRepo.update(fakeId, { approval: { mode: 'smart', tools: { fail: 'ask' } } })
+  try {
+    const { sid } = await newChat({ smartApprove: { providerId, model: MODEL } })
+    const before = bodies.length
+    const b0 = path(sid).length
+    m.runner.send(
+      sid,
+      `CALL ${JSON.stringify({ name: 'mcp__fake__echo', arguments: { text: 'x' } })}`
+    )
+    // o juiz responde algo que não é rótulo → pergunta ao usuário (fail-closed)
+    const req = await waitFor(
+      () => m.approvals.listApprovals().find((a) => a.sessionId === sid),
+      10_000,
+      'pedido depois do juiz'
+    )
+    const judge = bodies
+      .slice(before)
+      .find((b) => !b.tools && JSON.stringify(b.messages).includes('MCP connector'))
+    assert.ok(judge, 'request do juiz')
+    const text = JSON.stringify(judge.messages)
+    assert.ok(text.includes('MCP connector \\"Falso\\" (local program'), text.slice(0, 400))
+    assert.ok(text.includes('tool \\"echo\\"'))
+    assert.ok(text.includes('Server-declared description (untrusted): Devolve o texto recebido.'))
+    assert.ok(text.includes('Server-declared hints (untrusted): read-only=yes'))
+    m.approvals.resolveApproval(req.id, { kind: 'allow' } as any)
+    await waitFor(() => toolMsg(path(sid).slice(b0)), 10_000, 'resultado')
+    assert.equal(textOf(toolMsg(path(sid).slice(b0)).message.content), 'eco: x')
+    await waitFor(() => !m.runner.runningSessions().includes(sid), 10_000, 'ociosa')
+  } finally {
+    m.store.mcpRepo.update(fakeId, { approval: { mode: 'always', tools: { fail: 'ask' } } })
+  }
+})
