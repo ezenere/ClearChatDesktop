@@ -37,6 +37,7 @@ import {
   evaluateLists,
   isListItem,
   smartListPlan,
+  judgeConfigured,
   TOOL_ITEM,
   userDeniedText,
   validateListEntry,
@@ -81,6 +82,11 @@ import { chatsRepo, messagesRepo, providersRepo, sessionsRepo, settingsRepo } fr
 import { getDb, getDbPath } from '../db'
 import { historyStore } from '../historyStore'
 import { parseToolArgs, runLocalTool, shellStateFor } from '../tools'
+import { runToolImpl } from '../tools/util'
+import { runMcpTool } from '../tools/mcp'
+import { mcpRepo } from '../mcp/store'
+import { cancelElicitationsOf } from '../mcp'
+import { mcpApprovalMode, mcpLabel } from '@shared/mcp'
 import { registerPresented, viewerDevice } from '../fileViewer'
 import {
   abortError,
@@ -145,7 +151,10 @@ import {
   setSiblingsSource,
   setToolSearchCapsSource,
   toolsPlan,
-  voiceCallContextFor
+  voiceCallContextFor,
+  mcpActive,
+  mcpEntryFor,
+  mcpSourceFor
 } from './request'
 import type { BuildOptions, BuiltRequest } from './request'
 import {
@@ -1150,6 +1159,10 @@ async function step(st: RunState, signal: AbortSignal): Promise<StepResult> {
       })
     : chat
 
+  // conectores (MCP): abre as conexões dos servidores ligados que ainda não estão abertas (a lista
+  // de tools da request vem delas; o que não conectar a tempo vai com a lista do cadastro)
+  if (mcpActive(reqChat, session)) await mcpSourceFor().prepare(reqChat)
+  if (signal.aborted) return { kind: 'error', error: 'Cancelado.' }
   const history = messagesRepo.path(session.id)
   // memória: o índice vai congelado por sessão (snapshot no 1º request; ver memory/service.ts)
   if (session.depth === 0) ensureSnapshot(chat, session)
@@ -1693,7 +1706,7 @@ function judgeExtrasFor(
   cwd: string,
   history: StoredMessage[],
   opts: {
-    item?: ApprovalItem
+    item?: ApprovalItem | 'mcp'
     check?: ApprovalCheck
     judgeIdx?: number[]
     lists?: ReturnType<typeof getApprovalSettings>['lists']
@@ -1806,8 +1819,25 @@ async function executeTool(
     name === 'ask_user'
       ? { kind: 'run' as const }
       : approvalRoute(chat.config, settings.modes, name)
-  const item = TOOL_ITEM[name]
-  const mode = item ? effectiveMode(chat.config, settings.modes, item) : null
+  let item: ApprovalItem | 'mcp' | undefined = TOOL_ITEM[name]
+  let mode = item ? effectiveMode(chat.config, settings.modes, item) : null
+  // conectores (MCP): o modo vem do cadastro do servidor (exceção da tool → padrão do servidor);
+  // as anotações do servidor NUNCA liberam nada sozinhas (só contexto do juiz)
+  const mcpEntry = mcpEntryFor(gateChat, session, name)
+  const mcpServer = mcpEntry ? mcpRepo.get(mcpEntry.serverId) : null
+  if (mcpEntry) {
+    const m = mcpServer ? mcpApprovalMode(mcpServer, mcpEntry.tool.name) : 'ask'
+    route =
+      m === 'always'
+        ? { kind: 'run' }
+        : m === 'smart'
+          ? judgeConfigured(chat.config.smartApprove)
+            ? { kind: 'judge' }
+            : { kind: 'user', smartMissing: true }
+          : { kind: 'user' }
+    item = 'mcp'
+    mode = m === 'ask' ? 'lists' : m
+  }
   if (route.kind !== 'run' && takeOverride(session.id, name, args)) {
     // "Executar mesmo assim": o usuário já liberou exatamente esta chamada (uma vez)
     smartOverride = true
@@ -1834,7 +1864,7 @@ async function executeTool(
     }
   }
   if (item && mode && !smartOverride && (name === 'shell' || name === 'process_start')) {
-    const ev = evaluateLists(item, args, settings.lists, safety)
+    const ev = evaluateLists(item as ApprovalItem, args, settings.lists, safety)
     if (route.kind === 'run') {
       // "Sempre permitir" + caminho protegido → card das listas
       if (ev.protected) route = { kind: 'lists' }
@@ -1903,6 +1933,7 @@ async function executeTool(
           ctx: {
             tool: name,
             args,
+            ...(mcpEntry ? { toolInfo: mcpJudgeInfo(mcpEntry, mcpServer) } : {}),
             cwd: chat.config.cwd,
             confine: chat.config.confineToRoot !== false,
             sandbox: !!chat.config.sandboxBash && bwrapAvailable(),
@@ -2033,6 +2064,31 @@ async function executeTool(
         ...(r.changes?.length ? { memoryChanges: r.changes } : {})
       })
     }
+    if (mcpEntry) {
+      const owner = { chatId: chat.id, sessionId: session.id, toolCallId }
+      const stop = (): void => cancelElicitationsOf(toolCallId)
+      signal.addEventListener('abort', stop, { once: true })
+      try {
+        const r = await runToolImpl((a, c) => runMcpTool(mcpEntry, a, c, owner), args, {
+          cwd: chat.config.cwd,
+          maxOutput: toolOutputLimit(chat, session),
+          spillChars: settingsRepo.get<number>(TOOL_SPILL_SETTING) ?? undefined,
+          toolCallId,
+          signal,
+          onOutput: (partial) => {
+            latest = partial
+            out.call()
+          }
+        })
+        return done({
+          content: r.content,
+          status: r.status,
+          ...(r.parts?.length ? { parts: r.parts } : {})
+        })
+      } finally {
+        signal.removeEventListener('abort', stop)
+      }
+    }
     const root = chat.config.cwd
     const provider = name === 'list_models' ? providerFor(chat, session) : null
     const sessionProvider =
@@ -2112,6 +2168,40 @@ async function executeTool(
     out.cancel()
     emit({ type: 'tool-running', sessionId: session.id, toolCallId, running: false })
   }
+}
+
+/**
+ * Contexto do juiz para uma tool de conector (vai no lugar de {{commands}}): o servidor, a tool e o
+ * que o SERVIDOR declara (descrição e dicas) — marcado como não confiável.
+ */
+function mcpJudgeInfo(
+  e: NonNullable<ReturnType<typeof mcpEntryFor>>,
+  server: ReturnType<typeof mcpRepo.get>
+): string {
+  const a = e.tool.annotations ?? {}
+  const hints = (
+    [
+      ['read-only', a.readOnlyHint],
+      ['destructive', a.destructiveHint],
+      ['idempotent', a.idempotentHint],
+      ['open-world', a.openWorldHint]
+    ] as const
+  )
+    .filter(([, v]) => typeof v === 'boolean')
+    .map(([k, v]) => `${k}=${v ? 'yes' : 'no'}`)
+  const where =
+    server?.transport.type === 'http'
+      ? `remote server ${server.transport.url}`
+      : "local program on the user's computer"
+  return [
+    `MCP connector "${server ? mcpLabel(server) : e.server}" (${where}) — tool "${e.tool.name}".`,
+    e.tool.description
+      ? `Server-declared description (untrusted): ${e.tool.description.slice(0, 2000)}`
+      : '',
+    hints.length ? `Server-declared hints (untrusted): ${hints.join(', ')}` : ''
+  ]
+    .filter(Boolean)
+    .join('\n')
 }
 
 /** Provedores de chat (os de voz — ElevenLabs — ficam fora das tools de modelos/subagente). */

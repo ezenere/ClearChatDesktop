@@ -12,6 +12,7 @@ import {
   type ToolDefinition
 } from '@shared/tools'
 import { normalizeSkillsConfig, skillsActiveFor } from '@shared/skills'
+import { isMcpToolName, mcpToolDefinition, type McpToolEntry } from '@shared/mcp'
 import { planTools, withCompactPrompt, type ToolsPlan } from '@shared/compactTools'
 import {
   TOOL_SEARCH_MODE_LABEL,
@@ -336,9 +337,50 @@ export function availableTools(
       ? voiceCallContextFor(chat, { id: session.id, depth: session.depth })
       : null
   const voice: ToolName[] = call && call.endCall !== false ? [END_CALL_TOOL] : []
-  return memory.length || skills.length || voice.length
-    ? [...base, ...memory, ...skills, ...voice]
+  // conectores (MCP): os servidores ligados no chat que rodam neste aparelho — depois das skills
+  const mcp = mcpActive(chat, session) ? mcpSource.entries(chat).map((e) => e.wire as ToolName) : []
+  return memory.length || skills.length || mcp.length || voice.length
+    ? [...base, ...memory, ...skills, ...mcp, ...voice]
     : base
+}
+
+// ---------------- conectores (SPEC → "Conectores (MCP)") ----------------
+// O main registra a fonte (main/mcp/index.ts): as tools dos servidores ligados no chat que este
+// aparelho executa (a lista da conexão ou a última vista no cadastro) e o preparo das conexões.
+
+export interface McpSource {
+  /** Tools MCP do chat neste aparelho (ordem estável). */
+  entries: (chat: Pick<Chat, 'config'>) => McpToolEntry[]
+  /** Instruções dos servidores ligadas no chat (null = nada vai). */
+  instructions: (chat: Pick<Chat, 'config'>) => string | null
+  /** Abre as conexões que faltam antes de montar a request (não lança). */
+  prepare: (chat: Pick<Chat, 'config'>) => Promise<void>
+}
+let mcpSource: McpSource = {
+  entries: () => [],
+  instructions: () => null,
+  prepare: async () => {}
+}
+export function setMcpSource(src: McpSource): void {
+  mcpSource = src
+}
+export function mcpSourceFor(): McpSource {
+  return mcpSource
+}
+
+/** Conectores valem nesta sessão (principal; subagentes só com `mcpSubagents`)? */
+export function mcpActive(chat: Pick<Chat, 'config'>, session: Pick<Session, 'depth'>): boolean {
+  return session.depth === 0 || chat.config.mcpSubagents === true
+}
+
+/** A tool MCP de um nome do modelo nesta sessão (null = não é/não está disponível). */
+export function mcpEntryFor(
+  chat: Pick<Chat, 'config'>,
+  session: Pick<Session, 'depth'>,
+  name: string
+): McpToolEntry | null {
+  if (!isMcpToolName(name) || !mcpActive(chat, session)) return null
+  return mcpSource.entries(chat).find((e) => e.wire === name) ?? null
 }
 
 // ---------------- skills (SPEC → Skills) ----------------
@@ -412,9 +454,20 @@ export function setProviderNamesSource(fn: () => string[]): void {
 
 export function toolDefinitions(
   names: ToolName[],
-  providerNames: string[] = providerNamesSource()
+  providerNames: string[] = providerNamesSource(),
+  mcp?: Pick<Chat, 'config'>
 ): ToolDefinition[] {
-  return names.map((n) => toolDefinitionFor(n, providerNames))
+  const entries = mcp && names.some(isMcpToolName) ? mcpSource.entries(mcp) : []
+  const out: ToolDefinition[] = []
+  for (const n of names) {
+    if (!isMcpToolName(n)) {
+      out.push(toolDefinitionFor(n, providerNames))
+      continue
+    }
+    const e = entries.find((x) => x.wire === n)
+    if (e) out.push(mcpToolDefinition(e))
+  }
+  return out
 }
 
 /**
@@ -442,7 +495,7 @@ export function toolsPlan(
   providerNames?: string[],
   mode: ToolSearchMode = 'local'
 ): ToolsPlan {
-  const full = toolDefinitions(availableTools(chat, session, history), providerNames)
+  const full = toolDefinitions(availableTools(chat, session, history), providerNames, chat)
   if (!toolsReachModel(chat.config)) return planTools(full, chat.config, 'off')
   return planTools(full, chat.config, mode)
 }
@@ -475,6 +528,8 @@ export function systemContent(
     add(memory.help ?? '')
   }
   add(skillsSupportPrompt(chat, session) ?? '')
+  // conectores: as instruções dos servidores ligadas no chat (padrão desligado; visíveis no preview)
+  if (mcpActive(chat, session)) add(mcpSource.instructions(chat) ?? '')
   const plan = toolsPlan(chat, session, history, undefined, mode)
   if (cfg.toolsInPrompt) {
     add(

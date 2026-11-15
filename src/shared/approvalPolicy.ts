@@ -110,7 +110,9 @@ export const ITEM_LABEL: Record<ApprovalItem, string> = {
 }
 
 /** Item com whitelist/blacklist (commands, processes, pages). Nos demais, `lists` = "Perguntar". */
-export function isListItem(item: ApprovalItem | null | undefined): item is ApprovalListItem {
+export function isListItem(
+  item: ApprovalItem | 'mcp' | null | undefined
+): item is ApprovalListItem {
   return !!item && (APPROVAL_LIST_ITEMS as string[]).includes(item)
 }
 

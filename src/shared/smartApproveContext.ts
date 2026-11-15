@@ -286,7 +286,7 @@ export function touchedFilesFrom(
  * chamadas liberadas por "Executar mesmo assim" (meta.smartOverride). Só do mesmo item de aprovação
  * (comandos com comandos…), o mais recente primeiro, sem repetir.
  */
-export function userApprovedFrom(history: StoredMessage[], item?: ApprovalItem): string[] {
+export function userApprovedFrom(history: StoredMessage[], item?: ApprovalItem | 'mcp'): string[] {
   const calls = new Map<string, { name: string; args: string }>()
   for (const m of history)
     if (m.message.role === 'assistant')
@@ -301,7 +301,10 @@ export function userApprovedFrom(history: StoredMessage[], item?: ApprovalItem):
     if (rec?.userAllowed?.length && (!item || rec.item === item)) found.push(...rec.userAllowed)
     if (m.meta?.smartOverride) {
       const c = calls.get(m.message.tool_call_id)
-      if (c && (!item || ITEM_TOOL[item] === c.name)) found.push(callSummary(c.name, c.args))
+      // conectores: as aprovações de qualquer tool MCP contam como do mesmo item
+      const same =
+        !item || (item === 'mcp' ? c?.name.startsWith('mcp__') : ITEM_TOOL[item] === c?.name)
+      if (c && same) found.push(callSummary(c.name, c.args))
     }
     for (const f of found) {
       const t = cut(f, JUDGE_CONTEXT_LIMITS.toolArgChars)
@@ -395,7 +398,7 @@ export interface JudgeExtrasInput {
   /** Subagentes acima do chamador (o mais próximo primeiro), com o histórico de cada um. */
   parents?: { title: string; task: string | null; history: StoredMessage[] }[]
   cwd: string
-  item?: ApprovalItem
+  item?: ApprovalItem | 'mcp'
   /** Avaliação das listas (itens com listas em modo smart) e os índices que o juiz decide. */
   check?: ApprovalCheck
   judgeIdx?: number[]

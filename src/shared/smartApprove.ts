@@ -442,6 +442,8 @@ export function prettyArgs(args: unknown): string {
 export interface JudgeContext {
   tool: ToolName | string
   args: unknown
+  /** Tools sem decomposição própria (conectores MCP): o que vai em {{commands}}. */
+  toolInfo?: string
   cwd: string
   confine: boolean
   sandbox: boolean
@@ -494,7 +496,7 @@ export function judgeVars(sa: SmartApproveConfig, ctx: JudgeContext): Record<str
   return {
     tool: String(ctx.tool),
     args: prettyArgs(ctx.args),
-    commands: commandsBlock(ctx.tool, ctx.args, ctx.check, ctx.judgeIdx),
+    commands: ctx.toolInfo ?? commandsBlock(ctx.tool, ctx.args, ctx.check, ctx.judgeIdx),
     cwd: ctx.cwd,
     confine: ctx.confine ? 'yes' : 'no',
     sandbox: ctx.sandbox ? 'yes' : 'no',
