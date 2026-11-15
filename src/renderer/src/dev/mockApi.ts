@@ -80,6 +80,7 @@ import {
   turnResponse
 } from '@shared/branches'
 import { isDisplayOnly } from '@shared/context'
+import { joinPath } from '@shared/openFile'
 import { contentText } from '@shared/attachments'
 import { siblingBroadcastText, siblingMessageText } from '@shared/siblings'
 import { evaluateLists, isListItem, normalizeApprovalSettings } from '@shared/approvalPolicy'
@@ -2304,6 +2305,7 @@ export function createMockApi(scenario: string): ClearApi {
       runBytes: (chatId, name, bytes) => remoteFs.runBytes(chatId, name, bytes)
     },
     fs: {
+      // caminho das entradas como o path.join do main: `\` numa raiz do Windows (C:\…)
       listDir: (p) =>
         delay(
           (
@@ -2311,7 +2313,7 @@ export function createMockApi(scenario: string): ClearApi {
               { name: 'index.ts', isDir: false, size: 1834 },
               { name: 'utils', isDir: true, size: 0 }
             ]
-          ).map((f) => ({ ...f, path: `${p}/${f.name}`, mtime: now }))
+          ).map((f) => ({ ...f, path: joinPath(p, f.name), mtime: now }))
         ),
       readFile: (p) =>
         delay({

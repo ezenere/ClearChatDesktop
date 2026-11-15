@@ -74,6 +74,35 @@ function partsOf(p: string, win: boolean): PathParts {
 const same = (a: string, b: string, win: boolean): boolean =>
   win ? a.toLowerCase() === b.toLowerCase() : a === b
 
+/** `ap` é `rp` ou está abaixo dele (mesma raiz, segmentos de `rp` como prefixo). */
+const under = (ap: PathParts, rp: PathParts, win: boolean): boolean =>
+  same(ap.head, rp.head, win) &&
+  ap.segs.length >= rp.segs.length &&
+  rp.segs.every((s, i) => same(s, ap.segs[i], win))
+
+/**
+ * `p` é a própria `root` ou está dentro dela? Vale para POSIX e Windows (o estilo vem da raiz:
+ * `\` e `/` como separador, sem caixa), com barras repetidas/finais e `.`/`..` resolvidos. Sem
+ * expandir `~` (quem chama expande). Vazio → false.
+ */
+export function isPathInside(p: string, root: string): boolean {
+  if (!p || !root) return false
+  const win = isWindowsPath(root)
+  return under(partsOf(p, win), partsOf(root, win), win)
+}
+
+/** Raiz (`/`, `C:\`, `\\` ou '' se relativo) e segmentos de um caminho POSIX ou Windows. */
+export function pathSegments(p: string): { head: string; segs: string[] } {
+  return partsOf(p, isWindowsPath(p))
+}
+
+/** `dir` + `name` com o separador do sistema de `dir` (Windows: `\`). */
+export function joinPath(dir: string, name: string): string {
+  const win = isWindowsPath(dir)
+  if (dir.endsWith('/') || (win && dir.endsWith('\\'))) return dir + name
+  return `${dir}${win ? '\\' : '/'}${name}`
+}
+
 /** Caminho com caracteres de controle (NUL, quebra de linha…): nunca vai ao modelo. */
 // eslint-disable-next-line no-control-regex
 const CONTROL = /[\u0000-\u001f\u007f]/
@@ -95,13 +124,10 @@ export function normalizeOpenFilePath(
   const sep = win ? '\\' : '/'
   const rp = partsOf(r, win)
   const ap = isAbsolutePath(path) ? partsOf(path, win) : partsOf(`${r}${sep}${path}`, win)
-  const under =
-    same(ap.head, rp.head, win) &&
-    ap.segs.length >= rp.segs.length &&
-    rp.segs.every((s, i) => same(s, ap.segs[i], win))
+  const inside = under(ap, rp, win)
   // a própria raiz (uma pasta) não é "arquivo selecionado"
-  if (under && ap.segs.length === rp.segs.length) return null
-  const out = under
+  if (inside && ap.segs.length === rp.segs.length) return null
+  const out = inside
     ? ap.segs.slice(rp.segs.length).join(sep)
     : ap.segs.length || ap.head
       ? `${ap.head}${ap.segs.join(sep)}`

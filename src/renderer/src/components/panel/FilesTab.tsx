@@ -11,6 +11,7 @@ import {
   WifiOff
 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
+import { isPathInside, joinPath, pathBaseName, pathSegments } from '@shared/openFile'
 import type { Chat, DirEntry } from '@shared/types'
 import { api } from '../../lib/api'
 import { contributeCtx } from '../../lib/contextMenu'
@@ -23,43 +24,37 @@ import { RootInfo } from '../apiDocs'
 import { useHostInfo } from '../sync/hooks'
 import { fileIcon } from '../viewer/fileIcons'
 
-function join(dir: string, name: string): string {
-  return dir.endsWith('/') ? dir + name : `${dir}/${name}`
-}
+type Crumb = { label: string; path: string }
 
-function crumbs(path: string, home: string | null): { label: string; path: string }[] {
-  const out: { label: string; path: string }[] = []
-  let base = ''
-  let rest = path
-  if (home && (path === home || path.startsWith(home + '/'))) {
-    out.push({ label: '~', path: home })
-    base = home
-    rest = path.slice(home.length)
-  } else {
-    out.push({ label: '/', path: '/' })
-  }
-  for (const seg of rest.split('/').filter(Boolean)) {
-    base = `${base}/${seg}`
-    out.push({ label: seg, path: base })
+/**
+ * Breadcrumb de `path` a partir de `base` (nunca acima dela). Caminhos POSIX ou Windows: a
+ * comparação e o separador vêm de @shared/openFile (com `/` fixo, uma raiz `C:\…` nunca tinha
+ * subpasta "dentro" e o confinamento devolvia a aba à raiz a cada clique).
+ */
+function crumbsFrom(base: string, label: string, path: string): Crumb[] {
+  const out = [{ label, path: base }]
+  if (!isPathInside(path, base)) return out
+  let cur = base
+  for (const seg of pathSegments(path).segs.slice(pathSegments(base).segs.length)) {
+    cur = joinPath(cur, seg)
+    out.push({ label: seg, path: cur })
   }
   return out
+}
+
+function crumbs(path: string, home: string | null): Crumb[] {
+  if (home && isPathInside(path, home)) return crumbsFrom(home, '~', path)
+  const head = pathSegments(path).head || '/'
+  return crumbsFrom(head, head, path)
 }
 
 /** Breadcrumb a partir do diretório raiz (nunca acima dele). */
-function rootCrumbs(path: string, root: string): { label: string; path: string }[] {
-  const name = root.split('/').filter(Boolean).pop() ?? '/'
-  const out = [{ label: name, path: root }]
-  if (path === root || !path.startsWith(root === '/' ? '/' : root + '/')) return out
-  let base = root
-  for (const seg of path.slice(root.length).split('/').filter(Boolean)) {
-    base = base === '/' ? `/${seg}` : `${base}/${seg}`
-    out.push({ label: seg, path: base })
-  }
-  return out
-}
+const rootCrumbs = (path: string, root: string): Crumb[] =>
+  crumbsFrom(root, pathBaseName(root) || root || '/', path)
 
-const insideRoot = (p: string, root: string): boolean =>
-  p === root || p.startsWith(root === '/' ? '/' : root + '/')
+/** `~` / `~/x` → home (o main expande ao listar: as entradas voltam com o caminho absoluto). */
+const expandHome = (p: string, home: string | null): string =>
+  home && (p === '~' || p.startsWith('~/')) ? (p === '~' ? home : joinPath(home, p.slice(2))) : p
 
 /** Formulário inline "Nova pasta…": cria `parent/nome`. */
 export function NewFolderForm({
@@ -79,7 +74,7 @@ export function NewFolderForm({
   const create = async (): Promise<void> => {
     if (!valid || busy) return
     setBusy(true)
-    const p = await run(() => api.fs.mkdir(join(parent, name.trim())), 'Erro ao criar pasta')
+    const p = await run(() => api.fs.mkdir(joinPath(parent, name.trim())), 'Erro ao criar pasta')
     setBusy(false)
     if (p) onCreated(p)
   }
@@ -221,7 +216,8 @@ export function FilesTab({ chat }: { chat: Chat }): React.JSX.Element {
     setRemoteRoot(null)
   }
   // Confinado: a navegação nunca sobe acima da raiz.
-  const shownDir = confine && !insideRoot(dir, root) ? root : dir
+  const rootAbs = remoteMode ? root : expandHome(root, homeDir)
+  const shownDir = confine && !isPathInside(dir, rootAbs) ? root : dir
   // remota sem a raiz do host ainda: pede '' (o host responde com a raiz dele)
   const requestDir = remoteMode && !remoteRoot ? '' : shownDir
 
@@ -293,7 +289,7 @@ export function FilesTab({ chat }: { chat: Chat }): React.JSX.Element {
     }
   }
 
-  const parts = confine ? rootCrumbs(shownDir, root) : crumbs(shownDir, homeDir)
+  const parts = confine ? rootCrumbs(shownDir, rootAbs) : crumbs(shownDir, homeDir)
 
   /** Renomear: confinamento e "já existe" no main; o painel de arquivo e o chip acompanham. */
   const rename = async (e: DirEntry, path: string, name: string | null): Promise<void> => {
@@ -438,7 +434,7 @@ export function FilesTab({ chat }: { chat: Chat }): React.JSX.Element {
           </div>
         )}
         {sorted.map((e) => {
-          const path = e.path || join(shownDir, e.name)
+          const path = e.path || joinPath(shownDir, e.name)
           const isActive = !e.isDir && active?.path === path
           const { icon: FIcon } = fileIcon(e.name)
           const icon = e.isDir ? (

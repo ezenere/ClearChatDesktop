@@ -492,6 +492,67 @@ app.on('window-all-closed', () => app.quit())
     )
   })
 
+  await step('aba Arquivos: entra em pastas e volta pelo caminho (raiz POSIX e C:\\)', async () => {
+    const panel = page.getByTestId('right-panel')
+    const entry = (name: string): ReturnType<Page['locator']> =>
+      panel.getByTestId('files-entry').filter({ hasText: name }).first()
+    const crumbs = async (): Promise<string[]> =>
+      (await panel.locator('nav button').allInnerTexts()).map((t) => t.trim())
+    const until = async (want: string[]): Promise<void> => {
+      for (let i = 0; i < 40 && (await crumbs()).join('›') !== want.join('›'); i++)
+        await page.waitForTimeout(50)
+      assert.deepEqual(await crumbs(), want)
+    }
+    const CHAT = 'Refatorar o parser de SSE'
+    const setCwd = (cwd: string): Promise<void> =>
+      page.evaluate(
+        ([title, dir]) => {
+          const st = (window as any).__clearStore.getState()
+          const c = st.chats.find((x: any) => x.title === title)
+          st.patchConfig(c.id, { cwd: dir })
+        },
+        [CHAT, cwd]
+      )
+    await page.getByTestId('chat-item').filter({ hasText: CHAT }).click()
+    await page.getByRole('tab', { name: 'Arquivos' }).click()
+    // POSIX: clearchat › src › utils e de volta pela raiz
+    await entry('src').click()
+    await until(['clearchat', 'src'])
+    await entry('utils').click()
+    await until(['clearchat', 'src', 'utils'])
+    await panel.locator('nav button').first().click()
+    await until(['clearchat'])
+    await entry('package.json').waitFor()
+    // Windows: as entradas voltam com `\` (path.join do main) — antes o confinamento comparava com
+    // `/` e devolvia a aba à raiz a cada clique
+    const before = await page.evaluate(
+      (title) =>
+        (window as any).__clearStore.getState().chats.find((x: any) => x.title === title).config
+          .cwd as string,
+      CHAT
+    )
+    await setCwd('C:\\Users\\dev\\projeto')
+    await until(['projeto'])
+    await entry('utils').click()
+    await until(['projeto', 'utils'])
+    assert.equal(
+      await entry('index.ts').getAttribute('data-path'),
+      'C:\\Users\\dev\\projeto\\utils\\index.ts'
+    )
+    await entry('utils').click()
+    await until(['projeto', 'utils', 'utils'])
+    await panel.locator('nav button').nth(1).click()
+    await until(['projeto', 'utils'])
+    await shot('05c-files-windows-root')
+    await setCwd(before)
+    await until(['clearchat'])
+    await page
+      .getByTestId('chat-item')
+      .filter({ hasText: 'Relatório trimestral de vendas' })
+      .click()
+    await page.waitForTimeout(200)
+  })
+
   // ---------------- controle remoto: arquivos do host pelo sync (fonte remota) ----------------
   const HROOT = '/srv/escritorio/vendas'
   const hostState = (mode: 'remote' | 'host-offline'): Promise<void> =>

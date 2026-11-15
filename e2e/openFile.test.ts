@@ -14,11 +14,14 @@ import { extractionConversation } from '../src/main/memory/extraction.ts'
 import { DEFAULT_CHAT_CONFIG } from '../src/shared/defaults.ts'
 import {
   isAbsolutePath,
+  isPathInside,
+  joinPath,
   normalizeOpenFilePath,
   OPEN_FILE_PATH_MAX,
   openFileText,
   parseOpenFile,
   pathBaseName,
+  pathSegments,
   resolveChatPath,
   sendMetaOpenFile,
   storedOpenFile,
@@ -291,4 +294,35 @@ test('busca nativa de tools (Messages API, 1.12.0): o histórico enviado também
   assert.equal(req.toolSearch?.mode, 'native-anthropic')
   const json = JSON.stringify((req.body as any).messages)
   assert.ok(json.includes(LINE('src/a.ts')) && json.includes(LINE('/etc/hosts')))
+})
+
+// aba Arquivos: o confinamento comparava com `/` fixo — numa raiz `C:\…` nenhuma subpasta ficava
+// "dentro" e cada clique devolvia a aba à raiz
+test('isPathInside: POSIX, Windows (sem caixa, \\ e /), barras finais, . e ..', () => {
+  assert.equal(isPathInside('/home/u/p', '/home/u/p'), true)
+  assert.equal(isPathInside('/home/u/p/src', '/home/u/p'), true)
+  assert.equal(isPathInside('/home/u/p/src', '/home/u/p/'), true)
+  assert.equal(isPathInside('/home/u/p//src/', '/home/u/p'), true)
+  assert.equal(isPathInside('/home/u/projeto', '/home/u/p'), false)
+  assert.equal(isPathInside('/home/u/p/../q', '/home/u/p'), false)
+  assert.equal(isPathInside('/etc', '/'), true)
+  assert.equal(isPathInside('/home/U/p/src', '/home/u/p'), false)
+  assert.equal(isPathInside('C:\\Users\\dev\\projeto\\src', 'C:\\Users\\dev\\projeto'), true)
+  assert.equal(isPathInside('c:/users/DEV/projeto/src', 'C:\\Users\\dev\\projeto'), true)
+  assert.equal(isPathInside('C:\\Users\\dev\\projeto2', 'C:\\Users\\dev\\projeto'), false)
+  assert.equal(isPathInside('D:\\Users\\dev\\projeto\\src', 'C:\\Users\\dev\\projeto'), false)
+  assert.equal(isPathInside('C:\\x', 'C:\\'), true)
+  assert.equal(isPathInside('\\\\srv\\share\\a', '\\\\srv\\share'), true)
+  assert.equal(isPathInside('', '/home'), false)
+  assert.equal(isPathInside('/home', ''), false)
+})
+
+test('joinPath / pathSegments: separador do sistema da pasta', () => {
+  assert.equal(joinPath('/home/u', 'a'), '/home/u/a')
+  assert.equal(joinPath('/', 'etc'), '/etc')
+  assert.equal(joinPath('C:\\Users\\dev', 'a'), 'C:\\Users\\dev\\a')
+  assert.equal(joinPath('C:\\', 'Users'), 'C:\\Users')
+  assert.deepEqual(pathSegments('/home/u/p/'), { head: '/', segs: ['home', 'u', 'p'] })
+  assert.deepEqual(pathSegments('C:/Users\\dev'), { head: 'C:\\', segs: ['Users', 'dev'] })
+  assert.deepEqual(pathSegments('\\\\srv\\share'), { head: '\\\\', segs: ['srv', 'share'] })
 })
