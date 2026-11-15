@@ -416,6 +416,8 @@ export async function startFakeMcpHttp(opts = {}) {
     url: `${base}/mcp`,
     base,
     seen,
+    /** Invalida os access tokens (o próximo pedido leva 401 → o cliente renova pelo refresh). */
+    revoke: () => valid.clear(),
     close: () => new Promise((r) => server.close(() => r()))
   }
 }

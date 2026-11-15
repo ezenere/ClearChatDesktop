@@ -1,4 +1,13 @@
-import { app, shell, BrowserWindow, nativeImage, nativeTheme, protocol, session } from 'electron'
+import {
+  app,
+  shell,
+  BrowserWindow,
+  nativeImage,
+  nativeTheme,
+  protocol,
+  safeStorage,
+  session
+} from 'electron'
 import { join, resolve } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
@@ -242,7 +251,20 @@ app.whenReady().then(() => {
   }
 
   // Conectores (MCP): fonte das tools na request, ambiente do usuário, formulários pendentes
-  initMcp(app.getVersion())
+  initMcp(app.getVersion(), {
+    encrypt: (plain) =>
+      safeStorage.isEncryptionAvailable()
+        ? safeStorage.encryptString(plain).toString('base64')
+        : null,
+    decrypt: (stored) => {
+      try {
+        return safeStorage.decryptString(Buffer.from(stored, 'base64'))
+      } catch {
+        return null
+      }
+    },
+    openUrl: (url) => shell.openExternal(url)
+  })
   initRunner()
   registerIpc()
   mainWindow = createWindow()

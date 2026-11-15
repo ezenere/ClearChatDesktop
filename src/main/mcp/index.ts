@@ -18,6 +18,7 @@ import { setMcpSource } from '../agent/request'
 import { userEnv } from '../tools/shellEnv'
 import { cleanEnv, configureMcpManager, mcpManager, type McpCallOwner } from './manager'
 import { mcpLocal, mcpRepo, onMcpStoreChange } from './store'
+import { configureMcpOAuth, mcpAuthProvider } from './oauth'
 
 /** Servidores do cadastro que rodam neste aparelho (stdio ativado; HTTP sempre). */
 export function serversHere(): McpServerDef[] {
@@ -112,11 +113,29 @@ export function cancelElicitationsOf(toolCallId: string): void {
 
 let started = false
 
-export function initMcp(appVersion: string): void {
+export function initMcp(
+  appVersion: string,
+  platform: {
+    /** safeStorage do sistema (null = sem cofre → guarda sem cifrar). */
+    encrypt?: (plain: string) => string | null
+    decrypt?: (stored: string) => string | null
+    /** Navegador do sistema (login OAuth). */
+    openUrl?: (url: string) => void | Promise<void>
+  } = {}
+): void {
   if (started) return
   started = true
+  configureMcpOAuth({
+    crypto: {
+      encrypt: platform.encrypt ?? (() => null),
+      decrypt: platform.decrypt ?? (() => null)
+    },
+    ...(platform.openUrl ? { openUrl: platform.openUrl } : {}),
+    onChange: () => emit({ type: 'mcp-changed' })
+  })
   configureMcpManager({
     appVersion,
+    authProvider: mcpAuthProvider,
     userEnv: async () => cleanEnv((await userEnv()).env ?? process.env),
     elicit,
     onChange: () => emit({ type: 'mcp-changed' })
