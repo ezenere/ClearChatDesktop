@@ -312,9 +312,11 @@ interface H {
   timeline: { kind: string; reason?: string | null }[]
   emit(e: AgentEvent): void
   synthGate: { open: boolean }
+  /** `resumeTurn` pedidos (a fala que parou o turno era ruído). */
+  resumed: string[]
 }
 
-function harness(): H {
+function harness(opts: { resume?: boolean } = {}): H {
   const listeners: ((e: AgentEvent) => void)[] = []
   const h: Omit<H, 'm'> = {
     sent: [],
@@ -323,7 +325,8 @@ function harness(): H {
     amends: [],
     timeline: [],
     emit: (e) => listeners.forEach((l) => l(e)),
-    synthGate: { open: true }
+    synthGate: { open: true },
+    resumed: []
   }
   const m = new VoiceCallManager({
     sendTurn: (_s, text) => h.sent.push(text),
@@ -355,6 +358,15 @@ function harness(): H {
       // o runner para o turno: a sessão fica ociosa
       h.emit(idle())
     },
+    ...(opts.resume !== false
+      ? {
+          resumeTurn: (sid: string) => {
+            h.resumed.push(sid)
+            h.emit(busy())
+            return true
+          }
+        }
+      : {}),
     fillerDelayMs: 10_000
   })
   m.start('s1')
@@ -392,7 +404,7 @@ function sendTurn(h: H, text: string): string {
   return (e as unknown as { message: { id: string } }).message.id
 }
 
-test('turno continuado: falar antes de ouvir retém a resposta, apaga o turno e reenvia unido', async () => {
+test('turno continuado: falar antes de ouvir retém a resposta, apaga só a resposta não ouvida e manda a fala como mensagem NOVA', async () => {
   const h = harness()
   h.synthGate.open = false // a resposta ainda não ficou pronta para tocar
   const userId = sendTurn(h, 'Ontem eu fui no mercado perto de casa.')
@@ -402,21 +414,18 @@ test('turno continuado: falar antes de ouvir retém a resposta, apaga o turno e 
   h.synthGate.open = true
   h.m.speechEnd()
   h.m.turn('E aí eu encontrei um amigo antigo. O que você acha?')
-  await waitFor(() => h.sent.length === 2, 2000, 'turno refeito')
-  assert.equal(
-    h.sent[1],
-    'Ontem eu fui no mercado perto de casa. E aí eu encontrei um amigo antigo. O que você acha?'
-  )
+  await waitFor(() => h.sent.length === 2, 2000, 'fala nova enviada')
+  assert.equal(h.sent[1], 'E aí eu encontrei um amigo antigo. O que você acha?', 'nunca unida')
   assert.equal(h.amends.length, 1)
   assert.equal(h.amends[0].userMessageId, userId)
-  assert.equal(h.amends[0].dropUser, true, 'sem tools: o turno anterior sai do histórico')
+  assert.equal(h.amends[0].dropUser, false, 'a mensagem anterior do usuário fica')
   assert.deepEqual(h.amends[0].spoken, { a1: [] }, 'nada foi falado')
   assert.equal(
     h.emitted.filter((u) => u.kind === 'sentence').length,
     0,
     'a resposta retida nunca tocou'
   )
-  assert.ok(h.timeline.some((e) => e.kind === 'turn-continued' && e.reason === 'merged'))
+  assert.ok(h.timeline.some((e) => e.kind === 'turn-continued' && e.reason === 'new-message'))
   h.m.stop()
 })
 
@@ -432,6 +441,118 @@ test('turno continuado: com tools já executadas o histórico delas fica (fala n
   assert.equal(h.sent[1], 'Não, a pasta docs.')
   assert.equal(h.amends[0].dropUser, false)
   h.m.stop()
+})
+
+test('turno continuado: fala que DURA (limiar do barge-in em voz — speechSustained) com o agente trabalhando para o turno no meio da fala (tools ficam); a fala vira mensagem nova', async () => {
+  const h = harness()
+  h.synthGate.open = false
+  const userId = sendTurn(h, 'Pesquisa o clima de amanhã em')
+  h.emit({ type: 'tool-running', sessionId: 's1', toolCallId: 't', running: true } as never)
+  h.m.speechBegin({ dropped: [] })
+  await sleep(50)
+  assert.equal(h.amends.length, 0, 'só o início da fala: nada parou (pode ser ruído)')
+  h.m.speechSustained() // o renderer: a voz passou do limiar
+  await waitFor(() => h.amends.length === 1, 2000, 'parou no meio da fala')
+  assert.equal(h.amends[0].userMessageId, userId)
+  assert.equal(h.amends[0].dropUser, false, 'a mensagem anterior e as tools ficam')
+  assert.ok(h.timeline.some((e) => e.kind === 'turn-continued' && e.reason === 'stopped'))
+  assert.equal(h.sent.length, 1, 'nada enviado enquanto o usuário fala')
+  h.m.speechEnd()
+  h.m.turn('São Paulo, por favor.')
+  await waitFor(() => h.sent.length === 2, 2000, 'fala nova enviada')
+  assert.equal(h.sent[1], 'São Paulo, por favor.', 'mensagem nova, nunca unida')
+  assert.equal(h.amends.length, 1, 'um ajuste só')
+  assert.equal(h.resumed.length, 0)
+  h.m.stop()
+})
+
+test('turno continuado: fala CURTA (tosse, eco — sem speechSustained) não para nada; com texto, para na transcrição e vira mensagem nova', async () => {
+  const h = harness()
+  h.synthGate.open = false
+  sendTurn(h, 'Lista os arquivos da pasta src.')
+  h.emit({ type: 'tool-running', sessionId: 's1', toolCallId: 't', running: true } as never)
+  h.m.speechBegin({ dropped: [] })
+  await sleep(50)
+  h.m.speechEnd() // acabou antes do limiar
+  await sleep(100)
+  assert.equal(h.amends.length, 0, 'fala curta: o agente segue trabalhando')
+  h.m.turn('E a docs.')
+  await waitFor(() => h.sent.length === 2, 2000, 'fala nova enviada')
+  assert.equal(h.sent[1], 'E a docs.')
+  assert.equal(h.amends.length, 1, 'parou só quando a transcrição trouxe texto')
+  h.m.stop()
+})
+
+test('turno continuado: ruído longo parou o turno → o MESMO turno volta a rodar (resumeTurn) e é falado; nada enviado', async () => {
+  const h = harness()
+  h.synthGate.open = false
+  sendTurn(h, 'Me conta uma curiosidade sobre polvos.')
+  h.emit({ type: 'tool-running', sessionId: 's1', toolCallId: 't', running: true } as never)
+  h.m.speechBegin({ dropped: [] })
+  h.m.speechSustained()
+  await waitFor(() => h.amends.length === 1, 2000, 'parou')
+  h.m.speechEnd()
+  h.m.turn('') // era ruído (TV, conversa ao lado)
+  await waitFor(() => h.resumed.length === 1, 2000, 'retomado')
+  assert.equal(h.sent.length, 1, 'nenhuma mensagem nova')
+  assert.ok(h.timeline.some((e) => e.kind === 'turn-continued' && e.reason === 'resumed'))
+  // a resposta do turno retomado é falada normalmente
+  h.synthGate.open = true
+  h.emit(assistantMsg('a2', 'Polvos têm três corações.'))
+  h.emit(idle())
+  await waitFor(
+    () => h.emitted.some((u) => u.kind === 'sentence'),
+    2000,
+    'resposta retomada falada'
+  )
+  h.m.stop()
+})
+
+test('turno continuado: ruído longo sem resumeTurn → o turno fica parado e a chamada volta a ouvir', async () => {
+  const h = harness({ resume: false })
+  sendTurn(h, 'Me conta uma curiosidade sobre polvos.')
+  h.emit({ type: 'tool-running', sessionId: 's1', toolCallId: 't', running: true } as never)
+  h.m.speechBegin({ dropped: [] })
+  h.m.speechSustained()
+  await waitFor(() => h.amends.length === 1, 2000, 'parou')
+  h.m.speechEnd()
+  h.m.turn('uhum')
+  await sleep(30)
+  assert.equal(h.m.state().phase, 'listening')
+  // a próxima fala sai na hora (nada pendente, nada "em voo")
+  h.m.speechBegin()
+  h.m.speechEnd()
+  h.m.turn('Então me fala de lulas.')
+  assert.equal(h.sent.at(-1), 'Então me fala de lulas.')
+  h.m.stop()
+})
+
+test('turno continuado: aprovação/pergunta na tela esperando o usuário — a fala longa NÃO para o turno (a transcrição decide)', async () => {
+  const h = harness()
+  sendTurn(h, 'Apaga a pasta build.')
+  h.emit({
+    type: 'session-updated',
+    session: { id: 's1', status: 'awaiting_approval' }
+  } as unknown as AgentEvent)
+  h.m.speechBegin({ dropped: [] })
+  h.m.speechSustained()
+  await sleep(50)
+  assert.equal(h.amends.length, 0, 'esperando o usuário: nada parado pela fala')
+  h.m.stop()
+})
+
+test('speechSustained fora do turno continuado (resposta já ouvida, nada em voo, sem chamada): não para nada', async () => {
+  const h = harness()
+  h.m.speechSustained() // sem turno
+  sendTurn(h, 'Qual é a diferença entre processo e thread?')
+  h.emit(assistantMsg('a1', 'Processo é isolado.'))
+  h.emit(idle())
+  await waitFor(() => h.emitted.length === 1, 2000, 'frase ouvida')
+  h.m.speechSustained() // sem speechBegin retendo nada
+  await sleep(30)
+  assert.equal(h.amends.length, 0)
+  h.m.stop()
+  assert.doesNotThrow(() => h.m.speechSustained())
 })
 
 test('turno continuado: "uhum"/ruído devolvem a resposta retida (nada apagado)', async () => {

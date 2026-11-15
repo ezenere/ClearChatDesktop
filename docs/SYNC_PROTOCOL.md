@@ -588,7 +588,11 @@ sombra que vivia em `interjections.shadow`. Escritores NÃO DEVEM enviar o campo
 tags (ElevenLabs v3/v4; Fish Audio Drama 3/S2), o texto `audioTagsPrompt` (≤ 2000 chars; `null` = herda →
 texto padrão do app) é acrescentado ao prompt da chamada e o modelo pode escrever direções entre
 colchetes (`[sussurra]`, `[risos]`…). Com uma voz que não interpreta tags, os clientes DEVEM removê-las
-antes da síntese. Leitores DEVERIAM exibir as tags das mensagens da chamada com destaque discreto.
+antes da síntese. Leitores DEVERIAM exibir as tags das mensagens da chamada com destaque discreto. O
+histórico guarda as tags, mas o host só as envia ao modelo num turno de chamada com elas valendo (pedidas
+E a voz as interpretando); fora dele (texto depois da chamada, chamada sem tags, subagente, compactação)
+as respostas com `voice.source = 'call'` vão ao modelo sem as tags (só na cópia enviada — senão o modelo
+as imita no texto) (2026-11-15, sem mudança de versão).
 Campos `null`/ausentes herdam (chat → persona de origem `presetId` → `voiceCallDefaults`, §4.3.2).
 `voice.model.providerId` é um id de `provider` (remapeado no merge, §12; provedor que não existe
 localmente = "sem modelo próprio"). `voice.tools.enabledTools` conta em `usesLocalTools` (§8.9). Clientes
@@ -919,8 +923,15 @@ MessageMeta.voiceCall?: { callId: string, phase: 'start' | 'end', startedAt: num
 ```
 Os **marcadores de início/fim da chamada** são mensagens `role: 'assistant'`, `synthetic: true`, com
 `meta.voiceCall` (o `content` traz um texto legível, ex. "Chamada encerrada · 4 min 12 s · por você"). São
-**só de exibição**: NUNCA vão ao modelo (nem à compactação, busca, `read_history` ou extração de
-memórias); leitores DEVERIAM mostrá-los como divisórias (duração, quem encerrou, custos — o custo da fala
+**só de exibição**: NUNCA vão ao modelo como mensagem (nem à compactação, busca, `read_history` ou
+extração de memórias). **Nota na request (2026-11-15, sem mudança de versão):** o host DEVE pôr o texto
+fixo do marcador no começo da 1ª mensagem do usuário depois dele — só na cópia enviada ao modelo; a
+mensagem salva não muda. Início: `A chamada de voz com o usuário começou aqui; as mensagens a seguir são
+faladas.`; fim: `A chamada de voz com o usuário terminou aqui; a conversa segue por texto.` — como parte
+de texto separada no começo (`content` em parts) ou seguida de uma linha em branco (`content` em texto).
+Mensagens do usuário com `meta.kind` (do app) não levam a nota (vai na seguinte); um início e um fim sem
+mensagem do usuário entre eles se anulam. Hosts anteriores não põem a nota (o modelo só perde a
+referência de onde a chamada começou/acabou). Leitores DEVERIAM mostrá-los como divisórias (duração, quem encerrou, custos — o custo da fala
 com `estimated` é estimativa). Mensagens com `voice.source = 'call'` DEVERIAM aparecer em itálico com um
 ícone (microfone/alto-falante). São mensagens comuns do conteúdo do chat (gravadas pelo host, §8).
 

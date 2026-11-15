@@ -13,10 +13,12 @@
 // A fala do assistente vem dos eventos do runner (`onAgentEvent`): `draft` (conteúdo acumulado em
 // streaming, com monotonicidade por passo) e `message-added` (flush autoritativo do passo). Erros
 // persistidos (`meta.kind 'error'`) NÃO são falados. O histórico só guarda o que foi OUVIDO:
-// - turno continuado (o usuário volta a falar antes de ouvir a resposta): a resposta fica retida,
-//   o turno do agente é parado, o turno anterior sai do histórico e a fala anterior + a nova são
-//   reenviadas como UM turno (com tools já executadas, o histórico delas fica e a fala nova vira o
-//   próximo turno);
+// - turno continuado (o usuário volta a falar antes de ouvir a resposta): a resposta fica retida; a
+//   fala que passa do limiar do barge-in (`bargeInVoicedMs` de VOZ — o renderer avisa com
+//   `speechSustained`) PARA o turno do agente ainda trabalhando (tools e resultados ficam; o texto
+//   não ouvido sai) — fala curta espera a transcrição. Com texto, a fala vira uma mensagem NOVA (nunca unida à
+//   anterior; a resposta não ouvida sai); ruído/"uhum" devolve a resposta retida (o turno nunca
+//   parou) ou retoma o turno parado (`resumeTurn`);
 // - barge-in no meio da resposta: o turno é parado e o texto do assistente é truncado ao que foi
 //   falado (`interrupted: true`); nada nunca falado fica (`amendTurn` → `amendVoiceTurn`).
 import type {
@@ -242,6 +244,12 @@ export interface VoiceCallDeps {
    * Ausente = sem ajuste (testes antigos; o turno segue como antes).
    */
   amendTurn?(sessionId: string, amend: VoiceCallAmend): Promise<void>
+  /**
+   * Retoma o turno do agente parado pela fala do usuário que virou ruído/"uhum" (o histórico já foi
+   * ajustado — termina numa mensagem do usuário ou num resultado de tool). true = voltou a rodar.
+   * Ausente = o turno parado fica parado.
+   */
+  resumeTurn?(sessionId: string): boolean | Promise<boolean>
   /** Relógio em ms (padrão `Date.now`; injetável para testes de expiração/cooldown). */
   now?: () => number
   /** PRNG determinístico (padrão `Math.random`; injetável para testes das frases sorteadas). */
@@ -314,10 +322,21 @@ interface TurnInfo {
   text: string
   userMessageId: string | null
   toolsRan: boolean
-  /** `meta.voice` da fala que abriu o turno (turno continuado soma a duração). */
+  /** `meta.voice` da fala que abriu o turno. */
   voice?: VoiceMessageMeta
   /** Tempo com VOZ da fala do turno (ms — `VoicedSpan` do renderer); null = desconhecido. */
   voicedMs?: number | null
+}
+
+/** Turno parado pela fala do usuário (turno continuado), esperando a transcrição. */
+interface CancelledTurn {
+  sessionId: string
+  turn: TurnInfo
+  /** O ajuste do histórico (parar o turno + tirar o não ouvido). */
+  amended: Promise<void>
+  /** O preâmbulo/frase de ferramenta do turno já tinham saído (a retomada não repete). */
+  fillerUsed: boolean
+  toolDecided: boolean
 }
 
 export class VoiceCallManager {
@@ -436,6 +455,12 @@ export class VoiceCallManager {
    * (`stripBargeInHallucinations`).
    */
   #interruptingSpeech = false
+  /**
+   * Turno do agente PARADO porque o usuário voltou a falar antes de ouvir a resposta (turno
+   * continuado): a transcrição decide — com texto vira a mensagem nova; ruído/"uhum" retoma o turno
+   * (`resumeTurn`), sem repetir o preâmbulo/frase de ferramenta que já saíram nele.
+   */
+  #cancelled: CancelledTurn | null = null
   /**
    * Falas transcritas acumuladas para o próximo envio (fila/turno continuado unem várias).
    * `voicedMs` = tempo com VOZ (renderer; sem silêncio antes/depois nem a espera do fim de turno)
@@ -556,6 +581,7 @@ export class VoiceCallManager {
     this.#chatId = null
     this.#muted = false
     this.#interruptingSpeech = false
+    this.#cancelled = null
     this.#error = null
     this.#preparing = null
     this.#turn = null
@@ -623,9 +649,11 @@ export class VoiceCallManager {
 
   /**
    * O usuário começou a falar FORA da reprodução de uma frase da resposta (o renderer já descartou,
-   * com fade, os clipes e as frases ainda não tocadas — `dropped`). Com a resposta em voo e NADA
-   * dela ouvido → candidata a turno continuado (resposta retida até a transcrição); com parte já
-   * ouvida (pausa entre frases) → é barge-in: o histórico fica só com o que foi falado.
+   * com fade, os clipes e as frases ainda não tocadas — `dropped`). NADA da resposta ouvido → turno
+   * continuado: a resposta fica retida e, com o agente ainda trabalhando, a fala que passar do
+   * limiar do barge-in o PARA (`speechSustained`) — fala curta (tosse, eco, "uhum") espera a
+   * transcrição. Parte já ouvida (pausa entre frases) → barge-in: o histórico fica só com o que foi
+   * falado.
    */
   speechBegin(input?: { dropped?: string[] }): VoiceCallState {
     if (!this.#sessionId) return this.state()
@@ -647,7 +675,9 @@ export class VoiceCallManager {
     const unheard = emitted.length > played.length || this.#synthQueue.length > 0
     const answerPending = this.#machine.responseInFlight || this.#keyText.size > 0
     if (this.#turn && !played.length && answerPending) {
-      // nada da resposta foi ouvido: retém (frases descartadas voltam se a fala for ruído)
+      // nada da resposta foi ouvido: retém (frases descartadas voltam se for ruído); o agente
+      // ainda trabalhando para se a fala durar (o usuário vai dizer mais — nada de seguir rodando
+      // tools sobre a fala incompleta)
       this.#beginHold(emitted)
     } else if (played.length && (unheard || this.#machine.responseInFlight)) {
       // parte da resposta ouvida, o resto não: barge-in (para o turno, trunca ao falado)
@@ -670,9 +700,23 @@ export class VoiceCallManager {
   }
 
   /**
+   * A fala aberta passou do limiar do barge-in (`bargeInVoicedMs` de VOZ, medido no renderer —
+   * tosse, eco e "uhum" ficam abaixo). No turno continuado (resposta retida, nada ouvido) com o
+   * agente ainda trabalhando, o turno dele PARA agora — o usuário vai dizer mais; a transcrição decide
+   * depois (texto → mensagem nova; ruído → retoma). Fora disso, nada.
+   */
+  speechSustained(): VoiceCallState {
+    if (!this.#sessionId) return this.state()
+    if (this.#holdAnswer && this.#canCancelForSpeech()) this.#cancelForSpeech()
+    this.#emitState()
+    return this.state()
+  }
+
+  /**
    * Transcrição final da fala do usuário. Sem resposta em andamento envia já (pelo caminho do
-   * composer); com resposta em voo fica como PRÓXIMO turno (máx. 1 pendente) — salvo o turno
-   * CONTINUADO (resposta retida e ainda não ouvida): o turno anterior é refeito com a fala unida.
+   * composer); com resposta em voo fica como PRÓXIMO turno (máx. 1 pendente). Turno CONTINUADO
+   * (turno parado ou resposta retida, nada ouvido): com texto, a fala vira a mensagem NOVA; ruído/
+   * "uhum" retoma o turno parado ou devolve a resposta retida.
    */
   turn(text: string, opts?: { speechMs?: number | null }): VoiceCallState {
     if (!this.#sessionId) return this.state()
@@ -723,6 +767,27 @@ export class VoiceCallManager {
           text: t.slice(0, EVAL_TAIL_MAX_CHARS),
           reason: 'carried'
         })
+    }
+    const cancelled = this.#cancelled
+    if (cancelled) {
+      this.#cancelled = null
+      if (!t || isBackchannelText(t)) {
+        // ruído/"uhum": o turno parado volta a rodar (o usuário não disse nada novo)
+        this.#machine.turnArrived('')
+        void this.#resumeCancelled(cancelled)
+      } else {
+        // fala de verdade: mensagem NOVA depois do que o turno parado deixou (tools inclusive) —
+        // sai quando o ajuste do histórico terminar (envios suspensos até lá)
+        this.#emitTimeline({
+          ts: this.#now(),
+          kind: 'turn-continued',
+          text: t.slice(0, EVAL_TAIL_MAX_CHARS),
+          reason: 'new-message'
+        })
+        this.#machine.turnArrived(t)
+      }
+      this.#emitState()
+      return this.state()
     }
     if (this.#holdAnswer) {
       if (!t || isBackchannelText(t)) {
@@ -936,9 +1001,113 @@ export class VoiceCallManager {
   }
 
   /**
-   * Turno continuado: o usuário voltou a falar antes de ouvir a resposta. Para o turno do agente,
-   * tira do histórico o turno anterior (ou só as respostas não ouvidas, com tools já executadas) e
-   * envia a fala anterior + a nova como UM turno.
+   * O turno continuado pode PARAR o agente já no início da fala: há turno com a mensagem do usuário
+   * salva, o agente ainda trabalha (gerando/rodando tools — não esperando o usuário na tela) e o
+   * runner sabe ajustar o histórico.
+   */
+  #canCancelForSpeech(): boolean {
+    return (
+      !!this.#turn?.userMessageId &&
+      !!this.#deps.amendTurn &&
+      this.#machine.responseInFlight &&
+      !this.#awaitingUser &&
+      !this.#cancelled
+    )
+  }
+
+  /**
+   * Turno continuado com o agente trabalhando: para o turno AGORA (tools já executadas e os
+   * resultados ficam — a que rodava ganha o resultado cancelado; o texto não ouvido sai) e espera a
+   * transcrição dizer se é fala (mensagem nova) ou ruído (retoma). Envios suspensos até o ajuste.
+   */
+  #cancelForSpeech(): void {
+    const sessionId = this.#sessionId
+    const turn = this.#turn
+    if (!sessionId || !turn?.userMessageId || !this.#deps.amendTurn) return
+    this.#speakCancelled = true
+    this.#holdAnswer = false
+    this.#heldTexts = []
+    this.#clearSynth()
+    this.#playbackActive = false
+    this.#machine.suspend()
+    this.#emitTimeline({
+      ts: this.#now(),
+      kind: 'turn-continued',
+      text: turn.text.slice(0, EVAL_TAIL_MAX_CHARS),
+      reason: 'stopped'
+    })
+    const amended = this.#deps
+      .amendTurn(sessionId, {
+        userMessageId: turn.userMessageId,
+        dropUser: false,
+        spoken: () => this.#spokenMap(new Set())
+      })
+      .then(() =>
+        this.#emitTimeline({ ts: this.#now(), kind: 'turn-amended', reason: 'user-speaking' })
+      )
+      .catch((e: unknown) => {
+        this.#error = e instanceof Error ? e.message : String(e)
+      })
+      .finally(() => {
+        if (this.#sessionId === sessionId) {
+          this.#machine.resume()
+          this.#emitState()
+        }
+      })
+    this.#cancelled = {
+      sessionId,
+      turn,
+      amended,
+      fillerUsed: this.#filler.usedThisTurn,
+      toolDecided: this.#toolDecided
+    }
+  }
+
+  /**
+   * A fala que parou o turno era ruído/"uhum": o MESMO turno volta a rodar do histórico ajustado
+   * (`resumeTurn`) e a resposta volta a ser falada — preâmbulo e frase de ferramenta que já saíram
+   * nele não se repetem. Outra fala já na fila (vai sair como mensagem nova) ou o runner recusando
+   * → fica parado.
+   */
+  async #resumeCancelled(c: CancelledTurn): Promise<void> {
+    await c.amended
+    if (this.#sessionId !== c.sessionId || !this.#deps.resumeTurn) return
+    if (this.#machine.pendingText || this.#machine.responseInFlight) return
+    this.#resetResponse()
+    this.#turn = { ...c.turn, toolsRan: false }
+    this.#machine.responseBegan()
+    this.#armFiller(c.turn.text, c.turn.voicedMs ?? null)
+    if (c.fillerUsed) {
+      this.#clearFillerTimer()
+      this.#filler.usedThisTurn = true
+    }
+    if (c.toolDecided) this.#toolDecided = true
+    let ok = false
+    try {
+      ok = !!(await this.#deps.resumeTurn(c.sessionId))
+    } catch (e) {
+      this.#error = e instanceof Error ? e.message : String(e)
+    }
+    if (this.#sessionId !== c.sessionId) return
+    this.#emitTimeline({
+      ts: this.#now(),
+      kind: 'turn-continued',
+      text: c.turn.text.slice(0, EVAL_TAIL_MAX_CHARS),
+      reason: ok ? 'resumed' : 'resume-failed'
+    })
+    if (!ok) {
+      // nada voltou a rodar: a chamada volta a ouvir (sem esperar uma resposta que não vem)
+      this.#resetFiller(true)
+      this.#resetDelay(false, 'resume-failed')
+      this.#machine.responseDone()
+    }
+    this.#emitState()
+  }
+
+  /**
+   * Turno continuado com a resposta retida (pronta e não ouvida, ou esperando o usuário na tela) e
+   * fala de verdade: para o turno (se ainda esperava), tira do histórico a resposta não ouvida
+   * (tools e resultados ficam) e a fala vira a mensagem NOVA — nunca unida à anterior.
    */
   async #continueTurn(text: string): Promise<void> {
     const sessionId = this.#sessionId
@@ -951,24 +1120,17 @@ export class VoiceCallManager {
     this.#resetToolPhrase(true, 'user-speaking')
     this.#machine.suspend()
     this.#machine.turnArrived(text) // vira o pendente (suspenso: nada sai antes do ajuste)
-    const canMerge = !!prev?.userMessageId && !prev.toolsRan && !!this.#deps.amendTurn
-    const merged = canMerge && prev ? `${prev.text.trim()} ${text}`.trim() : text
-    // a fala anterior volta no turno unido: a duração dela soma no `meta.voice` do reenvio
-    if (canMerge && prev?.voice?.durationMs) this.#speechAcc.audioMs += prev.voice.durationMs
-    if (canMerge && typeof prev?.voicedMs === 'number')
-      this.#speechAcc.voicedMs = (this.#speechAcc.voicedMs ?? 0) + prev.voicedMs
-    this.#machine.replacePending(merged)
     this.#emitTimeline({
       ts: this.#now(),
       kind: 'turn-continued',
-      text: merged.slice(0, EVAL_TAIL_MAX_CHARS),
-      reason: canMerge ? 'merged' : prev?.toolsRan ? 'tools-ran' : 'next-turn'
+      text: text.slice(0, EVAL_TAIL_MAX_CHARS),
+      reason: 'new-message'
     })
     try {
       if (sessionId && prev?.userMessageId && this.#deps.amendTurn) {
         await this.#deps.amendTurn(sessionId, {
           userMessageId: prev.userMessageId,
-          dropUser: canMerge,
+          dropUser: false,
           spoken: () => this.#spokenMap(new Set())
         })
         this.#emitTimeline({ ts: this.#now(), kind: 'turn-amended', reason: 'continued' })

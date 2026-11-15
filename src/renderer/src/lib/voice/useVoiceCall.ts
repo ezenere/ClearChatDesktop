@@ -352,6 +352,10 @@ export function useVoiceCall(): void {
     // limiares vêm de `voiceCallDefaults.turn` (resolvidos no início da chamada)
     const hold = new PlaybackDuck(timing.bargeIn ?? DEFAULT_BARGE_IN)
     holdRef.current = hold
+    // fala aberta com `speechBegin` (nada da resposta ouvido): passando do MESMO limiar do barge-in
+    // em tempo com voz, o main para o agente que ainda trabalha (turno continuado) — uma vez por fala
+    const sustainMs = (timing.bargeIn ?? DEFAULT_BARGE_IN).voicedMs
+    let sustainPending = false
     let disposed = false
     const timeline = (e: Omit<VoiceCallTimelineEvent, 'ts'>): void =>
       useStore.getState().pushVoiceCallTimeline({ ts: Date.now(), ...e })
@@ -478,6 +482,10 @@ export function useVoiceCall(): void {
       // do fim fica de fora — o span termina no último quadro com voz)
       if (ev === 'start') voicedRef.current.reset()
       if (ev === 'start' || speakingRef.current) voicedRef.current.push(rms, FRAME_MS, SPEECH)
+      if (sustainPending && speakingRef.current && voicedRef.current.voicedMs >= sustainMs) {
+        sustainPending = false
+        void api.voice?.call.speechSustained().catch(() => {})
+      }
       if (ev === 'resume') askedSeq = -1 // a especulação ficou velha (a fala continuou)
       if (ev === 'start') {
         const queue = queueRef.current
@@ -485,6 +493,7 @@ export function useVoiceCall(): void {
         const sentencePlaying = !!cur && (cur.kind ?? 'sentence') === 'sentence'
         const mainSpeaking = useStore.getState().voiceCall.phase === 'speaking'
         const heard = startedRef.current.size > 0
+        sustainPending = false
         if (queue && (sentencePlaying || (heard && mainSpeaking))) {
           // fala do usuário durante a resposta já ouvida: o episódio abre SEM mexer no volume — o
           // áudio do assistente só ABAIXA depois do onset (voz sustentada; ruído curto nunca) e
@@ -496,6 +505,7 @@ export function useVoiceCall(): void {
           const dropped = queue ? [...(cur ? [cur.id] : []), ...queue.queuedIds] : []
           if (dropped.length) queue?.cancel(FADE_MS)
           void api.voice?.call.speechBegin({ dropped }).catch(() => {})
+          sustainPending = true
         }
         // fala nova: a parcial/especulação da fala anterior não vale mais
         askedSeq = -1

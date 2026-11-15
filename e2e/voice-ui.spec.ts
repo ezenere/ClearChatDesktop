@@ -1133,6 +1133,10 @@ app.on('window-all-closed', () => app.quit())
       )
       assert.match(t, /118 caracteres · ≈ \$0,01 \(preço de lista\)/)
       assert.match(t, /Preâmbulos\s+grátis/)
+      assert.ok(
+        t.includes('A chamada de voz com o usuário terminou aqui; a conversa segue por texto.'),
+        'a nota exata que vai ao modelo'
+      )
       await shot('voice-history-02-marker-tooltip')
       await page.mouse.move(5, 5)
       // tooltip da fala: duração + modelo da transcrição
@@ -1142,6 +1146,17 @@ app.on('window-all-closed', () => app.quit())
       await badge.hover()
       await page.getByText(/Falado na chamada de voz · 3,2 s · transcrição/).waitFor()
       await shot('voice-history-03-badge-tooltip')
+      await page.mouse.move(5, 5)
+      // tooltip do marcador de início: a nota exata que vai ao modelo (o tooltip do ícone de voz
+      // fica aberto depois do mouse.move — Esc fecha)
+      await page.keyboard.press('Escape')
+      const startPill = start.first().locator('span.rounded-full')
+      await startPill.scrollIntoViewIfNeeded()
+      await page.waitForTimeout(400)
+      await startPill.hover()
+      const startNote = page.getByTestId('call-marker-note')
+      await startNote.waitFor()
+      assert.match(await startNote.innerText(), /começou aqui; as mensagens a seguir são faladas/)
       await page.mouse.move(5, 5)
       return endText.replace(/\s+/g, ' ')
     }

@@ -6,6 +6,7 @@ import { Mic, Phone, PhoneOff, Volume2 } from 'lucide-react'
 import type { StoredMessage, ToolCall } from '@shared/types'
 import {
   callCostSummary,
+  callNoteFor,
   callUsageLines,
   endedByText,
   formatCallDuration,
@@ -44,13 +45,21 @@ export function VoiceBadge({
   )
 }
 
-/** Divisor de início/fim da chamada (custos no fim; detalhamento no tooltip). */
+/**
+ * Divisor de início/fim da chamada (custos no fim; detalhamento no tooltip). O tooltip mostra a nota
+ * exata que o marcador põe na request (no começo da próxima mensagem sua — `withCallNotes`).
+ */
 export function CallMarker({ msg }: { msg: StoredMessage }): React.JSX.Element | null {
   const mark = msg.meta.voiceCall
   if (!mark) return null
   const start = mark.phase === 'start'
   const cost = start ? null : callCostSummary(mark.usage)
   const lines = start ? [] : callUsageLines(mark)
+  const note = (
+    <span data-testid="call-marker-note" className="col-span-2 max-w-72 text-subtle">
+      Vai ao modelo, no começo da sua próxima mensagem: “{callNoteFor(mark.phase)}”
+    </span>
+  )
   const pill = (
     <span
       className={cn(
@@ -83,24 +92,22 @@ export function CallMarker({ msg }: { msg: StoredMessage }): React.JSX.Element |
       className="flex items-center gap-3 py-3 select-none"
     >
       <span className="h-px flex-1 bg-border/70" />
-      {start ? (
-        pill
-      ) : (
-        <Tip
-          label={
-            <span data-testid="call-marker-tip" className="grid grid-cols-[auto_auto] gap-x-3">
-              {lines.map(([k, v]) => (
-                <span key={k} className="contents">
-                  <span className="text-subtle">{k}</span>
-                  <span className="tabular-nums">{v}</span>
-                </span>
-              ))}
-            </span>
-          }
-        >
-          {pill}
-        </Tip>
-      )}
+      <Tip
+        label={
+          <span data-testid="call-marker-tip" className="grid grid-cols-[auto_auto] gap-x-3">
+            {lines.map(([k, v]) => (
+              <span key={k} className="contents">
+                <span className="text-subtle">{k}</span>
+                <span className="tabular-nums">{v}</span>
+              </span>
+            ))}
+            {lines.length > 0 && <span className="col-span-2 h-1" />}
+            {note}
+          </span>
+        }
+      >
+        {pill}
+      </Tip>
       <span className="h-px flex-1 bg-border/70" />
     </div>
   )

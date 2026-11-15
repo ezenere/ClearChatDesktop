@@ -544,7 +544,7 @@ test('barge-in no MEIO de uma frase: o histórico fica só com as palavras ouvid
   m.stop()
 })
 
-test('turno continuado: falar de novo antes de ouvir a resposta une as falas e apaga a resposta não ouvida', async () => {
+test('turno continuado: falar de novo antes de ouvir a resposta manda a fala como mensagem NOVA e apaga a resposta não ouvida', async () => {
   synthMode = 'gated'
   synthCalls.length = 0
   emitted.length = 0
@@ -567,10 +567,10 @@ test('turno continuado: falar de novo antes de ouvir a resposta une as falas e a
   await waitFor(
     () => {
       const ms = path(sid)
-      return ms.length === 2 && ms[1].message.role === 'assistant' && ms
+      return ms.length === 3 && ms[2].message.role === 'assistant' && ms
     },
     8000,
-    'turno refeito'
+    'fala nova respondida'
   ).catch((e) => {
     throw new Error(
       `${e.message}: ${m.state().error} ${JSON.stringify(m.state())} ${JSON.stringify(path(sid).map((x) => [x.message.role, x.message.content]))}`
@@ -580,11 +580,12 @@ test('turno continuado: falar de novo antes de ouvir a resposta une as falas e a
   const msgs = path(sid)
   assert.deepEqual(
     msgs.map((x) => x.message.role),
-    ['user', 'assistant'],
-    'o turno anterior (e a resposta nunca falada) saiu do histórico'
+    ['user', 'user', 'assistant'],
+    'a resposta nunca falada saiu; a fala nova é outra mensagem'
   )
-  assert.equal(textOf(msgs[0].message.content), 'duas coisas e mais uma', 'falas unidas')
-  // a resposta do turno refeito é falada
+  assert.equal(textOf(msgs[0].message.content), 'duas coisas', 'a fala anterior fica como estava')
+  assert.equal(textOf(msgs[1].message.content), 'e mais uma', 'nunca unidas')
+  // a resposta da fala nova é falada
   await waitFor(() => emitted.length >= 1, 8000, 'resposta nova falada')
   assert.ok(emitted.every((e) => e.startsWith('WAV:')))
   m.stop()

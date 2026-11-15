@@ -3225,6 +3225,7 @@ export function createMockApi(scenario: string): ClearApi {
             mute: async ({ muted }: { muted: boolean }) => setState({ muted }),
             speechBegin: async () => setState({ phase: 'listening' }),
             speechEnd: async () => setState({ phase: 'transcribing' }),
+            speechSustained: async () => setState({}),
             turn: async ({ text }: { text: string }) => {
               clearTimers()
               if (!text.trim()) return setState({ phase: 'listening' })

@@ -26,6 +26,8 @@ import {
   type VoiceCallState
 } from '@shared/voice'
 import {
+  CALL_END_NOTE,
+  CALL_START_NOTE,
   END_CALL_RESULT,
   audioDurationMs,
   callCostSummary,
@@ -34,8 +36,10 @@ import {
   formatCallClock,
   formatCallDuration,
   sanitizeDictationMeta,
+  withCallNotes,
   type VoiceCallMark
 } from '@shared/voiceCallMarks'
+import { withoutCallAudioTags } from '@shared/audioTags'
 import { isDisplayOnly } from '@shared/context'
 import { TOOL_NAMES } from '@shared/tools'
 import type { AgentEvent, Chat, Session, StoredMessage } from '@shared/types'
@@ -524,7 +528,9 @@ before(async () => {
       const msgs: any[] = body.messages ?? []
       const last = msgs[msgs.length - 1]
       const lastUser = [...msgs].reverse().find((m) => m.role === 'user')
-      const key = (textOf(lastUser?.content).trim().split(/\s+/)[0] || '').replace(/[,.!?]/g, '')
+      // a fala do usuário é o último parágrafo (as notas dos marcadores da chamada vêm antes)
+      const said = textOf(lastUser?.content).split('\n\n').at(-1) ?? ''
+      const key = (said.trim().split(/\s+/)[0] || '').replace(/[,.!?]/g, '')
       res.writeHead(200, { 'Content-Type': 'text/event-stream' })
       if (last?.role === 'tool') {
         res.write(chunk(body.model, { role: 'assistant', content: 'NUNCA DEVIA SAIR' }))
@@ -671,6 +677,12 @@ test('runner real: end_call só na chamada, encerra o turno (sem nova chamada ao
     (req.tools ?? []).some((t: any) => t.function.name === 'end_call'),
     'end_call oferecida no turno da chamada (mesmo sem tools no chat)'
   )
+  const voiceUser = req.messages.filter((x: any) => x.role === 'user').at(-1)
+  assert.equal(
+    textOf(voiceUser.content),
+    `${CALL_START_NOTE}\n\ntchau, valeu`,
+    'o marcador de início deixa a nota dele no começo da 1ª fala da chamada'
+  )
   assert.equal(requests.length, before + 1, 'depois do end_call o turno termina (sem 2ª request)')
   await waitFor(() => realPlayback > 0, 3000, 'despedida emitida')
   assert.equal(m.state().active, true, 'despedida tocando: a chamada ainda está de pé')
@@ -709,6 +721,17 @@ test('runner real: end_call só na chamada, encerra o turno (sem nova chamada ao
     'marcador de início fora da request'
   )
   assert.equal(sent.includes('Chamada encerrada ·'), false, 'marcador de fim fora da request')
+  const typedUser = typed.messages.filter((x: any) => x.role === 'user').at(-1)
+  assert.equal(
+    textOf(typedUser.content),
+    `${CALL_END_NOTE}\n\noi de novo`,
+    'o marcador de fim deixa a nota dele no começo da 1ª mensagem depois da chamada'
+  )
+  assert.equal(
+    typed.messages.filter((x: any) => x.role === 'assistant').length,
+    1,
+    'os marcadores nunca vão como mensagem'
+  )
   assert.ok(sent.includes(END_CALL_RESULT), 'o resultado do end_call segue no histórico (curto)')
   assert.equal(path(sid).at(-1)?.meta.voice, undefined, 'resposta digitada sem meta.voice')
 })
@@ -751,4 +774,147 @@ test('runner real: ditado — meta.voice { source: "dictation" } entregue pelo s
     path(sid).find((x) => textOf(x.message.content as any) === 'mensagem digitada')?.meta.voice,
     undefined
   )
+})
+
+// ---------------- request: notas dos marcadores e tags de voz fora da chamada ----------------
+
+let hSeq = 0
+const sm = (role: 'user' | 'assistant', content: any, meta: any = {}): StoredMessage =>
+  ({
+    id: `h${++hSeq}`,
+    sessionId: 's',
+    seq: hSeq,
+    message: { role, content },
+    meta,
+    createdAt: hSeq
+  }) as StoredMessage
+const marker = (phase: 'start' | 'end'): StoredMessage =>
+  sm('assistant', phase === 'start' ? 'Chamada de voz iniciada' : 'Chamada encerrada · 1 min', {
+    synthetic: true,
+    kind: 'voice-call',
+    voiceCall: { callId: 'c', phase, startedAt: 1 }
+  })
+
+test('withCallNotes: a nota do marcador vai no começo da 1ª mensagem do usuário depois dele (texto e parts); início+fim sem fala se anulam', () => {
+  const h = [
+    sm('user', 'antes'),
+    marker('start'),
+    sm('user', 'oi, tudo bem?', { voice: { source: 'call', callId: 'c' } }),
+    sm('assistant', 'Tudo!'),
+    marker('end'),
+    sm('assistant', 'resto do turno que ainda rodava'),
+    sm('user', [{ type: 'text', text: 'e agora por texto' }])
+  ]
+  const out = withCallNotes(h)
+  assert.notEqual(out, h)
+  assert.equal(out[0], h[0], 'antes da chamada: intacta (mesma referência)')
+  assert.equal((out[2].message as any).content, `${CALL_START_NOTE}\n\noi, tudo bem?`)
+  assert.deepEqual((out[6].message as any).content, [
+    { type: 'text', text: CALL_END_NOTE },
+    { type: 'text', text: 'e agora por texto' }
+  ])
+  assert.equal((h[2].message as any).content, 'oi, tudo bem?', 'entrada nunca alterada')
+  assert.equal(out[4], h[4], 'o marcador continua (sai depois, como só de exibição)')
+  // chamada sem nenhuma fala: início e fim se anulam (nenhuma nota)
+  const empty = [sm('user', 'a'), marker('start'), marker('end'), sm('user', 'b')]
+  assert.equal(withCallNotes(empty), empty)
+  // fim e outro início seguidos (sem mensagem do usuário entre): continua em chamada — nada
+  const again = [marker('start'), sm('user', 'x'), marker('end'), marker('start'), sm('user', 'y')]
+  const o2 = withCallNotes(again)
+  assert.equal((o2[1].message as any).content, `${CALL_START_NOTE}\n\nx`)
+  assert.equal(o2[4], again[4])
+  // mensagem do app (kind) não leva a nota; a próxima do usuário leva
+  const app = [marker('end'), sm('user', 'retorno', { kind: 'subagent-callback' }), sm('user', 'z')]
+  const o3 = withCallNotes(app)
+  assert.equal(o3[1], app[1])
+  assert.equal((o3[2].message as any).content, `${CALL_END_NOTE}\n\nz`)
+})
+
+test('withoutCallAudioTags: só as respostas faladas da chamada perdem as tags (cópia); o resto fica', () => {
+  const h = [
+    sm('assistant', '[laughs] Que ideia boa! [short pause] Vamos lá.', {
+      voice: { source: 'call', callId: 'c', spoken: true }
+    }),
+    sm('assistant', 'Veja [a doc](https://x) e [1].'),
+    sm('user', '[laughs] eu escrevi isso', { voice: { source: 'call', callId: 'c' } }),
+    sm('assistant', 'sem tags', { voice: { source: 'call', callId: 'c' } })
+  ]
+  const out = withoutCallAudioTags(h)
+  assert.equal((out[0].message as any).content, 'Que ideia boa! Vamos lá.')
+  assert.equal(out[1], h[1], 'fora da chamada: intacta')
+  assert.equal(out[2], h[2], 'mensagem do usuário: intacta')
+  assert.equal(out[3], h[3])
+  assert.equal(
+    (h[0].message as any).content.startsWith('[laughs]'),
+    true,
+    'histórico salvo intacto'
+  )
+  assert.equal(withoutCallAudioTags([h[1]]).length, 1)
+})
+
+test('request real: tags das respostas da chamada só vão num turno de chamada com elas ligadas; marcadores viram nota', async () => {
+  await bootReal()
+  const { repo, request } = await load()
+  const { chatId, sid } = await newChat()
+  const chat = repo.chatsRepo.get(chatId)!
+  const provider = repo.providersRepo.get(providerId)!
+  const history = [
+    marker('start'),
+    sm('user', 'conta uma piada', { voice: { source: 'call', callId: 'c' } }),
+    sm('assistant', '[laughs] Lá vai uma boa.', {
+      voice: { source: 'call', callId: 'c', spoken: true }
+    }),
+    marker('end'),
+    sm('user', 'agora por texto')
+  ].map((m) => ({ ...m, sessionId: sid }))
+  const session = { id: sid, depth: 0 as const, model: MODEL }
+  const sentOf = (): any[] => request.buildRequest(chat, session, history, provider).body.messages
+  const bot = (msgs: any[]): string => textOf(msgs.find((x) => x.role === 'assistant')?.content)
+  try {
+    // sem chamada (texto normal): sem as tags; as notas no lugar dos marcadores
+    request.setVoiceCallSource(() => null)
+    const msgs = sentOf()
+    assert.equal(bot(msgs), 'Lá vai uma boa.')
+    const users = msgs.filter((x) => x.role === 'user').map((x) => textOf(x.content))
+    assert.deepEqual(users, [
+      `${CALL_START_NOTE}\n\nconta uma piada`,
+      `${CALL_END_NOTE}\n\nagora por texto`
+    ])
+    assert.equal(msgs.filter((x) => x.role === 'assistant').length, 1, 'marcadores fora')
+    // chamada com tags pedidas mas voz SEM suporte: também sem
+    const base = resolveVoiceCallConfig(null, DEFAULT_VOICE_CALL_DEFAULTS)
+    request.setVoiceCallSource(() => ({ ...base, audioTags: true, audioTagsActive: false }))
+    assert.equal(bot(sentOf()), 'Lá vai uma boa.')
+    // chamada com as tags valendo: ficam
+    request.setVoiceCallSource(() => ({ ...base, audioTags: true, audioTagsActive: true }))
+    assert.equal(bot(sentOf()), '[laughs] Lá vai uma boa.')
+  } finally {
+    request.setVoiceCallSource((c, s) => real!.callContextFor(c, s))
+  }
+})
+
+test('runner real: resumeVoiceTurn — só com o histórico esperando o assistente; o turno volta a rodar sem mensagem nova', async () => {
+  await bootReal()
+  const { runner } = await load()
+  const { sid } = await newChat()
+  runner.send(sid, 'oi')
+  await idle(sid)
+  assert.equal(runner.resumeVoiceTurn(sid), false, 'termina numa resposta: nada a retomar')
+  const userId = path(sid)[0].id
+  // o turno foi parado pela fala e a resposta (nunca ouvida) saiu
+  await runner.amendVoiceTurn(sid, { userMessageId: userId, dropUser: false, spoken: {} })
+  assert.deepEqual(
+    path(sid).map((x) => x.message.role),
+    ['user']
+  )
+  const n = requests.length
+  assert.equal(runner.resumeVoiceTurn(sid), true)
+  await idle(sid)
+  assert.equal(requests.length, n + 1, 'uma request nova')
+  assert.deepEqual(
+    path(sid).map((x) => x.message.role),
+    ['user', 'assistant'],
+    'nenhuma mensagem do usuário nova'
+  )
+  assert.equal(runner.resumeVoiceTurn('nao-existe'), false)
 })

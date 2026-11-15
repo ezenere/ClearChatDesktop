@@ -702,6 +702,8 @@ export function registerIpc(): void {
     amendTurn: async (sessionId, amend) => {
       await runner.amendVoiceTurn(sessionId, amend)
     },
+    // a fala que parou o turno era ruído: o mesmo turno volta a rodar do histórico ajustado
+    resumeTurn: (sessionId) => runner.resumeVoiceTurn(sessionId),
     sessionInfo: (sessionId) => {
       const s = sessionsRepo.get(sessionId)
       return s ? { chatId: s.chatId, depth: s.depth, busy: isBusyStatus(s.status) } : null
@@ -1729,6 +1731,7 @@ export function registerIpc(): void {
       return voiceCalls.speechBegin({ dropped })
     },
     [IPC.voice.callSpeechEnd]: () => voiceCalls.speechEnd(),
+    [IPC.voice.callSpeechSustained]: () => voiceCalls.speechSustained(),
     [IPC.voice.callTurn]: (input: { text: string; speechMs?: unknown }) =>
       voiceCalls.turn(input && typeof input.text === 'string' ? input.text : '', {
         // tempo com VOZ da fala (renderer — `VoicedSpan`): o preâmbulo compara com a "Fala mínima"

@@ -207,6 +207,7 @@ const api: FullClearApi = {
       mute: (input) => invoke(IPC.voice.callMute, input),
       speechBegin: (input) => invoke(IPC.voice.callSpeechBegin, input),
       speechEnd: () => invoke(IPC.voice.callSpeechEnd),
+      speechSustained: () => invoke(IPC.voice.callSpeechSustained),
       turn: (input) => invoke(IPC.voice.callTurn, input),
       playbackIdle: () => invoke(IPC.voice.callPlaybackIdle),
       bargeIn: (input) => invoke(IPC.voice.callBargeIn, input),

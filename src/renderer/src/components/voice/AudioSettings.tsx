@@ -701,7 +701,7 @@ export function AudioSettings(): React.JSX.Element | null {
         />
         <NumberRow
           label="Interromper depois de falar"
-          help={`Se você continuar falando por cima por este tempo (só o tempo com voz conta, desde o começo da fala por cima), o assistente para de falar e a sua fala vira o próximo turno (barge-in). Também interrompe com ${DEFAULT_BARGE_IN.words}+ palavras reconhecidas na transcrição ao vivo (palavras abaixo) ou com um pedido curto de parada (“para”, “espera”, “chega”, “peraí”) — sempre só depois de a voz ter abaixado. Padrão ${DEFAULT_BARGE_IN.voicedMs} ms.`}
+          help={`Se você continuar falando por cima por este tempo (só o tempo com voz conta, desde o começo da fala por cima), o assistente para de falar e a sua fala vira o próximo turno (barge-in). Também interrompe com ${DEFAULT_BARGE_IN.words}+ palavras reconhecidas na transcrição ao vivo (palavras abaixo) ou com um pedido curto de parada (“para”, “espera”, “chega”, “peraí”) — sempre só depois de a voz ter abaixado. Falando antes de ouvir a resposta, o mesmo tempo de fala para o agente que ainda está trabalhando (tools inclusive); sua fala vira uma mensagem nova. Padrão ${DEFAULT_BARGE_IN.voicedMs} ms.`}
           value={bargeIn.voicedMs}
           min={BARGE_IN_RANGES.voicedMs.min}
           max={BARGE_IN_RANGES.voicedMs.max}

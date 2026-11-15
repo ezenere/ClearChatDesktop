@@ -62,6 +62,15 @@ const CLASS_LABELS: Record<string, string> = {
   THANKS: '"obrigado por aguardar"'
 }
 
+/** Turno continuado (você voltou a falar antes de ouvir a resposta) → texto. */
+const CONTINUED_LABELS: Record<string, string> = {
+  stopped: 'você voltou a falar — o turno do agente parou',
+  'new-message': 'sua fala vai como mensagem nova',
+  resumed: 'era ruído — o turno voltou a rodar',
+  'resume-failed': 'era ruído — o turno não pôde voltar a rodar',
+  carried: 'fala unida à anterior (ainda transcrevendo)'
+}
+
 /** Por que a fala por cima virou barge-in → texto. */
 const BARGE_IN_LABELS: Record<string, string> = {
   voiced: 'você continuou falando',
@@ -115,6 +124,10 @@ function describeTimelineEvent(e: VoiceCallTimelineEvent): string {
       return `sentença: "…${(e.text ?? '').slice(-24)}"`
     case 'turn-sent':
       return `turno enviado: "…${(e.text ?? '').slice(-24)}"`
+    case 'turn-continued':
+      return CONTINUED_LABELS[e.reason ?? ''] ?? 'turno continuado'
+    case 'turn-amended':
+      return 'histórico ajustado ao que foi ouvido'
     case 'speech-start':
       return 'fala detectada'
     case 'speech-end':

@@ -30,6 +30,8 @@ import {
 } from '@shared/toolSearch'
 import { activeHistory, isDisplayOnly } from '@shared/context'
 import { withOpenFiles } from '@shared/openFile'
+import { withCallNotes } from '@shared/voiceCallMarks'
+import { withoutCallAudioTags } from '@shared/audioTags'
 import { bwrapAvailable, shellLabel } from '../tools/bash'
 import { expandAttachments, hoistToolMedia } from '../attachments'
 import { paramSupport, type ParamSupport } from '@shared/modelParams'
@@ -146,10 +148,21 @@ export const nativeHostsForTests = (): string[] => [...nativeTestHosts]
  * Mensagens que vão na request (fronteira em diante, sem as só de exibição), com o texto do arquivo
  * selecionado (1.13.0, `meta.openFile` → @shared/openFile) aplicado na CÓPIA de cada mensagem do
  * usuário — vale para todo builder que passa por aqui (turno, subagente, chamada de voz,
- * compactação, pré-visualização da request).
+ * compactação, pré-visualização da request). Os marcadores da chamada saem como mensagem e deixam a
+ * nota deles na mensagem seguinte do usuário (`withCallNotes`); as tags de voz das respostas da
+ * chamada só ficam num turno de chamada com elas ligadas (`keepCallTags` — `withoutCallAudioTags`).
  */
-const sentMessages = (history: StoredMessage[]): StoredMessage[] =>
-  withOpenFiles(activeHistory(history).filter((m) => !isDisplayOnly(m.meta)))
+const sentMessages = (history: StoredMessage[], keepCallTags = false): StoredMessage[] => {
+  const sent = withCallNotes(activeHistory(history)).filter((m) => !isDisplayOnly(m.meta))
+  return withOpenFiles(keepCallTags ? sent : withoutCallAudioTags(sent))
+}
+
+/** Turno de chamada de voz com as tags de voz valendo (pedidas E a voz as interpreta)? */
+function callTagsActive(chat: Chat, session: Pick<Session, 'depth'> & { id?: string }): boolean {
+  if (!session.id) return false
+  const call = voiceCallContextFor(chat, { id: session.id, depth: session.depth })
+  return !!(call?.audioTags && call.audioTagsActive)
+}
 
 /**
  * Modo de envio das tools para esta sessão/provedor/modelo (@shared/toolSearch →
@@ -514,9 +527,10 @@ export function sentHistory(
   history: StoredMessage[],
   kind: ProviderKind,
   keepNative: boolean,
-  noReplay?: ReadonlySet<string>
+  noReplay?: ReadonlySet<string>,
+  keepCallTags = false
 ): ApiMessage[] {
-  const stored = sentMessages(history).map((m) =>
+  const stored = sentMessages(history, keepCallTags).map((m) =>
     noReplay?.has(m.id) && m.message.role === 'assistant' && m.message.native
       ? { ...m, message: { ...m.message, native: undefined } }
       : m
@@ -714,7 +728,7 @@ export function buildRequest(
   // adiadas que já foram usadas sem a descoberta no histórico enviado → carregadas
   const nd = nativeDeferral(
     plan,
-    sentHistory(history, kind, native, opts.noReplay),
+    sentHistory(history, kind, native, opts.noReplay, callTagsActive(chat, session)),
     opts.replay === false ? null : { providerId: provider.id, model: session.model }
   )
   const hist = nd.messages

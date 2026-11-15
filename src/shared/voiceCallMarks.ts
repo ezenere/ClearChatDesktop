@@ -1,7 +1,10 @@
 // Chamada de voz no histórico: marca das mensagens faladas/ditadas (`MessageMeta.voice`) e os
 // marcadores de início/fim da chamada (`MessageMeta.voiceCall`, mensagens só de exibição — kind
-// 'voice-call', NUNCA enviadas à API) com a duração e os custos/tempos da chamada. Funções puras
-// (main monta, renderer mostra). Ver SPEC.md → "Áudio → Chamada de voz → Histórico e custos".
+// 'voice-call', NUNCA enviadas à API como mensagem; na request viram uma nota fixa no começo da
+// mensagem seguinte do usuário — `withCallNotes`) com a duração e os custos/tempos da chamada.
+// Funções puras (main monta, renderer mostra). Ver SPEC.md → "Áudio → Chamada de voz → Histórico e
+// custos".
+import type { ContentPart, StoredMessage } from './types'
 
 /** Mensagem que veio de voz: fala da chamada (usuário/assistente) ou texto ditado no composer. */
 export interface VoiceMessageMeta {
@@ -95,6 +98,50 @@ export interface VoiceCallMark {
 export const END_CALL_RESULT = 'Chamada encerrada pelo agente.'
 /** Texto (exibição) do marcador de início. */
 export const CALL_START_TEXT = 'Chamada de voz iniciada'
+
+/**
+ * Notas fixas dos marcadores na request (SYNC §4.3.8): o marcador nunca vai como mensagem; o texto
+ * dele entra no começo da 1ª mensagem do usuário depois dele — o modelo sabe onde a conversa passou
+ * a ser falada e onde voltou ao texto (e deixa o jeito de falar da chamada). Mostradas no tooltip
+ * do marcador.
+ */
+export const CALL_START_NOTE =
+  'A chamada de voz com o usuário começou aqui; as mensagens a seguir são faladas.'
+export const CALL_END_NOTE =
+  'A chamada de voz com o usuário terminou aqui; a conversa segue por texto.'
+
+/** A nota que o marcador põe na request. */
+export const callNoteFor = (phase: VoiceCallMark['phase']): string =>
+  phase === 'start' ? CALL_START_NOTE : CALL_END_NOTE
+
+/**
+ * Histórico (caminho ativo, AINDA com as mensagens só de exibição) → a cópia com a nota de cada
+ * marcador no começo da 1ª mensagem do usuário depois dele — parte de texto separada (content em
+ * parts) ou antes de uma linha em branco (content em texto). Início e fim sem nenhuma mensagem do
+ * usuário entre eles (chamada sem fala; ou fim e outro início seguidos) se anulam. Nunca altera a
+ * entrada; mesma referência quando nada muda.
+ */
+export function withCallNotes(history: StoredMessage[]): StoredMessage[] {
+  let pending: VoiceCallMark['phase'] | null = null
+  let changed = false
+  const out = history.map((m) => {
+    const mark = m.meta?.kind === 'voice-call' ? m.meta.voiceCall : null
+    const phase = mark?.phase === 'start' || mark?.phase === 'end' ? mark.phase : null
+    if (phase) {
+      pending = pending && pending !== phase ? null : phase
+      return m
+    }
+    if (!pending || m.message.role !== 'user' || m.meta?.kind) return m
+    const note = callNoteFor(pending)
+    pending = null
+    changed = true
+    const c = m.message.content
+    const content: string | ContentPart[] =
+      typeof c === 'string' ? (c ? `${note}\n\n${c}` : note) : [{ type: 'text', text: note }, ...c]
+    return { ...m, message: { role: 'user' as const, content } }
+  })
+  return changed ? out : history
+}
 
 const n = (v: unknown): number => (typeof v === 'number' && Number.isFinite(v) ? v : 0)
 

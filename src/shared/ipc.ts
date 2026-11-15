@@ -270,6 +270,7 @@ export const IPC = {
     callMute: 'voice:call:mute',
     callSpeechBegin: 'voice:call:speech-begin',
     callSpeechEnd: 'voice:call:speech-end',
+    callSpeechSustained: 'voice:call:speech-sustained',
     callTurn: 'voice:call:turn',
     callPlaybackIdle: 'voice:call:playback-idle',
     callBargeIn: 'voice:call:barge-in',
@@ -714,6 +715,12 @@ export interface VoiceApi {
     /** Silêncio encerrou a fala: a transcrição final está em andamento ("Transcrevendo…"). */
     speechEnd(): Promise<VoiceCallState>
     /**
+     * A fala aberta (a do `speechBegin`) passou do limiar do barge-in em tempo com VOZ
+     * (`bargeInVoicedMs`): no turno continuado o main para o agente que ainda trabalha. Uma vez por
+     * fala.
+     */
+    speechSustained(): Promise<VoiceCallState>
+    /**
      * Transcrição final da fala do usuário. Sem resposta em andamento envia já (mesmo caminho do
      * composer — fila/⚡ respeitadas); com resposta em voo fica como PRÓXIMO turno (máx. 1).
      */
@@ -1039,7 +1046,12 @@ export interface VoiceCallTimelineEvent {
     | 'backchannel'
     /** Veredito do fim de turno adaptativo numa pausa (renderer — `text` = especulativa, `reason` = veredito). */
     | 'turn-verdict'
-    /** Turno continuado: o usuário voltou a falar antes da resposta ser ouvida (main — `text` = turno refeito). */
+    /**
+     * Turno continuado: o usuário voltou a falar antes da resposta ser ouvida (main). `reason`:
+     * `stopped` (turno do agente parado no início da fala), `new-message` (a fala vira mensagem
+     * nova), `resumed`/`resume-failed` (era ruído — o turno parado volta a rodar), `carried` (fala
+     * unida à anterior ainda transcrevendo).
+     */
     | 'turn-continued'
     /** Turno do agente parado e histórico ajustado ao que foi falado (main — barge-in/continuação). */
     | 'turn-amended'

@@ -4,7 +4,10 @@
 // Ninguém respondeu."); os demais as LERIAM em voz alta, então elas saem antes da síntese
 // (`stripAudioTags`). O corte de sentenças nunca parte uma tag e uma tag sozinha nunca vira uma
 // utterance (`sentences.ts`). No chat a tag fica no texto da mensagem e aparece esmaecida.
-// Ver SPEC.md → "Chamada de voz → Tags de voz".
+// Fora de um turno de chamada com as tags ligadas, as respostas da chamada vão ao modelo SEM elas
+// (`withoutCallAudioTags`) — senão o modelo as imita no chat de texto. Ver SPEC.md → "Chamada de
+// voz → Tags de voz".
+import type { StoredMessage } from './types'
 
 /**
  * Uma tag de voz: colchetes com 2–40 caracteres que começam por letra (palavras, espaços, vírgula,
@@ -59,3 +62,21 @@ export const DEFAULT_AUDIO_TAGS_PROMPT = [
 
 /** Teto do texto da instrução das tags (chars) — o normalizador apara. */
 export const AUDIO_TAGS_PROMPT_MAX = 2000
+
+/**
+ * Histórico que vai ao modelo FORA de um turno de chamada com as tags ligadas (texto normal, chamada
+ * sem tags, subagente, compactação): as respostas faladas da chamada (`meta.voice.source 'call'`)
+ * vão sem as tags de voz — o modelo não as imita no texto. O histórico salvo (e a exibição) não
+ * muda. Mesma referência quando nada muda.
+ */
+export function withoutCallAudioTags(history: StoredMessage[]): StoredMessage[] {
+  let changed = false
+  const out = history.map((m) => {
+    if (m.message.role !== 'assistant' || m.meta?.voice?.source !== 'call') return m
+    const c = m.message.content
+    if (typeof c !== 'string' || !hasAudioTags(c)) return m
+    changed = true
+    return { ...m, message: { ...m.message, content: stripAudioTags(c) } }
+  })
+  return changed ? out : history
+}

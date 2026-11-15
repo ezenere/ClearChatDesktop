@@ -67,6 +67,7 @@ import {
   type WaitEdge
 } from '@shared/interChat'
 import {
+  activeHistory,
   compactThreshold,
   contextUsage,
   hasCompactableHistory,
@@ -3514,6 +3515,22 @@ export async function amendVoiceTurn(
   }
   repairTail(sessionId)
   return { removed, truncated }
+}
+
+/**
+ * Chamada de voz: a fala que parou o turno (turno continuado) era ruído/"uhum" — o MESMO turno
+ * volta a rodar do histórico já ajustado (`amendVoiceTurn`), sem mensagem nova. Só na sessão
+ * principal ociosa cujo histórico espera o assistente (termina numa mensagem do usuário ou num
+ * resultado de tool). true = voltou a rodar.
+ */
+export function resumeVoiceTurn(sessionId: string): boolean {
+  const session = sessionsRepo.get(sessionId)
+  if (!session || session.depth !== 0 || shuttingDown || isSessionBusy(session)) return false
+  const sent = activeHistory(messagesRepo.path(sessionId)).filter((m) => !isDisplayOnly(m.meta))
+  const last = sent[sent.length - 1]
+  if (!last || last.message.role === 'assistant') return false
+  startLoop(session)
+  return true
 }
 
 // ---------------- versões da conversa (ramos — src/shared/branches.ts) ----------------
