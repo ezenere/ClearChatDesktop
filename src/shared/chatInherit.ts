@@ -11,6 +11,7 @@ import { APPROVAL_ITEMS } from './approvalPolicy'
 import { COMPACTABLE_TOOL_NAMES } from './compactTools'
 import { supportsCacheControl } from './defaults'
 import { APP_TOOL_NAMES, orderedTools, toolDevice, type ChatRanOn } from './deviceTools'
+import { normalizeMcpChoice } from './mcp'
 import { normalizeMemoryConfig } from './memory'
 import {
   PRESET_FIELDS,
@@ -62,7 +63,13 @@ function canon(v: unknown): string {
 export const INHERIT_KEYS: readonly string[] = PRESET_FIELDS.filter((k) => k !== 'voice')
 
 /** Chaves com várias unidades (cada subchave/tool é uma unidade; LWW pela chave inteira, §7.5). */
-export const SHARED_INHERIT_KEYS = ['params', 'enabledTools', 'toolsFull', 'approvalModes'] as const
+export const SHARED_INHERIT_KEYS = [
+  'params',
+  'enabledTools',
+  'toolsFull',
+  'approvalModes',
+  'mcpServers'
+] as const
 /** Chaves-lista de tools (cada tool é uma unidade booleana "está na lista"). */
 const TOOL_LIST_KEYS = ['enabledTools', 'toolsFull'] as const
 type ToolListKey = (typeof TOOL_LIST_KEYS)[number]
@@ -134,6 +141,10 @@ export function unitsOfKey(
     for (const i of APPROVAL_ITEMS) names.add(i)
     for (const c of cfgs)
       for (const k of Object.keys(isObj(c?.approvalModes) ? c.approvalModes : {})) names.add(k)
+  } else if (key === 'mcpServers') {
+    // um por servidor citado em qualquer das configs (ausente = desligado)
+    for (const c of cfgs)
+      for (const k of Object.keys(isObj(c?.mcpServers) ? c.mcpServers : {})) names.add(k)
   } else return []
   return [...names].map((n) => `${key}.${n}`)
 }
@@ -165,6 +176,8 @@ export function readUnit(cfg: Partial<ChatConfig> | null | undefined, unit: stri
     return Array.isArray(cfg[key]) ? toolsOf(cfg, key).includes(sub) : undefined
   if (key === 'approvalModes')
     return isObj(cfg.approvalModes) ? (cfg.approvalModes as Plain)[sub] : undefined
+  if (key === 'mcpServers')
+    return isObj(cfg.mcpServers) ? normalizeMcpChoice((cfg.mcpServers as Plain)[sub]) : undefined
   return (cfg as Plain)[key]
 }
 
@@ -218,6 +231,15 @@ export function writeUnit(cfg: Partial<ChatConfig>, unit: string, value: unknown
     else delete c.approvalModes
     return
   }
+  if (key === 'mcpServers') {
+    const next: Plain = { ...(isObj(c.mcpServers) ? c.mcpServers : {}) }
+    const choice = normalizeMcpChoice(value)
+    if (!choice) delete next[sub]
+    else next[sub] = choice
+    if (Object.keys(next).length) c.mcpServers = next
+    else delete c.mcpServers
+    return
+  }
   if (value === undefined) delete c[key]
   else c[key] = clone(value)
 }
@@ -230,6 +252,11 @@ export function sameUnit(unit: string, a: unknown, b: unknown): boolean {
   if (unit === 'memory') return canon(normalizeMemoryConfig(a)) === canon(normalizeMemoryConfig(b))
   if (unit === 'skills') return canon(normalizeSkillsConfig(a)) === canon(normalizeSkillsConfig(b))
   if (unit === 'toolsCompact') return (a !== false) === (b !== false)
+  if (unit === 'mcpSubagents') return !!a === !!b
+  if (unit.startsWith('mcpServers.')) {
+    const off = { on: false }
+    return canon(normalizeMcpChoice(a) ?? off) === canon(normalizeMcpChoice(b) ?? off)
+  }
   if (unit.startsWith('enabledTools.') || unit.startsWith('toolsFull.')) return !!a === !!b
   return canon(a ?? null) === canon(b ?? null)
 }
@@ -289,7 +316,8 @@ export function personaDefines(persona: PresetConfig | null | undefined, unit: s
   if (unit === 'appSignature') return persona.appSignature !== undefined
   const key = keyOfUnit(unit)
   if (isToolListKey(key)) return Array.isArray(persona[key])
-  if (key === 'params' || key === 'approvalModes') return readUnit(persona, unit) !== undefined
+  if (key === 'params' || key === 'approvalModes' || key === 'mcpServers')
+    return readUnit(persona, unit) !== undefined
   return (persona as Plain)[key] !== undefined
 }
 

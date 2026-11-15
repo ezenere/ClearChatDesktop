@@ -219,6 +219,14 @@ export interface ChatConfig {
   toolsCompact?: boolean
   /** Com a compactação, estas vão completas (as de `enabledTools`, memória e skills). Ausente = []. */
   toolsFull?: ToolName[]
+  /**
+   * Conectores MCP (SPEC → "Conectores (MCP)", @shared/mcp): a escolha por servidor — id do registro
+   * `mcp_server` → ligado, tools desligadas, instruções do servidor. Cada servidor é uma unidade da
+   * herança (`mcpServers.<id>`); ausente = desligado.
+   */
+  mcpServers?: Record<string, import('./mcp').McpServerChoice>
+  /** Subagentes recebem as tools dos conectores ligados (padrão false). */
+  mcpSubagents?: boolean
   /** Anexa bloco <environment> (cwd, SO, shell) ao system prompt (padrão true). */
   envInPrompt: boolean
   /** Adiciona breakpoints cache_control (padrão: true se baseUrl contém openrouter.ai). */
