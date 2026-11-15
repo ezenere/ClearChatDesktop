@@ -302,7 +302,9 @@ async function boot(): Promise<{ manager: Manager }> {
     // turno continuado / barge-in: o runner real para o turno e ajusta o histórico ao falado
     amendTurn: async (sid, amend) => {
       await runner.amendVoiceTurn(sid, amend)
-    }
+    },
+    // a fala que parou o turno era ruído: o mesmo turno volta a rodar
+    resumeTurn: (sid) => runner.resumeVoiceTurn(sid)
   })
   request.setVoiceCallSource((chat, session) => manager!.callContextFor(chat, session))
   return { manager }
@@ -591,7 +593,7 @@ test('turno continuado: falar de novo antes de ouvir a resposta manda a fala com
   m.stop()
 })
 
-test('turno continuado: fala sem texto (ruído) devolve a resposta retida', async () => {
+test('turno continuado: ruído com o agente PENSANDO para o turno na hora; transcrição vazia → o mesmo turno volta a rodar e é falado', async () => {
   synthMode = 'auto'
   emitted.length = 0
   const { manager: m } = await boot()
@@ -600,17 +602,55 @@ test('turno continuado: fala sem texto (ruído) devolve a resposta retida', asyn
   m.start(sid)
   m.speechBegin()
   m.speechEnd()
+  const before = requests.length
   m.turn('duas')
-  m.speechBegin({ dropped: [] }) // ruído antes de qualquer frase tocar: retém
+  m.speechBegin({ dropped: [] }) // nada saiu do modelo ainda: para já (sem esperar o limiar)
   m.speechEnd()
   await idle(sid)
-  await sleep(30)
-  const held = emitted.length
+  assert.deepEqual(
+    path(sid).map((x) => x.message.role),
+    ['user'],
+    'parado antes de responder (nada a manter)'
+  )
+  m.turn('') // era ruído: o turno volta a rodar
+  await waitFor(() => emitted.includes('WAV:Primeira frase.'), 8000, 'resposta retomada falada')
+  await idle(sid)
+  const msgs = path(sid)
+  assert.deepEqual(
+    msgs.map((x) => x.message.role),
+    ['user', 'assistant'],
+    'nenhuma mensagem nova do usuário'
+  )
+  assert.equal(textOf(msgs[1].message.content), 'Primeira frase. Segunda frase.')
+  // a parada pode ter saído antes de a 1ª request chegar ao servidor: 1 ou 2
+  assert.ok(requests.length - before >= 1 && requests.length - before <= 2)
+  m.stop()
+})
+
+test('turno continuado: ruído com a resposta JÁ pronta (não ouvida) devolve a resposta retida (nada parado nem apagado)', async () => {
+  synthMode = 'gated'
+  synthCalls.length = 0
+  emitted.length = 0
+  gates.length = 0
+  const { manager: m } = await boot()
+  m.stop()
+  const { sid } = await newChat()
+  m.start(sid)
+  m.speechBegin()
+  m.speechEnd()
+  const before = requests.length
+  m.turn('duas')
+  // a resposta saiu do modelo, mas nada foi falado ainda (síntese presa)
+  await waitFor(() => synthCalls.length >= 1, 8000, '1ª síntese')
+  m.speechBegin({ dropped: [] }) // ruído: retém
+  m.speechEnd()
+  synthMode = 'auto'
+  await idle(sid)
   m.turn('') // transcrição vazia: a resposta volta a ser falada
-  await waitFor(() => emitted.length >= held + 1, 8000, 'resposta liberada')
-  assert.ok(emitted.includes('WAV:Primeira frase.'))
+  await waitFor(() => emitted.includes('WAV:Primeira frase.'), 8000, 'resposta liberada')
   const msgs = path(sid)
   assert.equal(textOf(msgs[1].message.content), 'Primeira frase. Segunda frase.', 'nada apagado')
+  assert.equal(requests.length - before, 1, 'nada regerado')
   m.stop()
 })
 

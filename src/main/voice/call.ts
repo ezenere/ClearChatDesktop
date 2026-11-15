@@ -13,10 +13,11 @@
 // A fala do assistente vem dos eventos do runner (`onAgentEvent`): `draft` (conteúdo acumulado em
 // streaming, com monotonicidade por passo) e `message-added` (flush autoritativo do passo). Erros
 // persistidos (`meta.kind 'error'`) NÃO são falados. O histórico só guarda o que foi OUVIDO:
-// - turno continuado (o usuário volta a falar antes de ouvir a resposta): a resposta fica retida; a
-//   fala que passa do limiar do barge-in (`bargeInVoicedMs` de VOZ — o renderer avisa com
-//   `speechSustained`) PARA o turno do agente ainda trabalhando (tools e resultados ficam; o texto
-//   não ouvido sai) — fala curta espera a transcrição. Com texto, a fala vira uma mensagem NOVA (nunca unida à
+// - turno continuado (o usuário volta a falar antes de ouvir a resposta): a resposta fica retida; com
+//   o agente ainda PENSANDO (nada saiu do passo atual — nem texto nem tool) o turno PARA já no início
+//   da fala; depois disso (texto saindo, tool rodando) só a fala que passa do limiar do barge-in
+//   (`bargeInVoicedMs` de VOZ — o renderer avisa com `speechSustained`) o para (tools e resultados
+//   ficam; o texto não ouvido sai) — fala curta espera a transcrição. Com texto, a fala vira uma mensagem NOVA (nunca unida à
 //   anterior; a resposta não ouvida sai); ruído/"uhum" devolve a resposta retida (o turno nunca
 //   parou) ou retoma o turno parado (`resumeTurn`);
 // - barge-in no meio da resposta: o turno é parado e o texto do assistente é truncado ao que foi
@@ -462,6 +463,12 @@ export class VoiceCallManager {
    */
   #cancelled: CancelledTurn | null = null
   /**
+   * O passo atual do agente já produziu algo (texto ou tool call no draft/na mensagem) — "saiu do
+   * pensamento". Zera no turno novo e quando as tools do passo terminam (o próximo passo começa
+   * pensando). Enquanto false (e sem tool rodando), a fala do usuário para o turno na hora.
+   */
+  #stepOutput = false
+  /**
    * Falas transcritas acumuladas para o próximo envio (fila/turno continuado unem várias).
    * `voicedMs` = tempo com VOZ (renderer; sem silêncio antes/depois nem a espera do fim de turno)
    * — null enquanto nenhuma fala trouxe a medida.
@@ -650,9 +657,9 @@ export class VoiceCallManager {
   /**
    * O usuário começou a falar FORA da reprodução de uma frase da resposta (o renderer já descartou,
    * com fade, os clipes e as frases ainda não tocadas — `dropped`). NADA da resposta ouvido → turno
-   * continuado: a resposta fica retida e, com o agente ainda trabalhando, a fala que passar do
-   * limiar do barge-in o PARA (`speechSustained`) — fala curta (tosse, eco, "uhum") espera a
-   * transcrição. Parte já ouvida (pausa entre frases) → barge-in: o histórico fica só com o que foi
+   * continuado: a resposta fica retida; com o agente ainda PENSANDO (nada saiu do passo atual) o
+   * turno PARA já; depois disso, só a fala que passar do limiar do barge-in o para
+   * (`speechSustained`) — fala curta (tosse, eco, "uhum") espera a transcrição. Parte já ouvida (pausa entre frases) → barge-in: o histórico fica só com o que foi
    * falado.
    */
   speechBegin(input?: { dropped?: string[] }): VoiceCallState {
@@ -675,10 +682,11 @@ export class VoiceCallManager {
     const unheard = emitted.length > played.length || this.#synthQueue.length > 0
     const answerPending = this.#machine.responseInFlight || this.#keyText.size > 0
     if (this.#turn && !played.length && answerPending) {
-      // nada da resposta foi ouvido: retém (frases descartadas voltam se for ruído); o agente
-      // ainda trabalhando para se a fala durar (o usuário vai dizer mais — nada de seguir rodando
-      // tools sobre a fala incompleta)
+      // nada da resposta foi ouvido: retém (frases descartadas voltam se for ruído); o agente ainda
+      // PENSANDO para já (nada saiu do passo — nada se perde); trabalhando (texto saindo, tool
+      // rodando), para se a fala durar (`speechSustained`)
       this.#beginHold(emitted)
+      if (this.#thinkingNow() && this.#canCancelForSpeech()) this.#cancelForSpeech('thinking')
     } else if (played.length && (unheard || this.#machine.responseInFlight)) {
       // parte da resposta ouvida, o resto não: barge-in (para o turno, trunca ao falado)
       this.#interruptAnswer(played)
@@ -707,7 +715,7 @@ export class VoiceCallManager {
    */
   speechSustained(): VoiceCallState {
     if (!this.#sessionId) return this.state()
-    if (this.#holdAnswer && this.#canCancelForSpeech()) this.#cancelForSpeech()
+    if (this.#holdAnswer && this.#canCancelForSpeech()) this.#cancelForSpeech('sustained')
     this.#emitState()
     return this.state()
   }
@@ -1001,6 +1009,19 @@ export class VoiceCallManager {
   }
 
   /**
+   * O agente está PENSANDO: em voo, sem esperar o usuário na tela, sem tool rodando e sem nada
+   * saído do passo atual (texto ou tool call) — o raciocínio ou a espera do 1º token.
+   */
+  #thinkingNow(): boolean {
+    return (
+      this.#machine.responseInFlight &&
+      !this.#awaitingUser &&
+      !this.#stepOutput &&
+      this.#toolsRunningIds.size === 0
+    )
+  }
+
+  /**
    * O turno continuado pode PARAR o agente já no início da fala: há turno com a mensagem do usuário
    * salva, o agente ainda trabalha (gerando/rodando tools — não esperando o usuário na tela) e o
    * runner sabe ajustar o histórico.
@@ -1020,7 +1041,7 @@ export class VoiceCallManager {
    * resultados ficam — a que rodava ganha o resultado cancelado; o texto não ouvido sai) e espera a
    * transcrição dizer se é fala (mensagem nova) ou ruído (retoma). Envios suspensos até o ajuste.
    */
-  #cancelForSpeech(): void {
+  #cancelForSpeech(why: 'thinking' | 'sustained'): void {
     const sessionId = this.#sessionId
     const turn = this.#turn
     if (!sessionId || !turn?.userMessageId || !this.#deps.amendTurn) return
@@ -1034,7 +1055,7 @@ export class VoiceCallManager {
       ts: this.#now(),
       kind: 'turn-continued',
       text: turn.text.slice(0, EVAL_TAIL_MAX_CHARS),
-      reason: 'stopped'
+      reason: why === 'thinking' ? 'stopped-thinking' : 'stopped'
     })
     const amended = this.#deps
       .amendTurn(sessionId, {
@@ -1238,6 +1259,7 @@ export class VoiceCallManager {
     if (!sessionId) return
     if (e.type === 'draft') {
       if (e.sessionId === sessionId && e.draft) {
+        if (e.draft.content.trim() || e.draft.toolCalls?.length) this.#stepOutput = true
         this.#feedContent(e.draft.content)
         this.#ttsFeedPartial() // [tts-feed] a sentença incompleta segue para o TTS
       }
@@ -1270,6 +1292,7 @@ export class VoiceCallManager {
         return
       }
       if (m.message.role === 'assistant' && !isDisplayOnly(m.meta)) {
+        this.#stepOutput = true
         for (const tc of m.message.tool_calls ?? []) {
           if (tc.function.name === 'end_call') this.#endCallIds.add(tc.id)
           this.#toolNames.set(tc.id, tc.function.name)
@@ -1325,7 +1348,11 @@ export class VoiceCallManager {
       // frases de espera: tool rodando escolhe o pool "ferramenta" da "manter viva" (a regra do
       // silêncio é a mesma com tool rodando ou com o modelo pensando de novo depois dela)
       if (e.running) this.#toolsRunningIds.add(e.toolCallId)
-      else this.#toolsRunningIds.delete(e.toolCallId)
+      else {
+        this.#toolsRunningIds.delete(e.toolCallId)
+        // as tools do passo acabaram: o próximo passo começa pensando
+        if (!this.#toolsRunningIds.size) this.#stepOutput = false
+      }
       if (this.#delay.turnStartedAt != null) {
         this.#delay.toolsRunning = this.#toolsRunningIds.size > 0
         this.#scheduleDelay()
@@ -1574,6 +1601,7 @@ export class VoiceCallManager {
     this.#heldTexts = []
     this.#error = null
     this.#keyText = new Map()
+    this.#stepOutput = false
     this.#stepKeys = []
     this.#msgKeys = new Map()
     this.#uttKey = new Map()

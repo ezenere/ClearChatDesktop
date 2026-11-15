@@ -65,6 +65,7 @@ const CLASS_LABELS: Record<string, string> = {
 /** Turno continuado (você voltou a falar antes de ouvir a resposta) → texto. */
 const CONTINUED_LABELS: Record<string, string> = {
   stopped: 'você voltou a falar — o turno do agente parou',
+  'stopped-thinking': 'você voltou a falar com o agente pensando — parou na hora',
   'new-message': 'sua fala vai como mensagem nova',
   resumed: 'era ruído — o turno voltou a rodar',
   'resume-failed': 'era ruído — o turno não pôde voltar a rodar',

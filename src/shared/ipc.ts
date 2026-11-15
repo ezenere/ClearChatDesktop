@@ -1048,7 +1048,8 @@ export interface VoiceCallTimelineEvent {
     | 'turn-verdict'
     /**
      * Turno continuado: o usuário voltou a falar antes da resposta ser ouvida (main). `reason`:
-     * `stopped` (turno do agente parado no início da fala), `new-message` (a fala vira mensagem
+     * `stopped-thinking` (o agente ainda pensava — parado no início da fala), `stopped` (a fala
+     * passou do limiar do barge-in com o agente trabalhando), `new-message` (a fala vira mensagem
      * nova), `resumed`/`resume-failed` (era ruído — o turno parado volta a rodar), `carried` (fala
      * unida à anterior ainda transcrevendo).
      */

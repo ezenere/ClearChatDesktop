@@ -443,6 +443,104 @@ test('turno continuado: com tools já executadas o histórico delas fica (fala n
   h.m.stop()
 })
 
+const draft = (content: string, extra: Record<string, unknown> = {}): AgentEvent =>
+  ({
+    type: 'draft',
+    sessionId: 's1',
+    draft: { content, reasoning: '', toolCalls: [], ...extra }
+  }) as unknown as AgentEvent
+const toolRun = (id: string, running: boolean): AgentEvent =>
+  ({ type: 'tool-running', sessionId: 's1', toolCallId: id, running }) as unknown as AgentEvent
+
+test('turno continuado: agente ainda PENSANDO (nada saiu — nem com raciocínio em streaming) → para JÁ no início da fala; a fala vira mensagem nova', async () => {
+  const h = harness()
+  const userId = sendTurn(h, 'Me fala o clima de')
+  h.emit(draft('', { reasoning: 'O usuário quer o clima…' })) // só raciocínio: ainda pensando
+  h.m.speechBegin({ dropped: [] })
+  await waitFor(() => h.amends.length === 1, 2000, 'parou na hora')
+  assert.equal(h.amends[0].userMessageId, userId)
+  assert.equal(h.amends[0].dropUser, false)
+  assert.ok(h.timeline.some((e) => e.kind === 'turn-continued' && e.reason === 'stopped-thinking'))
+  h.m.speechEnd()
+  h.m.turn('São Paulo, amanhã.')
+  await waitFor(() => h.sent.length === 2, 2000, 'mensagem nova')
+  assert.equal(h.sent[1], 'São Paulo, amanhã.')
+  h.m.stop()
+})
+
+test('turno continuado: já SAIU do pensamento (texto saindo ou tool rodando) → não para no início da fala (só no limiar ou na transcrição)', async () => {
+  // texto saindo (ainda não ouvido)
+  const a = harness()
+  a.synthGate.open = false
+  sendTurn(a, 'Me explica o cache de disco.')
+  a.emit(draft('O cache guarda'))
+  a.m.speechBegin({ dropped: [] })
+  await sleep(50)
+  assert.equal(a.amends.length, 0, 'texto saindo: espera')
+  a.m.speechSustained()
+  await waitFor(() => a.amends.length === 1, 2000, 'parou no limiar')
+  a.m.stop()
+  // tool call em streaming (draft com toolCalls)
+  const b = harness()
+  sendTurn(b, 'Pesquisa isso.')
+  b.emit(draft('', { toolCalls: [{ id: 't1', name: 'web_search', arguments: '{"q' }] }))
+  b.m.speechBegin({ dropped: [] })
+  await sleep(50)
+  assert.equal(b.amends.length, 0, 'tool call saindo: espera')
+  b.m.stop()
+  // tool rodando
+  const c = harness()
+  sendTurn(c, 'Roda os testes.')
+  c.emit(toolRun('t1', true))
+  c.m.speechBegin({ dropped: [] })
+  await sleep(50)
+  assert.equal(c.amends.length, 0, 'tool rodando: espera')
+  c.m.stop()
+})
+
+test('turno continuado: depois das tools o próximo passo volta a PENSAR → a fala para na hora de novo', async () => {
+  const h = harness()
+  sendTurn(h, 'Lista os arquivos e me diz o maior.')
+  h.emit({
+    type: 'message-added',
+    message: {
+      id: 'a1',
+      sessionId: 's1',
+      message: {
+        role: 'assistant',
+        content: '',
+        tool_calls: [
+          { id: 't1', type: 'function', function: { name: 'list_dir', arguments: '{}' } }
+        ]
+      },
+      meta: {}
+    }
+  } as unknown as AgentEvent)
+  h.emit(toolRun('t1', true))
+  h.emit(toolRun('t1', false)) // a tool acabou: o modelo pensa no resultado
+  h.m.speechBegin({ dropped: [] })
+  await waitFor(() => h.amends.length === 1, 2000, 'parou na hora (pensando de novo)')
+  assert.ok(h.timeline.some((e) => e.kind === 'turn-continued' && e.reason === 'stopped-thinking'))
+  h.m.stop()
+})
+
+test('turno continuado: resposta final já pronta (não ouvida) não conta como pensando — ruído só devolve a resposta', async () => {
+  const h = harness()
+  h.synthGate.open = false
+  sendTurn(h, 'Me explica como funciona o cache de disco.')
+  h.emit(assistantMsg('a1', 'O cache guarda arquivos. Isso acelera.'))
+  h.m.speechBegin({ dropped: [] })
+  await sleep(50)
+  assert.equal(h.amends.length, 0)
+  h.synthGate.open = true
+  h.m.speechEnd()
+  h.m.turn('')
+  await waitFor(() => h.emitted.filter((u) => u.kind === 'sentence').length === 2, 2000, 'liberada')
+  assert.equal(h.amends.length, 0)
+  assert.equal(h.resumed.length, 0)
+  h.m.stop()
+})
+
 test('turno continuado: fala que DURA (limiar do barge-in em voz — speechSustained) com o agente trabalhando para o turno no meio da fala (tools ficam); a fala vira mensagem nova', async () => {
   const h = harness()
   h.synthGate.open = false
