@@ -557,6 +557,26 @@ test('planCollapse: host, </> e dica só voltam com o grupo de voz completo (yie
   })
 })
 
+test('planCollapse: </> não volta com o chip do arquivo recolhido (nome longo)', () => {
+  const items = [
+    { id: 'voice-controls' as const, widths: { 0: 80, 1: 62 } },
+    { id: 'composer-file' as const, widths: { 0: 120, 1: 40 } },
+    { id: 'composer-info' as const, widths: { 0: 14, 2: 0 } }
+  ]
+  // cabe o grupo de voz e o chip só como ícone, com folga para o </>: o </> continua recolhido
+  assert.deepEqual(planCollapse(items, 80 + 40 + 20), {
+    'voice-controls': 0,
+    'composer-file': 1,
+    'composer-info': 2
+  })
+  // chip completo: a folga devolve o </>
+  assert.deepEqual(planCollapse(items, 80 + 120 + 14), {
+    'voice-controls': 0,
+    'composer-file': 0,
+    'composer-info': 0
+  })
+})
+
 test('planCollapse: estimativa de níveis nunca medidos e determinismo', () => {
   assert.equal(estimateWidth({ 0: 300 }, 2), 30)
   assert.equal(estimateWidth({ 0: 300 }, 1), 72)

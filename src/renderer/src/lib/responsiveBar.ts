@@ -85,19 +85,19 @@ export const BAR_ITEMS: Record<BarItemId, BarItemSpec> = {
     priority: 16,
     levels: [0, 2],
     doc: 'ícone do host (local/remoto, só com sync) → some (a linha do host acima do composer continua)',
-    yieldsTo: ['voice-controls']
+    yieldsTo: ['voice-controls', 'composer-file']
   },
   'composer-info': {
     priority: 14,
     levels: [0, 2],
     doc: '</> "Sua mensagem" (API) → some',
-    yieldsTo: ['voice-controls']
+    yieldsTo: ['voice-controls', 'composer-file']
   },
   'composer-hint': {
     priority: 10,
     levels: [0, 2],
     doc: '"Enter envia · Shift+Enter quebra linha" → some',
-    yieldsTo: ['voice-controls']
+    yieldsTo: ['voice-controls', 'composer-file']
   }
 }
 
