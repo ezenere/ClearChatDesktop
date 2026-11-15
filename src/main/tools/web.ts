@@ -1,6 +1,14 @@
 // web_search (buscadores em ordem de prioridade com fallback — DuckDuckGo, Brave (site), Brave
 // Search API, Exa, Tavily; lógica pura em webSearch.ts) e browse_url (BrowserWindow oculta).
-import { BrowserWindow, session as electronSession } from 'electron'
+import { BrowserWindow } from 'electron'
+import {
+  BROWSE_TIMEOUT,
+  SETTLE_MS,
+  browseSession,
+  cleanUserAgent,
+  loadPage,
+  type LoadedPage
+} from './browsePage'
 import { isBraveBlocked } from './brave'
 import {
   fmtSecs,
@@ -234,6 +242,8 @@ export async function braveFetch(query: string, signal: AbortSignal): Promise<Se
       sleep(BRAVE_TIMEOUT).then(() => 'timeout' as const),
       aborted
     ])
+    // ainda carregando: para (o executeJavaScript só roda com a página parada)
+    if (first === 'timeout' && wc.isLoading()) wc.stop()
     let page = await html()
     // SSR: os resultados já vêm no load; se não vieram (hidratação lenta), espera um pouco.
     if (!/data-type="web"/.test(page) && !isBraveBlocked(page, status)) {
@@ -252,28 +262,8 @@ export async function braveFetch(query: string, signal: AbortSignal): Promise<Se
 
 const BRAVE_TIMEOUT = 20_000
 
-/** UA do Chromium sem os marcadores do Electron/app (sites tratam "Electron" como robô). */
-function cleanUserAgent(ua: string): string {
-  return ua.replace(/ Electron\/\S+/, '').replace(/ clearchat\/\S+/i, '')
-}
-
 // ---------------- browse_url ----------------
-
-const BROWSE_TIMEOUT = 25_000
-const SETTLE_MS = 1500
-
-// HTML renderizado (depois do JS da página) — a extração é pura, no main (pageExtract.ts).
-const GRAB_JS = `(() => ({
-  html: document.documentElement ? document.documentElement.outerHTML.slice(0, ${LIMITS.browseMaxHtmlChars}) : '',
-  url: location.href,
-  title: document.title || ''
-}))()`
-
-export interface LoadedPage {
-  html: string
-  url: string
-  title: string
-}
+// Carregamento (janela oculta, anúncios bloqueados, página parada depois do HTML): browsePage.ts.
 
 /** Página carregada por sessão + URL (trocar mode/links ou usar offset não recarrega). */
 const pageCache = new Map<string, { at: number; page: LoadedPage; timedOut: boolean }>()
@@ -346,78 +336,12 @@ export async function browseUrl(
   const reuse = opts.offset > 0 || modeArg !== undefined || args.links !== undefined
   const hit = reuse ? cacheGet(cacheKey) : null
   if (hit) return ok(renderPage(hit.page, opts, hit.timedOut, true))
-
-  const ses = browseSession()
-  const win = new BrowserWindow({
-    show: false,
-    width: 1280,
-    height: 900,
-    webPreferences: {
-      session: ses,
-      sandbox: true,
-      contextIsolation: true,
-      nodeIntegration: false,
-      webSecurity: true,
-      images: false,
-      spellcheck: false
-    }
-  })
-  const wc = win.webContents
-  wc.setAudioMuted(true)
-  wc.setWindowOpenHandler(() => ({ action: 'deny' }))
-
-  const timers: NodeJS.Timeout[] = []
-  const sleep = (ms: number): Promise<void> => new Promise((r) => timers.push(setTimeout(r, ms)))
-  let onAbort: (() => void) | null = null
-  const aborted = new Promise<never>((_res, rej) => {
-    onAbort = () => rej(abortError())
-    ctx.signal.addEventListener('abort', onAbort, { once: true })
-  })
-  aborted.catch(() => {})
   try {
-    const loaded = new Promise<'loaded'>((res, rej) => {
-      wc.once('did-finish-load', () => res('loaded'))
-      wc.on('did-fail-load', (_e, code, desc, _u, isMain) => {
-        if (isMain && code !== -3) rej(new Error(`falha ao carregar (${code} ${desc})`))
-      })
-    })
-    loaded.catch(() => {})
-    const ua = cleanUserAgent(wc.getUserAgent())
-    void wc.loadURL(url.toString(), { userAgent: ua }).catch(() => {})
-    const first = await Promise.race([
-      loaded,
-      sleep(BROWSE_TIMEOUT).then(() => 'timeout' as const),
-      aborted
-    ])
-    const timedOut = first === 'timeout'
-    if (!timedOut) await Promise.race([sleep(SETTLE_MS), aborted])
-    const page = await Promise.race([
-      wc.executeJavaScript(GRAB_JS, true) as Promise<LoadedPage>,
-      sleep(5000).then(() => {
-        throw new Error(
-          timedOut ? `timeout de ${BROWSE_TIMEOUT / 1000}s` : 'timeout ao extrair conteúdo'
-        )
-      }),
-      aborted
-    ])
+    const { page, timedOut } = await loadPage(url.toString(), ctx.signal)
     cacheSet(cacheKey, page, timedOut)
     return ok(renderPage(page, opts, timedOut, false))
   } catch (e) {
     if ((e as Error).name === 'AbortError' || ctx.signal.aborted) throw abortError()
     return fail(`Erro ao abrir ${url.toString()}: ${(e as Error).message}`)
-  } finally {
-    timers.forEach(clearTimeout)
-    if (onAbort) ctx.signal.removeEventListener('abort', onAbort)
-    if (!win.isDestroyed()) win.destroy()
   }
-}
-
-let browseSes: Electron.Session | null = null
-function browseSession(): Electron.Session {
-  if (browseSes) return browseSes
-  const ses = electronSession.fromPartition('clearchat-browse') // em memória (não persistente)
-  ses.setPermissionRequestHandler((_wc, _perm, cb) => cb(false))
-  ses.on('will-download', (e) => e.preventDefault())
-  browseSes = ses
-  return ses
 }
