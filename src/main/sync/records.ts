@@ -800,18 +800,19 @@ export function applyRemote(
   const res = newResult()
   switch (type) {
     case 'mcp_server': {
-      // registro inválido (versão futura com outro transporte etc.): não grava — o próximo pull
-      // de um app que o entenda o aplica; o servidor guarda o registro como está
+      // registro que este app não entende (versão futura com outro transporte etc.): grava CRU —
+      // o cadastro o ignora (não aparece nem roda), mas o estado local existe (sem tombstone
+      // falso) e volta igual se for reenviado
       const n = normalizeMcpServer({ ...p, id })
-      if (!n) break
-      const { id: _id, createdAt, updatedAt, ...data } = n
+      const { sv: _sv, id: _id, createdAt, updatedAt, ...data } = (n ?? p) as Plain
+      void _sv
       void _id
       conn
         .prepare(
           `INSERT INTO mcp_servers (id, data_json, created_at, updated_at) VALUES (?, ?, ?, ?)
            ON CONFLICT(id) DO UPDATE SET data_json = excluded.data_json, created_at = excluded.created_at, updated_at = excluded.updated_at`
         )
-        .run(id, JSON.stringify(data), createdAt || Date.now(), updatedAt || Date.now())
+        .run(id, JSON.stringify(data), num(createdAt, Date.now()), num(updatedAt, Date.now()))
       res.scopes.add('mcp')
       break
     }

@@ -3365,3 +3365,46 @@ test('1.14.0: servidor antigo (sem features.mcpServers) — o resto sincroniza, 
     await old.close()
   }
 })
+
+test('1.14.0: conector de versão futura (transporte desconhecido) — guardado cru, sem tombstone, fora da lista', async () => {
+  const email = await newAccount()
+  const A = device('A')
+  await login(A, email)
+  await settled(A)
+  const id = `mcp_${randomUUID()}`
+  const future = {
+    sv: 1,
+    name: 'futuro',
+    transport: { type: 'websocket', url: 'wss://x/mcp' },
+    approval: { mode: 'ask' },
+    novo: { campo: 1 },
+    createdAt: 5,
+    updatedAt: 6
+  }
+  await A.eng.http.post('/api/v1/sync/push', {
+    push_id: randomUUID(),
+    items: [
+      {
+        type: 'mcp_server',
+        id,
+        scope: null,
+        base_rev: 0,
+        rev: 1,
+        deleted: false,
+        env: A.eng.encryptRecord('mcp_server', id, null, 1, future),
+        blobs: []
+      }
+    ]
+  })
+  const B = device('B')
+  await login(B, email)
+  await settled(B)
+  await synced(A, B)
+  const row = B.conn.prepare('SELECT data_json FROM mcp_servers WHERE id = ?').get(id) as any
+  assert.ok(row, 'guardado')
+  assert.deepEqual(JSON.parse(row.data_json).novo, { campo: 1 })
+  assert.equal(buildLocal(B.conn, 'mcp_server', id)!.plain.transport.type, 'websocket')
+  const online = srv.records(srv.userIdOf(email)!).find((r: any) => r.id === id)
+  assert.equal(online.deleted, false, 'nenhum tombstone')
+  assert.equal(online.rev, 1, 'ninguém regravou')
+})
