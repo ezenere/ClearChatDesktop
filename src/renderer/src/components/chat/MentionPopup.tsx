@@ -1,5 +1,5 @@
-// Popup de `@` do composer (lista de arquivos/pastas da raiz do chat) e o destaque dos caminhos
-// completos no campo (camada atrás da textarea, com o mesmo texto transparente e marcas de fundo).
+// Popup de `@` do composer (lista de arquivos/pastas da raiz do chat) e os chips dos caminhos
+// completos no campo (camada por cima da textarea, com o mesmo texto transparente).
 // Estado/teclado em lib/useMentions; sintaxe em @shared/pathMentions. Ver SPEC.md → "Menções
 // @caminho".
 import { CornerDownLeft, Folder } from 'lucide-react'
@@ -106,19 +106,25 @@ export function MentionPopup({ m }: { m: MentionControls }): React.JSX.Element |
 }
 
 /**
- * Destaque dos `@caminho` completos (seguidos de espaço) no campo: uma camada atrás da textarea com
- * o mesmo texto transparente — só o fundo das marcas aparece; rola junto com a textarea. Sem
- * menções, nada é renderizado. `className` = as mesmas classes de caixa/fonte da textarea.
+ * Chips dos `@caminho` completos (seguidos de espaço) no campo: uma camada POR CIMA da textarea, com
+ * o mesmo texto transparente (mesma caixa/fonte, largura e rolagem sincronizadas) — cada menção
+ * ocupa exatamente o lugar do texto cru e o cobre com um chip opaco (ícone + caminho em fonte menor;
+ * a sobra de largura vira o padding). O texto continua sendo o da textarea (cursor, desfazer e o que
+ * vai ao modelo não mudam). Cursor ou seleção encostando na menção → o chip some e o texto cru
+ * aparece (só um fundo de destaque) para editar; menção quebrada em duas linhas idem. Sem menções,
+ * nada é renderizado. `className` = as mesmas classes de caixa/fonte da textarea.
  */
 export function MentionHighlight({
   text,
   textarea,
   known,
+  selection,
   className
 }: {
   text: string
   textarea: React.RefObject<HTMLTextAreaElement | null>
   known: (path: string) => boolean
+  selection: readonly [number, number] | null
   className: string
 }): React.JSX.Element | null {
   const layer = useRef<HTMLDivElement>(null)
@@ -134,6 +140,9 @@ export function MentionHighlight({
       el.style.width = `${ta.clientWidth}px`
       el.style.height = `${ta.clientHeight}px`
       el.scrollTop = ta.scrollTop
+      // menção quebrada entre linhas: o chip (um retângulo) não cabe — fica o texto cru destacado
+      for (const m of el.querySelectorAll<HTMLElement>('[data-testid="composer-mention"]'))
+        m.toggleAttribute('data-wrapped', m.getClientRects().length > 1)
     }
     sync()
     ta.addEventListener('scroll', sync)
@@ -155,22 +164,59 @@ export function MentionHighlight({
         className
       )}
     >
-      {parts.map((p, i) =>
-        'mention' in p ? (
-          <mark
+      {parts.map((p, i) => {
+        if (!('mention' in p)) return <span key={i}>{p.text}</span>
+        const { start, end } = p.mention
+        const editing = !!selection && selection[0] <= end && selection[1] >= start
+        return (
+          <span
             key={i}
             data-testid="composer-mention"
             data-path={p.mention.path}
-            className="rounded-[3px] bg-accent/25 text-transparent [box-decoration-break:clone]"
+            data-editing={editing || undefined}
+            className="group/m relative rounded-[3px] [box-decoration-break:clone] data-editing:bg-accent/20 data-wrapped:bg-accent/20"
           >
             {p.text}
-          </mark>
-        ) : (
-          <span key={i}>{p.text}</span>
+            {!editing && <MentionChip path={p.mention.path} />}
+          </span>
         )
-      )}
+      })}
       {/* a textarea reserva a linha do cursor depois de uma quebra final */}
       {text.endsWith('\n') ? ' ' : null}
     </div>
+  )
+}
+
+/** O chip por cima do texto cru da menção (mesma largura; o conteúdo centralizado). */
+function MentionChip({ path }: { path: string }): React.JSX.Element {
+  const dir = path.endsWith('/')
+  const bare = dir ? path.slice(0, -1) : path
+  const cut = bare.lastIndexOf('/') + 1
+  const parent = bare.slice(0, cut)
+  const name = bare.slice(cut) + (dir ? '/' : '')
+  const { icon: Icon, tone } = fileIcon(name)
+  // a capa (cor do composer: a linha e um pouco abaixo) esconde o texto cru e o sublinhado do
+  // corretor ortográfico da textarea
+  return (
+    <span className="absolute inset-x-0 top-[calc(50%-12px)] flex h-[26px] items-start bg-surface pt-[3px] group-data-wrapped/m:hidden">
+      <span
+        data-testid="composer-mention-chip"
+        className="flex h-5 w-full items-center justify-center overflow-hidden rounded-md bg-accent/16 text-[12px] leading-none whitespace-nowrap ring-1 ring-accent/30 ring-inset"
+      >
+        {dir ? (
+          <Folder
+            className="size-3 shrink-0 text-accent-strong/80"
+            fill="currentColor"
+            fillOpacity={0.2}
+          />
+        ) : (
+          <Icon className={cn('size-3 shrink-0', tone)} />
+        )}
+        <span className="ml-1 flex min-w-0 items-baseline">
+          {parent && <span className="min-w-0 truncate text-muted">{parent}</span>}
+          <span className="shrink-0 font-medium text-fg">{name}</span>
+        </span>
+      </span>
+    </span>
   )
 }

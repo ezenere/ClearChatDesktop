@@ -447,13 +447,37 @@ async function main(): Promise<void> {
       const mark = page.getByTestId('composer-mention')
       await mark.waitFor()
       assert.equal(await mark.getAttribute('data-path'), 'src/app.ts')
+      // chip por cima do texto cru: ícone + caminho em fonte menor, no lugar exato do texto
+      const chip = page.getByTestId('composer-mention-chip')
+      await chip.waitFor()
+      assert.equal((await chip.textContent())?.trim(), 'src/app.ts')
+      const [mb, cb] = [await mark.boundingBox(), await chip.boundingBox()]
+      assert.ok(
+        mb && cb && Math.abs(cb.x - mb.x) < 1.5 && Math.abs(cb.width - mb.width) < 1.5,
+        `chip na largura do texto: ${JSON.stringify({ mb, cb })}`
+      )
       await shot('07-composer-caminho-destacado')
+      // cursor encostando na menção → o chip some e o texto cru aparece para editar
+      await composer().press('ArrowLeft')
+      await waitFor(
+        async () => (await mark.getAttribute('data-editing')) !== null,
+        3000,
+        'cursor na menção → texto cru'
+      )
+      assert.equal(await chip.count(), 0)
+      await shot('07b-composer-caminho-editando')
+      await composer().press('ArrowRight')
+      await chip.waitFor()
       // nome com espaço: aspas; Esc fecha
       await composer().pressSequentially('e @docs')
       await composer().press('Tab')
       assert.equal(await composer().inputValue(), 'veja @src/app.ts e @"docs com espaço/')
       await composer().press('Enter')
       assert.equal(await composer().inputValue(), 'veja @src/app.ts e @"docs com espaço/guia.md" ')
+      // entre aspas: o chip mostra o caminho sem as aspas
+      await waitFor(async () => (await chip.count()) === 2, 3000, 'dois chips')
+      assert.equal((await chip.nth(1).textContent())?.trim(), 'docs com espaço/guia.md')
+      await shot('07c-composer-dois-chips')
       await composer().pressSequentially('@READ')
       await popup.waitFor()
       await composer().press('Escape')

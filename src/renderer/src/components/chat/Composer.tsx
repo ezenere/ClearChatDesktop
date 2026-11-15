@@ -910,14 +910,6 @@ export function Composer({
               {!blocked && <MentionPopup m={mentions} />}
               {!blocked && (
                 <div className={cn('relative', voiceActive && 'hidden')}>
-                  {!voiceActive && (
-                    <MentionHighlight
-                      text={text}
-                      textarea={ref}
-                      known={mentions.known}
-                      className="px-4 pt-3.5 pb-1 text-[14px] leading-6"
-                    />
-                  )}
                   <AutoTextarea
                     ref={ref}
                     value={text}
@@ -957,6 +949,16 @@ export function Composer({
                     aria-expanded={mentions.open}
                     className="relative block w-full bg-transparent px-4 pt-3.5 pb-1 text-[14px] leading-6 outline-none"
                   />
+                  {/* chips das menções, por cima do texto cru (depois da textarea = pintado acima) */}
+                  {!voiceActive && (
+                    <MentionHighlight
+                      text={text}
+                      textarea={ref}
+                      known={mentions.known}
+                      selection={mentions.selection}
+                      className="px-4 pt-3.5 pb-1 text-[14px] leading-6"
+                    />
+                  )}
                 </div>
               )}
               <BarLevelsContext.Provider value={barLevels}>

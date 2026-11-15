@@ -47,6 +47,8 @@ export interface MentionControls {
   track: (el: HTMLTextAreaElement | null) => void
   /** Caminho existe no índice carregado (destaque de `@Makefile` sem ponto/barra). */
   known: (path: string) => boolean
+  /** Seleção da textarea ([início, fim]; cursor = início igual ao fim); null = fora do campo. */
+  selection: readonly [number, number] | null
 }
 
 /**
@@ -65,6 +67,7 @@ export function useMentions(opts: {
   const remote = !!chat && (!!chat.liveViewer || isRemoteMode(host?.mode))
   const tick = useStore((s) => (chatId ? (s.fsTick[chatId] ?? 0) : 0))
   const [caret, setCaret] = useState<number | null>(null)
+  const [selection, setSelection] = useState<readonly [number, number] | null>(null)
   const [selected, setSelected] = useState(0)
   const [dismissedAt, setDismissedAt] = useState<number | null>(null)
   const [index, setIndex] = useState<IndexState | null>(null)
@@ -192,6 +195,11 @@ export function useMentions(opts: {
 
   const track = useCallback((el: HTMLTextAreaElement | null) => {
     setCaret(el && el.selectionStart === el.selectionEnd ? el.selectionStart : null)
+    setSelection((cur) => {
+      if (!el) return null
+      const [s, e] = [el.selectionStart, el.selectionEnd]
+      return cur && cur[0] === s && cur[1] === e ? cur : [s, e]
+    })
   }, [])
 
   return {
@@ -210,6 +218,7 @@ export function useMentions(opts: {
     pick,
     onKeyDown,
     track,
-    known
+    known,
+    selection
   }
 }
