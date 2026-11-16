@@ -1,6 +1,7 @@
 // Liga o motor do sync (engine.ts / host.ts, sem Electron) ao app: safeStorage, janela do captcha,
 // runner, skills, handlers IPC `sync:*` e o "portão" das ações do agente (host local × controle
 // remoto). Ver docs/SYNC_PROTOCOL.md.
+import { scheduler, setScheduleGate } from '../schedule/service'
 import { withoutStaleNative } from '@shared/toolSearch'
 import { app, BrowserWindow, powerMonitor, safeStorage, session, shell } from 'electron'
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs'
@@ -211,6 +212,11 @@ function runnerAdapter(): RunnerAdapter {
     questions: () => runner.pendingQuestions(),
     retries: () => runner.pendingRetries(),
     processes: (chatId) => listProcesses(chatId),
+    schedules: (chatId) => scheduler().view(chatId),
+    stopSchedule: (chatId, id) => {
+      const r = scheduler().stop(chatId, [id], 'user')
+      if (r.missing.length) throw new Error('Agendamento não encontrado.')
+    },
     async skillsFor(chatId) {
       const chat = chatsRepo.get(chatId)
       if (!chat) return []
@@ -413,6 +419,24 @@ runner.setInterChatRouter(async (chatId, sessionId, text, meta) => {
   if (mode === 'offline' && e.host.hostedElsewhere(chatId))
     throw new Error(`sem conexão com o servidor, e esse chat roda em outro dispositivo (${name}).`)
   return { kind: 'local' }
+})
+
+/**
+ * Agendamentos (1.15.0): só disparam neste aparelho se ele executa o chat. Outro aparelho é o host
+ * (online ou não) → cancela os deste chat; divergente, ou sem conexão com o chat rodando em outro
+ * lugar → espera (tenta de novo em 1 min). Sync desligado / chat local / host aqui → roda.
+ */
+setScheduleGate((chatId) => {
+  const e = engine
+  if (!e || !e.active) return { ok: true }
+  const mode = e.host.mode(chatId)
+  const name = e.host.hostName(chatId)
+  if (mode === 'remote' || mode === 'host-offline')
+    return { ok: false, note: `o chat agora roda em ${name}` }
+  if (mode === 'diverged') return { ok: false, retry: true, note: 'chat divergente' }
+  if (mode === 'offline' && e.host.hostedElsewhere(chatId))
+    return { ok: false, retry: true, note: `sem conexão, e o chat roda em ${name}` }
+  return { ok: true }
 })
 
 export function chatOfSession(sessionId: string): string | null {

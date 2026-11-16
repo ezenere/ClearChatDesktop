@@ -343,6 +343,8 @@ const COMMAND_KINDS = new Set([
   'branch.edit',
   'branch.regenerate',
   'branch.select',
+  // desde 1.15.0: parar um agendamento do chat no host (§8.6)
+  'schedule.stop',
   // desde 1.3.0: arquivos do host (só leitura, §8.6)
   'fs.list',
   'fs.read',

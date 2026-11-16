@@ -1472,6 +1472,69 @@ function stubRunner(log: any[]): RunnerAdapter {
   }
 }
 
+test('agendamentos (1.15.0): o controle remoto vê os do host pelo stream e para um com schedule.stop', async () => {
+  const email = await newAccount()
+  const logA: any[] = []
+  const sched = (id: string, status: string): any => ({
+    id,
+    chatId: '',
+    sessionId: '',
+    title: `T ${id}`,
+    message: 'lembrete',
+    startAt: 1,
+    createdAt: 1,
+    status,
+    ...(status === 'active' ? { nextAt: Date.now() + 60_000 } : { endedAt: 2 }),
+    runs: 0,
+    history: []
+  })
+  let list = [sched('sch-aaaaa', 'active'), sched('sch-bbbbb', 'canceled')]
+  const A = device('PC de casa', {
+    runner: {
+      ...stubRunner(logA),
+      schedules: () => list,
+      stopSchedule: (chatId: string, id: string) => {
+        if (!list.some((s) => s.id === id)) throw new Error('Agendamento não encontrado.')
+        logA.push({ stopSchedule: id, chatId })
+      }
+    }
+  })
+  const { chatId, sessionId } = addChat(A.conn, 'Host com agendamentos')
+  addMessage(A.conn, sessionId, 'user', 'oi')
+  await login(A, email)
+  await settled(A)
+  await waitFor(() => A.eng.chatInfo(chatId).host?.self, 'A virou host')
+  const B = device('Notebook', { runner: stubRunner([]) })
+  await login(B, email)
+  await settled(B)
+  await waitFor(() => B.eng.host.mode(chatId) === 'remote', 'B é controle remoto')
+  // abrir o chat em B: o snapshot do host traz os agendamentos
+  B.eng.host.setActive(chatId)
+  await waitFor(() => B.eng.host.mirrorSchedules(chatId)?.length === 2, 'snapshot com agendamentos')
+  assert.ok(
+    B.events.some(
+      (e) => e.type === 'schedules-updated' && e.chatId === chatId && e.schedules.length === 2
+    )
+  )
+  // mudança no host (evento do runner) → evento `schedules` no stream
+  list = [{ ...sched('sch-aaaaa', 'active'), runs: 1 }, sched('sch-bbbbb', 'canceled')]
+  A.agent({ type: 'schedules-updated', chatId, schedules: list } as any)
+  await waitFor(() => B.eng.host.mirrorSchedules(chatId)?.[0].runs === 1, 'evento schedules')
+  // Parar em B → comando schedule.stop executado no host
+  const r = await B.eng.host.sendCommand(chatId, 'schedule.stop', { id: 'sch-aaaaa' })
+  assert.equal(r.status, 'accepted')
+  assert.deepEqual(logA, [{ stopSchedule: 'sch-aaaaa', chatId }])
+  await assert.rejects(
+    B.eng.host.sendCommand(chatId, 'schedule.stop', { id: 'sch-zzzzz' }),
+    /não encontrado/
+  )
+  await assert.rejects(B.eng.host.sendCommand(chatId, 'schedule.stop', {}), /inválido/)
+  // o host (A) não espelha nada: a lista dele é a local
+  assert.equal(A.eng.host.mirrorSchedules(chatId), null)
+  A.eng.stop()
+  B.eng.stop()
+})
+
 test('host: comando remoto executado no host, stream ao vivo, queda → host offline → assumir', async () => {
   const email = await newAccount()
   const logA: any[] = []

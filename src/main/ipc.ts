@@ -1314,10 +1314,33 @@ export function registerIpc(): void {
     },
 
     // ---- agendamentos (tool schedule) ----
-    [IPC.schedules.list]: (chatId: string) => scheduler().view(chatId),
-    [IPC.schedules.stop]: (chatId: string, id: string) => {
-      const r = scheduler().stop(chatId, [id], 'user')
-      if (r.missing.length) throw new Error('Agendamento não encontrado.')
+    // chat executado em outro aparelho: a lista do host (stream) e Parar vira `schedule.stop`
+    [IPC.schedules.list]: (chatId: string) =>
+      syncEngine()?.host.mirrorSchedules(chatId) ?? scheduler().view(chatId),
+    [IPC.schedules.stop]: async (chatId: string, id: string) => {
+      try {
+        await gateChat(
+          chatId,
+          'schedule.stop',
+          { id },
+          () => {
+            const r = scheduler().stop(chatId, [id], 'user')
+            if (r.missing.length) throw new Error('Agendamento não encontrado.')
+          },
+          { content: false }
+        )
+      } catch (e) {
+        // host < 1.15.0 (ou servidor antigo) não conhece o comando
+        if (
+          /comando desconhecido: schedule\.stop|invalid_request/.test(
+            e instanceof Error ? e.message : String(e)
+          )
+        )
+          throw new Error(
+            'O aparelho que executa este chat (ou o servidor) usa uma versão antiga — pare o agendamento por lá.'
+          )
+        throw e
+      }
     },
 
     // ---- presets (personas) ----

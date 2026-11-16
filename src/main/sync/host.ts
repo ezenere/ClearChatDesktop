@@ -18,6 +18,7 @@ import type {
   StreamDraft
 } from '@shared/types'
 import type { MemoryExtractionResult } from '@shared/memory'
+import type { ScheduleInfo } from '@shared/schedule'
 import { isBranchEditable, toBranchSel } from '@shared/branches'
 import type { ApprovalItemDecision } from '@shared/approvalPolicy'
 import { parseInterChatSendMeta, type InterChatSendMeta } from '@shared/interChat'
@@ -107,6 +108,10 @@ export interface RunnerAdapter {
   questions(): QuestionRequest[]
   retries(): RetryRequest[]
   processes(chatId: string): ProcessInfo[]
+  /** Agendamentos do chat (ativos + encerrados recentes) — no snapshot (desde 1.15.0). Opcional (stubs). */
+  schedules?(chatId: string): ScheduleInfo[]
+  /** Comando `schedule.stop` (1.15.0): para um agendamento do chat (como o Parar da tela). */
+  stopSchedule?(chatId: string, id: string): void
   skillsFor(chatId: string): Promise<{ name: string; description: string }[]>
   /** Fim de cada turno do runner (avisos push, §22.5). Opcional (stubs de teste). */
   onTurnEnd?(fn: (info: TurnEndInfo) => void): () => void
@@ -168,6 +173,8 @@ interface Mirror {
   questions: Map<string, QuestionRequest>
   retries: Map<string, RetryRequest>
   processes: ProcessInfo[]
+  /** Agendamentos do host (desde 1.15.0; host antigo = vazio). */
+  schedules: ScheduleInfo[]
   skills: { name: string; description: string }[]
   resyncAt: number
 }
@@ -1738,6 +1745,12 @@ export class HostController {
           .extractMemory(this.sessionInChat(p.sessionId, chatId))
           .catch((e) => this.engine.log('extração remota', errMsg(e)))
         return {}
+      case 'schedule.stop':
+        // desde 1.15.0: Parar um agendamento do chat (fica neste aparelho; nada de conteúdo)
+        if (!runner.stopSchedule) break
+        if (typeof p.id !== 'string' || !p.id) throw new Error('Agendamento inválido.')
+        runner.stopSchedule(chatId, p.id)
+        return {}
     }
     throw new Error(`comando desconhecido: ${kind}`)
   }
@@ -1768,6 +1781,7 @@ export class HostController {
       case 'retry-resolved':
         return this.reqChat.get(e.id) ?? null
       case 'processes-updated':
+      case 'schedules-updated':
         return e.chatId
       default:
         return null
@@ -1895,6 +1909,9 @@ export class HostController {
           ...(e.text ? { text: e.text } : {})
         }
         break
+      case 'schedules-updated':
+        payload = { kind: 'schedules', schedules: e.schedules }
+        break
       case 'processes-updated':
         payload = { kind: 'processes', processes: e.processes }
         break
@@ -2003,6 +2020,7 @@ export class HostController {
       questions: runner.questions().filter((q) => q.chatId === chatId),
       retries: runner.retries().filter((r) => r.chatId === chatId),
       processes: runner.processes(chatId),
+      schedules: runner.schedules?.(chatId) ?? [],
       skills: skills.list,
       ...(this.engine.live.isLive(chatId)
         ? { live: { lseq: this.engine.live.lseqOf(chatId) } }
@@ -2051,6 +2069,7 @@ export class HostController {
         questions: new Map(),
         retries: new Map(),
         processes: [],
+        schedules: [],
         skills: [],
         resyncAt: 0
       }
@@ -2225,6 +2244,10 @@ export class HostController {
         m.processes = (p.processes ?? []) as ProcessInfo[]
         this.emitM({ type: 'processes-updated', chatId, processes: m.processes })
         return
+      case 'schedules':
+        m.schedules = (Array.isArray(p.schedules) ? p.schedules : []) as ScheduleInfo[]
+        this.emitM({ type: 'schedules-updated', chatId, schedules: m.schedules })
+        return
       case 'error':
         this.emitM({ type: 'error', sessionId: String(p.sessionId), error: String(p.error) })
         return
@@ -2334,6 +2357,8 @@ export class HostController {
     )
     m.processes = (p.processes ?? []) as ProcessInfo[]
     this.emitM({ type: 'processes-updated', chatId, processes: m.processes })
+    m.schedules = (Array.isArray(p.schedules) ? p.schedules : []) as ScheduleInfo[]
+    this.emitM({ type: 'schedules-updated', chatId, schedules: m.schedules })
     m.skills = (p.skills ?? []) as { name: string; description: string }[]
   }
 
@@ -2375,6 +2400,13 @@ export class HostController {
       this.emitM({ type: 'queue-updated', sessionId: sid, queue: [] })
     for (const sid of m.compaction.keys())
       this.emitM({ type: 'compaction', sessionId: sid, state: null })
+    // os agendamentos espelhados eram do host: a tela volta à lista deste aparelho
+    if (m.schedules.length)
+      this.emitM({
+        type: 'schedules-updated',
+        chatId,
+        schedules: this.runner?.schedules?.(chatId) ?? []
+      })
     this.mirrors.delete(chatId)
   }
 
@@ -2482,6 +2514,9 @@ export class HostController {
   }
   mirrorProcesses(chatId: string): ProcessInfo[] | null {
     return this.mirrors.get(chatId)?.processes ?? null
+  }
+  mirrorSchedules(chatId: string): ScheduleInfo[] | null {
+    return this.mirrors.get(chatId)?.schedules ?? null
   }
   mirrorSkills(chatId: string): { name: string; description: string }[] | null {
     const m = this.mirrors.get(chatId)

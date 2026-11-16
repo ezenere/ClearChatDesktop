@@ -1,6 +1,6 @@
 # ClearChat Sync — Protocolo v1 (contrato)
 
-> **Versão do protocolo: 1.14.0** · status: contrato inicial (ainda sem implementação) · data: 2026-11-15
+> **Versão do protocolo: 1.15.0** · status: contrato inicial (ainda sem implementação) · data: 2026-11-15
 >
 > ⚠️ **AVISO — CONTRATO COMPARTILHADO ENTRE OS REPOSITÓRIOS**
 > Fonte única: `docs/SYNC_PROTOCOL.md` e `docs/test-vectors/` do repositório pai `ezenere/ClearChat`.
@@ -376,7 +376,7 @@ Todo plaintext é um objeto JSON com `sv` (versão do esquema do tipo, hoje `1`)
 `environment`/`capture`/`capturePrompts`/`thinkingTokens`/`cache` (os dois últimos desde 1.4.1), `ContextCaptureConfig.thinkingTokens`/`cache` (desde 1.4.1),
 `MessageMeta.autoTitle`/`presentFiles`/`reasoningMs`; desde 1.5.0, tipos do app com o áudio (depois do 0.9.0):
 `ChatConfig.voice` (§4.3.6), `MessageMeta.voice`/`voiceCall` e `MessageMeta.kind: 'voice-call'` (§4.3.8),
-`VoiceCallConfig.endCall`/`promptMode`; desde 1.10.0, `ChatConfig.overrides` — herança ao vivo da persona, §4.3.6; desde 1.11.0, `ChatConfig.toolsCompact`/`toolsFull` e as tools `datetime`/`search_tool`, §4.3.6; desde 1.12.0, `ApiMessage.native`, `MessageMeta.toolSearch` e a tool `tool_search` (antes `search_tool`), §4.3.6/§4.3.8; desde 1.13.0, `MessageMeta.openFile`, §4.3.8; desde 1.14.0, `ChatConfig.mcpServers`/`mcpSubagents` — conectores, §4.3.10). Leitores DEVEM ignorar campos
+`VoiceCallConfig.endCall`/`promptMode`; desde 1.10.0, `ChatConfig.overrides` — herança ao vivo da persona, §4.3.6; desde 1.11.0, `ChatConfig.toolsCompact`/`toolsFull` e as tools `datetime`/`search_tool`, §4.3.6; desde 1.12.0, `ApiMessage.native`, `MessageMeta.toolSearch` e a tool `tool_search` (antes `search_tool`), §4.3.6/§4.3.8; desde 1.13.0, `MessageMeta.openFile`, §4.3.8; desde 1.14.0, `ChatConfig.mcpServers`/`mcpSubagents` — conectores, §4.3.10; desde 1.15.0, as tools de agendamento e `MessageMeta.kind: 'schedule'`/`schedule`, §4.3.6/§4.3.8). Leitores DEVEM ignorar campos
 desconhecidos e DEVEM preservá-los ao regravar (merge por campo); escritores NÃO DEVEM enviar `undefined`.
 
 #### 4.3.1 `provider`
@@ -697,7 +697,9 @@ ChatConfig.overrides?: { [unidade: string]: true }   // unidades próprias do ch
 **Tools de um tipo de aparelho (desde 1.10.0).** Algumas tools só rodam num tipo de aparelho: **só no
 computador** — `list_dir`, `read_file`, `search_files`, `find_files`, `present_file`, `write_file`,
 `edit_file`, `shell`, `process_start`, `process_logs`, `process_list`, `process_stop` (e as skills,
-`config.skills`); **só no celular** — `get_location`, `nearby_places`. A lista de tools do chat (a
+`config.skills`) e, desde 1.15.0, `schedule`, `schedule_list`, `schedule_stop` (agendamentos — precisam
+do app aberto o tempo todo; **não** contam como ferramentas locais na §8.9); **só no celular** —
+`get_location`, `nearby_places`. A lista de tools do chat (a
 efetiva, herdada ou própria) é a mesma em todos os aparelhos; quem **roda** o turno manda ao modelo só as
 que ele executa (as outras não vão na request nem no texto de tools) e a UI as mostra esmaecidas ("só no
 computador"/"só no celular"), ainda alternáveis — valem quando o chat rodar no outro tipo de aparelho.
@@ -773,6 +775,48 @@ ChatConfig.toolsFull?: ToolName[]      // com a compactação, estas vão comple
   < 1.11.0 as mostram como tools desconhecidas, ignoram `toolsCompact`/`toolsFull` (preservados no
   merge por chave do chat; editar uma **persona** num app < 1.11.0 os apaga dela) e não conhecem
   `datetime` em `enabledTools` (DEVERIAM preservá-la, §4.3.6 "Tools de um tipo de aparelho").
+
+**Agendamentos (desde 1.15.0).** Tools `schedule`, `schedule_list` e `schedule_stop` (no padrão de tools
+do app; só no computador; só na sessão principal — subagentes não as recebem):
+- **`schedule`** `{ message?, tool?, args?, at?, in?, every?, times?, title? }` agenda, para depois, um
+  lembrete (`message`) e/ou uma tool (`tool` + `args`, como numa chamada normal) executada no horário. Quando:
+  `at` (data/hora local do host — `"2026-11-15 18:30"`, `"18:30"` = a próxima vez que o relógio marcar,
+  ou ISO com fuso) **ou** `in` (daqui a: `"30s"`, `"10m"`, `"1h30m"`; número = segundos), e/ou `every`
+  (repete; mínimo 1 min; sem `at`/`in` o 1º disparo é daqui a `every`); `times` (só com `every`) limita as
+  execuções. Não agendáveis: `ask_user`, as de subagentes, `send_to_chat`, `present_file`, `end_call`,
+  `tool_search` e as que gravam memória. Até 20 ativos por chat. Resultado: o id (`sch-` + 5 caracteres
+  `[a-z0-9]`) e o primeiro disparo.
+- **Aprovação:** item de aprovação **`schedule`** ("Criar agendamento"; padrão `lists` = perguntar, §4.3.2
+  `approvalModes`), e vale o **mais restritivo** entre ele e o que a tool agendada exigiria se fosse chamada
+  agora (a blacklist dela bloqueia o agendamento). Aprovado, cada disparo roda a tool **sem perguntar de
+  novo** — salvo se, no disparo, a tool saiu do chat ou caiu na blacklist (fora de "Sempre permitir"): o
+  agendamento para e o disparo entrega o motivo.
+- **Onde e quando roda:** só no **host** do chat (§8), só com o app aberto. O agendamento é estado do
+  aparelho (§4.4), não registro. Fechar o app cancela todos os ativos; um fechamento abrupto é resolvido no
+  próximo start (os que sobraram viram cancelados). O chat passar a rodar em outro aparelho (outro host,
+  online ou não) cancela os do chat; divergente, ou sem conexão com o chat rodando em outro lugar, o
+  disparo espera (tenta de novo em 1 min).
+- **Disparo:** o host roda a tool (se houver) e entrega à sessão principal uma mensagem `role: 'user'`,
+  `synthetic: true`, `meta.kind: 'schedule'` (§4.3.8) cujo `content` começa com o cabeçalho
+  `[Agendamento <id> disparou · <data/hora (UTC±h)> · …]` (execução, próximo disparo, atraso, disparos
+  substituídos), seguido de `Lembrete: <message>` e/ou `Ferramenta <tool> <args JSON> (ok|erro|bloqueada):`
+  e a saída. Agente ocioso → inicia um turno; rodando → entra na fila do próximo passo, e um disparo
+  anterior do mesmo agendamento ainda na fila é **substituído** (não se acumulam). Disparos perdidos com o
+  computador suspenso viram um só (o próximo volta à grade `início + k·every`).
+- **Aviso de cancelamento:** os cancelados (app fechado, host trocado) geram, por sessão, uma mensagem
+  `role: 'user'`, `synthetic: true`, `meta.kind: 'schedule'` com `[Agendamento(s) cancelado(s) — <motivo>:
+  <id> (<o quê>, <repetição>); … Não vão mais disparar; schedule_list com os ids mostra como eram. …]` —
+  gravada **sem acordar** o agente (ele a recebe na próxima request). Fechando o app, gravada na hora
+  (depois de o fim do histórico ser reparado); host trocado, quando este aparelho puder escrever no chat de
+  novo.
+- **`schedule_list`** `{ ids?: string[] }`: sem ids, os **ativos** do chat (encerrados e cancelados não
+  aparecem — só contados); com ids, os detalhes de cada um em qualquer estado. **`schedule_stop`**
+  `{ ids: string[] }`: para (um disparo com a tool rodando termina e é entregue).
+- **Outros aparelhos:** veem os agendamentos do chat ao vivo pelo stream (§11: `snapshot.schedules` e o
+  evento `schedules`) e param um com o comando `schedule.stop` (§8.6).
+- Apps < 1.15.0 mostram as tools como desconhecidas e as mensagens `schedule` como sintéticas genéricas (elas
+  vão ao modelo normalmente — são `role: 'user'`); preservam as tools nas listas (§4.3.6 "Tools de um tipo de
+  aparelho").
 
 **Busca nativa de ferramentas (desde 1.12.0).** Com a compactação ligada e pelo menos uma tool que não
 está em `toolsFull`, o host escolhe, **a cada request**, como enviar as tools (o modo é derivado, nunca
@@ -908,6 +952,20 @@ linha em branco), exatamente:
 Clientes DEVEM mostrar a mensagem com uma linha discreta acima dela (`Arquivo selecionado: <path>`) e
 deixar visível o texto exato que vai ao modelo (ex.: no tooltip da linha). Hosts < 1.13.0 ignoram o
 campo (o modelo não vê o arquivo); leitores que não o conhecem o preservam.
+
+**Agendamento (desde 1.15.0).** Mensagens `role: 'user'`, `synthetic: true`, `meta.kind: 'schedule'`
+(§4.3.6 "Agendamentos") — vão ao modelo como qualquer mensagem do usuário — com
+```ts
+MessageMeta.schedule?:
+  | { event: 'fire', id: string, title: string, run: number /* 1 = a primeira */, times?: number,
+      everyMs?: number, nextAt: number | null /* null = foi a última */, lateMs?: number,
+      replaced?: number /* disparos anteriores ainda na fila substituídos */, message?: string,
+      tool?: { name: string, args: object, status: 'ok' | 'error' | 'denied', durationMs: number } }
+  | { event: 'canceled', reason: 'app-closed' | 'host-changed' | 'chat-deleted' | 'completed' | 'agent'
+        | 'user' | 'tool-unavailable', items: { id: string, title: string }[] }
+```
+Clientes DEVERIAM mostrá-las como cards (disparo com o lembrete e a saída da tool; aviso com os ids) com o
+texto exato visível. Leitores < 1.15.0 ignoram `schedule`.
 
 **Voz no histórico (desde 1.5.0)** — campos opcionais de `MessageMeta`, só exibição/custos (nunca
 mudam o que vai ao modelo; numa resposta interrompida o `content` já é só o trecho ouvido e o resto fica
@@ -1081,6 +1139,7 @@ mcpSubagents?: boolean   // subagentes recebem as tools dos conectores ligados (
 | `updateDismissedVersion` (aviso de versão nova dispensado) | `settings` | cada instalação tem a sua versão do app |
 | índices FTS (`message_search`, `messages_fts`, `memories_fts`) | SQLite | derivados; reconstruídos localmente |
 | fila da sessão (`QueuedMessage`), aprovações/questionários/retries pendentes, processos em segundo plano | memória do main | estado de execução do host (vai ao vivo pelo stream, §11) |
+| agendamentos (`schedule`, desde 1.15.0): ativos, encerrados recentes e os avisos de cancelamento pendentes | tabela local `schedules` | só existem no host e com o app aberto (vão ao vivo pelo stream, §11) |
 | arquivos do store de anexos | `userData/attachments` | sincronizados como blobs (§14), mas o store é local |
 | cache de modelos, `localStorage` da UI (aba do painel, seções recolhidas, grupos recolhidos, largura do painel de arquivo e do painel de configurações do chat…) | renderer | estado de UI / tamanho de tela |
 | estado do próprio sync (cursor, outbox, revs, credenciais, DEK) | tabelas `sync_*` / chaveiro | por dispositivo |
@@ -1661,6 +1720,7 @@ servidor atualizado antes dos clientes.
 | `branch.select` | `{ messageId }` | `agent.selectBranch` (desde 1.2.0: torna `messageId` a versão ativa — grava `branchSel`, §4.3.7) |
 | `fs.list` | `{ chatId, path }` | aba Arquivos (`fs.listDir`) do chat no host (desde 1.3.0; só leitura, sem janela — ver "Arquivos do host") |
 | `fs.read` | `{ chatId, path, offset, length }` | visualizador de arquivos do host, um pedaço por comando (desde 1.3.0; só leitura, sem janela) |
+| `schedule.stop` | `{ id }` | Parar um agendamento do chat no host (desde 1.15.0, §4.3.6; sem janela — não escreve conteúdo; o aviso que o agente recebe é o resultado de um disparo, nunca deste comando). Id desconhecido → `rejected`; hosts < 1.15.0 respondem `comando desconhecido` |
 | `history.list` | `{ chatId, type: 'chat'\|'session'\|'message', sessionId?, after: string \| null, limit? }` | histórico de um chat só ao vivo, paginado (desde 1.8.0; só leitura, sem janela — §23.5) |
 | `history.changes` | `{ chatId, since: number }` | o que mudou num chat só ao vivo depois de `lseq = since` (desde 1.8.0, §23.5) |
 | `history.item` | `{ chatId, items?: [{ type, id }], piece?: { type, id, offset } }` | itens por id, ou um pedaço de um item grande (desde 1.8.0, §23.5) |
@@ -2032,7 +2092,7 @@ do servidor.
 
 | `kind` | Campos | Origem (`AgentEvent` do app) |
 |---|---|---|
-| `snapshot` | `{ sessions: { [sessionId]: { status, draft: StreamDraft \| null, tools: { [toolCallId]: { running, output?, judging? } }, compaction: { state, text? } \| null } }, queues: { [sessionId]: QueuedMessage[] }, approvals: ApprovalRequest[], questions: QuestionRequest[], retries: RetryRequest[], processes: ProcessInfo[], skills: { name: string, description: string }[] }` | estado completo do host |
+| `snapshot` | `{ sessions: { [sessionId]: { status, draft: StreamDraft \| null, tools: { [toolCallId]: { running, output?, judging? } }, compaction: { state, text? } \| null } }, queues: { [sessionId]: QueuedMessage[] }, approvals: ApprovalRequest[], questions: QuestionRequest[], retries: RetryRequest[], processes: ProcessInfo[], schedules?: ScheduleInfo[], skills: { name: string, description: string }[] }` (`schedules` desde 1.15.0) | estado completo do host |
 | `draft.delta` | `{ sessionId, streamId, off: { content, reasoning }, append: { content?, reasoning? }, toolCalls?: [{ index, id?, name?, argsAppend? }] }` | `draft` (diferença) |
 | `draft.end` | `{ sessionId, streamId }` | `draft` com `null` |
 | `session` | `{ session: Session }` | `session-created/updated` (status ao vivo) |
@@ -2043,6 +2103,7 @@ do servidor.
 | `retry.requested` / `retry.resolved` | `{ request }` / `{ id }` | idem |
 | `compaction` | `{ sessionId, state, text? }` | `compaction` |
 | `processes` | `{ processes: ProcessInfo[] }` | `processes-updated` |
+| `schedules` (desde 1.15.0) | `{ schedules: ScheduleInfo[] }` — os ativos (próximo disparo primeiro) e os encerrados recentes do chat (`ScheduleInfo`: `id, title, message?, tool?, startAt, everyMs?, times?, createdAt, status: 'active'\|'done'\|'stopped'\|'canceled', nextAt?, runs, history: { at, status }[], endedAt?, endReason?, endNote?, firing?`) | `schedules-updated` |
 | `error` | `{ sessionId, error }` | `error` |
 | `rec` (desde 1.8.0, **só chats só ao vivo**) | `{ lseq, items: LiveItem[] }` | o que nos chats online iria para a outbox: `chat`/`session`/`message` novos, alterados ou apagados (§23.6) |
 
@@ -2057,6 +2118,8 @@ Num chat só ao vivo o `snapshot` ganha `live: { lseq }` (o `lseq` atual do host
   tempo. Ao receber a mensagem `assistant` persistida, o receptor descarta o draft daquela sessão.
   Exceção: nos chats só ao vivo (sem registros) elas vêm pelo próprio stream, em eventos `rec` (§23.6).
 - `processes` e `snapshot.processes`: só leitura no remoto (logs completos ficam no host).
+- `schedules` e `snapshot.schedules` (desde 1.15.0): o remoto mostra a lista e para um com `schedule.stop`
+  (§8.6). Leitores < 1.15.0 ignoram o campo e o evento.
 - Fim do turno: o host manda `session` com status final; `chat.state` (`turn_ended`) fecha o indicador
   (num chat só ao vivo: o anúncio com `running: false`, §23.4).
 
@@ -2644,6 +2707,7 @@ gastem o limite do dono do e-mail ou o bloqueiem.
 | 1.11.0 | 2026-11-13 | Adições compatíveis — **tools compactadas** (§4.3.6): `ChatConfig.toolsCompact` (padrão ligado) e `toolsFull` (as que vão completas); tool compacta = nome + descrição curta do app (1–20 palavras) com esquema vazio; `search_tool` automática (só com alguma tool compacta, nunca escolhível) devolve a definição completa; prompt fixo curto no fim do system prompt; textos do app visíveis na UI; erro de argumentos devolve a definição completa; vale para memória/skills, subagentes, chamada de voz (menos `end_call`) e o texto gerado do modo tools no prompt; unidades de herança `toolsCompact` e `toolsFull.<tool>`. Tool **`datetime`** (`format` opcional, códigos `strftime`, fuso do aparelho que roda o turno; no padrão de tools; o system prompt continua sem data). Apps < 1.11.0 ignoram os campos novos e mostram as tools novas como desconhecidas. Sem mudança no servidor além da versão. |
 | 1.12.0 | 2026-11-13 | Adições compatíveis — **busca nativa de ferramentas** (§4.3.6): com a compactação, o host escolhe por request a busca nativa da Anthropic (host oficial, Claude 4.5+: tools completas com `defer_loading` + `tool_search_tool_regex_20251119`, cache numa tool não adiada, prompt fixo nativo visível) ou a do OpenRouter (Messages API + `openrouter:tool_search`, só para modelos servidos por ela e chats compatíveis), e senão a versão local de 1.11.0 com aviso na UI; queda para a local quando o provedor recusa, lembrada por 24 h no dispositivo (`toolSearchCaps`, §4.4); `search_tool` renomeada `tool_search` (alias de leitura, histórico não regravado); `ApiMessage.native` (blocos da resposta, sem pensamento, reenviados só ao mesmo provedor/API/modelo e se ainda batem com a forma canônica) e `MessageMeta.toolSearch` (§4.3.8). Apps < 1.12.0 ignoram `native` e mostram `tool_search` como desconhecida. Sem mudança no servidor além da versão. |
 | 1.13.0 | 2026-11-14 | Adição compatível — **arquivo selecionado** na mensagem do usuário: `MessageMeta.openFile { path }` (o arquivo aberto na pré-visualização ou mencionado pelo menu do arquivo ao enviar); o host acrescenta à mensagem enviada ao modelo um texto fixo com o caminho, e os clientes mostram uma linha "Arquivo selecionado: …" com o texto exato visível (§4.3.8); os comandos remotos `send`/`force` levam `meta: { openFile }` (§8.6). Hosts < 1.13.0 ignoram o campo. Sem mudança no servidor além da versão. |
+| 1.15.0 | 2026-11-15 | Adição compatível — **agendamentos**: tools `schedule` (lembrete e/ou tool num horário fixo, daqui a X ou a cada X, com `times`), `schedule_list` e `schedule_stop` (só no computador, só na sessão principal; §4.3.6), item de aprovação `schedule` (padrão perguntar; vale o mais restritivo entre ele e a tool agendada; §4.3.2), mensagens `meta.kind: 'schedule'` (disparo que acorda o agente; aviso de cancelamento que não acorda) com `MessageMeta.schedule` (§4.3.8). Estado só do host e só com o app aberto (tabela local, §4.4): fechar o app ou o chat ir para outro aparelho cancela, com aviso. Stream: `snapshot.schedules` e o evento `schedules` (§11); comando `schedule.stop` (§8.6) — o servidor passa a aceitar o tipo. Apps < 1.15.0 mostram as tools como desconhecidas e as mensagens como sintéticas genéricas (vão ao modelo). |
 | 1.14.0 | 2026-11-15 | Adição compatível — **conectores (servidores MCP)**: registro `mcp_server` (LWW por campo; cadastro da conta: transporte stdio/HTTP, OAuth, aprovação por conector/tool, teto, última lista de tools vista) e a escolha por persona/chat em `ChatConfig.mcpServers` (unidade da herança por conector) e `mcpSubagents` (§4.3.10, §4.3.6). Estado do aparelho nunca sincronizado: stdio só roda depois de "Ativar neste computador" (comando exato; muda → confirma de novo), login OAuth e tokens por aparelho (`mcpLocal`/`mcpAuth`, §4.4). Servidor: aceita o tipo e anuncia `features.mcpServers` (§6.2); clientes só enviam o tipo com a feature. Merge do primeiro login deduplica conectores pelo nome e remapeia as chaves de `mcpServers` (§12). Conector ligado conta como ferramenta local na troca de host (§8.9). Apps < 1.14.0 ignoram o tipo (opaco) e preservam os campos da config. |
 
 ---
