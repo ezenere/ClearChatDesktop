@@ -52,7 +52,7 @@ import {
 import { normalizeToolList } from '../src/shared/types.ts'
 import { migrateConfigTools } from '../src/shared/toolRename.ts'
 import { LOCAL_TOOLS, takeoverWarnsLocalTools, usesLocalTools } from '../src/shared/sync.ts'
-import type { ChatConfig } from '../src/shared/types.ts'
+import type { ChatConfig, ToolName } from '../src/shared/types.ts'
 
 const OR = { id: 'or', baseUrl: 'https://openrouter.ai/api/v1', kind: 'openrouter' as const }
 const LO = { id: 'lo', baseUrl: 'http://127.0.0.1:1234/v1', kind: 'openai' as const }
@@ -332,19 +332,20 @@ test('migração: iguais herdam, diferentes ficam próprios; determinística', (
   assert.equal(migrateChatOverrides(legacy, null, env(), PC), null)
 })
 
-test('migração: chat antigo sem datetime (tool que apps < 1.10.0 não conheciam) herda a tool', () => {
+test('migração: chat antigo sem datetime/agendamentos (tools que apps < 1.10.0 não conheciam) herda as tools', () => {
   const p = persona({ systemPrompt: 'P', model: 'p/m', providerId: 'or' })
   const pe = personaEffectiveConfig(p, env())
+  const newer = ['datetime', 'schedule', 'schedule_list', 'schedule_stop']
   const legacy: InheritConfig = {
     ...pe,
     cwd: '/w',
     presetId: 'p1',
-    enabledTools: TOOL_NAMES.filter((t) => t !== 'datetime' && t !== 'shell')
+    enabledTools: TOOL_NAMES.filter((t) => !newer.includes(t) && t !== 'shell')
   }
   const m = migrateChatOverrides(legacy, p, env(), PC)!
   assert.deepEqual(Object.keys(m.overrides!).sort(), ['enabledTools.shell'])
   const eff = effectiveChatConfig(m, p, env())
-  assert.ok(eff.enabledTools.includes('datetime'))
+  for (const t of newer) assert.ok(eff.enabledTools.includes(t as ToolName), t)
   assert.ok(!eff.enabledTools.includes('shell'))
 })
 

@@ -760,8 +760,9 @@ ChatConfig.toolsFull?: ToolName[]      // com a compactação, estas vão comple
   `enabledTools.<tool>`, com os mesmos renomes de tool; a chave `toolsFull` é compartilhada — LWW pela
   chave inteira, como as outras). Persona sem esses campos → padrão de "Novos chats" (`true` e `[]`). Na
   migração, `toolsFull.<t>` é comparada como booleano e `toolsCompact` ausente vale `true`; e uma tool
-  que nenhum app < 1.10.0 conhecia (`datetime`) ausente da lista de um chat antigo **não** vira própria
-  (herda — a ausência não foi escolha do usuário).
+  que nenhum app < 1.10.0 conhecia (`datetime` e, desde 1.15.0, `schedule`, `schedule_list`,
+  `schedule_stop`) ausente da lista de um chat antigo **não** vira própria (herda — a ausência não foi
+  escolha do usuário).
 - **`datetime`** (tool nova, roda em qualquer aparelho, sem aprovação, no padrão de tools do app):
   `{ format?: string }` → a data e hora atuais **do aparelho que roda o turno**, no fuso dele. Sem
   `format`: `<ISO 8601 com deslocamento> · <dia da semana> · fuso <IANA> (UTC±hh:mm)` (ex.:

@@ -33,6 +33,7 @@
     "test:e2e:overlay": "node e2e/chat-overlay.spec.ts",
     "test:e2e:viewer": "node e2e/file-viewer-ui.spec.ts",
     "test:e2e:mcp-ui": "node e2e/mcp-ui.spec.ts",
+    "test:e2e:schedule-ui": "node e2e/schedule-ui.spec.ts",
     "test:e2e:context-menu": "electron-vite build && node e2e/context-menu.spec.ts",
     "test:e2e:chat-bars": "node e2e/chat-bars-ui.spec.ts",
     "test:e2e:voice-ui": "node e2e/voice-ui.spec.ts",
