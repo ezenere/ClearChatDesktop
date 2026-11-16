@@ -1,5 +1,6 @@
 // SOMENTE DESENVOLVIMENTO: window.api simulado para validar o design sem backend.
 // Carregado apenas quando o renderer é buildado com VITE_CLEAR_MOCK=1 (ver main.tsx).
+import type { ScheduleInfo } from '@shared/schedule'
 import { DEFAULT_CHAT_CONFIG } from '@shared/defaults'
 import { planTools } from '@shared/compactTools'
 import { resolveToolSearchMode, toolSearchView } from '@shared/toolSearch'
@@ -132,6 +133,64 @@ const id = (p: string): string => `${p}-${++seq}`
 
 export function createMockApi(scenario: string): ClearApi {
   const listeners = new Set<(e: AgentEvent) => void>()
+  // agendamentos do chat c1 (chip "N agendamentos" no header): um com tool repetindo, um lembrete
+  // e um cancelado quando o app fechou (só aparece em "Encerrados")
+  const t0 = Date.now()
+  const schedules: ScheduleInfo[] =
+    scenario === 'onboarding'
+      ? []
+      : [
+          {
+            id: 'sch-4f2kq',
+            chatId: 'c1',
+            sessionId: 's1',
+            title: 'Checar o build',
+            message: 'Se falhar, me diga qual teste quebrou.',
+            tool: { name: 'shell', args: { command: 'npm test -- --reporter=dot' } },
+            startAt: t0 - 25 * 60_000,
+            everyMs: 10 * 60_000,
+            times: 12,
+            createdAt: t0 - 26 * 60_000,
+            status: 'active',
+            nextAt: t0 + 4 * 60_000,
+            runs: 2,
+            history: [
+              { at: t0 - 25 * 60_000, status: 'ok' },
+              { at: t0 - 15 * 60_000, status: 'error' }
+            ]
+          },
+          {
+            id: 'sch-9a7b1',
+            chatId: 'c1',
+            sessionId: 's1',
+            title: 'Revisar o PR do Bruno',
+            message: 'Revisar o PR do Bruno',
+            startAt: t0 + 2 * 3_600_000,
+            createdAt: t0 - 5 * 60_000,
+            status: 'active',
+            nextAt: t0 + 2 * 3_600_000,
+            runs: 0,
+            history: []
+          },
+          {
+            id: 'sch-k2m8p',
+            chatId: 'c1',
+            sessionId: 's1',
+            title: 'process_logs "p1"',
+            tool: { name: 'process_logs', args: { id: 'p1' } },
+            startAt: t0 - 3 * 3_600_000,
+            everyMs: 30 * 60_000,
+            createdAt: t0 - 3 * 3_600_000,
+            status: 'canceled',
+            endReason: 'app-closed',
+            endedAt: t0 - 2 * 3_600_000,
+            runs: 2,
+            history: [
+              { at: t0 - 3 * 3_600_000, status: 'ok' },
+              { at: t0 - 2.5 * 3_600_000, status: 'ok' }
+            ]
+          }
+        ]
   const processes: ProcessInfo[] = [
     {
       id: 'p1',
@@ -2655,6 +2714,24 @@ export function createMockApi(scenario: string): ClearApi {
           text: i === p.lines - 1 ? p.lastLine : `[vite] hmr update /src/App.tsx (${i + 1})`
         }))
         return delay({ info: { ...p }, lines: all.slice(-tail) })
+      }
+    },
+    schedules: {
+      list: (chatId) => delay(schedules.filter((x) => x.chatId === chatId)),
+      // como o main: parar vira "parado pelo usuário" (fica em Encerrados)
+      stop: async (chatId, sid) => {
+        const i = schedules.findIndex((x) => x.chatId === chatId && x.id === sid)
+        if (i >= 0 && schedules[i].status === 'active') {
+          const { nextAt: _n, ...rest } = schedules[i]
+          void _n
+          schedules[i] = { ...rest, status: 'stopped', endReason: 'user', endedAt: Date.now() }
+          emit({
+            type: 'schedules-updated',
+            chatId,
+            schedules: schedules.filter((x) => x.chatId === chatId).map((x) => ({ ...x }))
+          })
+        }
+        return delay(undefined)
       }
     },
     approvals: {

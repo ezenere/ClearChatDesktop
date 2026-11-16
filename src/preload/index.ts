@@ -181,6 +181,10 @@ const api: FullClearApi = {
     stop: (chatId, id) => invoke(IPC.processes.stop, chatId, id),
     logs: (chatId, id, tail) => invoke(IPC.processes.logs, chatId, id, tail)
   },
+  schedules: {
+    list: (chatId) => invoke(IPC.schedules.list, chatId),
+    stop: (chatId, id) => invoke(IPC.schedules.stop, chatId, id)
+  },
   approvals: {
     getSettings: () => invoke(IPC.approvals.getSettings),
     updateSettings: (patch) => invoke(IPC.approvals.updateSettings, patch)

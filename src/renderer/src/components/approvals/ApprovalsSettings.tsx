@@ -44,7 +44,9 @@ const ITEM_DESC: Record<ApprovalItem, string> = {
   memory_write: 'Tool memory_write — cria ou atualiza uma memória na coleção de escrita.',
   memory_rewrite:
     'Tool memory_rewrite — cria uma versão corrigida de uma memória só de leitura (a substitui).',
-  memory_delete: 'Tool memory_delete — apaga uma memória de uma coleção gravável.'
+  memory_delete: 'Tool memory_delete — apaga uma memória de uma coleção gravável.',
+  schedule:
+    'Tool schedule — lembrete ou tool num horário/intervalo, sem ninguém olhando. Com tool, vale o mais restritivo entre este item e o da tool; aprovado, cada disparo roda sem perguntar.'
 }
 
 /** (?) ao lado do título "Aprovações" (era a linha de introdução da página). */

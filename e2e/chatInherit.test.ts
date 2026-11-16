@@ -718,7 +718,8 @@ test('limpeza única: tira as marcas de tools de um tipo de aparelho em que o ch
     env()
   )
   rec = { ...rec, overrides: { ...rec.overrides, 'enabledTools.get_location': true } }
-  assert.equal(Object.keys(rec.overrides!).length, 12 + 2)
+  // as 12 do computador + os 3 agendamentos (também só no computador, 1.15.0) + 2
+  assert.equal(Object.keys(rec.overrides!).length, 12 + 3 + 2)
   // rodou só no celular (sem hostCwd): as do computador saem (voltam a herdar), a do celular fica
   const cel = cleanDeviceOverrides(rec, p, env(), PHONE)!
   assert.deepEqual(Object.keys(cel.overrides!).sort(), [

@@ -81,12 +81,30 @@ import { emit } from '../events'
 import { chatsRepo, messagesRepo, providersRepo, sessionsRepo, settingsRepo } from '../repo'
 import { getDb, getDbPath } from '../db'
 import { historyStore } from '../historyStore'
-import { parseToolArgs, runLocalTool, shellStateFor } from '../tools'
+import { parseToolArgs, runLocalTool, shellStateFor, type ShellState } from '../tools'
 import { runToolImpl } from '../tools/util'
 import { runMcpTool } from '../tools/mcp'
 import { mcpRepo } from '../mcp/store'
 import { cancelElicitationsOf } from '../mcp'
 import { mcpApprovalMode, mcpLabel } from '@shared/mcp'
+import {
+  END_REASON_TEXT,
+  fmtLocalDateTime,
+  fmtRepeat,
+  formatScheduleList,
+  isSchedulable,
+  parseScheduleArgs,
+  scheduleCreatedText,
+  scheduleIdsArg,
+  stricterLevel,
+  type GateLevel,
+  type ParseScheduleCtx,
+  type ScheduleInfo,
+  type ScheduleSpec,
+  type ScheduleTool
+} from '@shared/schedule'
+import { scheduler, setScheduleRunnerHost } from '../schedule/service'
+import type { ScheduledToolResult } from '../schedule/scheduler'
 import { registerPresented, viewerDevice } from '../fileViewer'
 import {
   abortError,
@@ -1838,6 +1856,35 @@ async function executeTool(
     item = 'mcp'
     mode = m === 'ask' ? 'lists' : m
   }
+  // agendamento (@shared/schedule): argumentos inválidos voltam sem perguntar; vale o mais
+  // restritivo entre o item "Agendamentos" e o da tool agendada (a blacklist dela já bloqueia aqui)
+  let scheduleInfo: string | undefined
+  if (name === 'schedule') {
+    const parsed = parseScheduleArgs(args, scheduleParseCtx(gateChat, session))
+    if ('error' in parsed) return done({ content: parsed.error, status: 'error' })
+    const inner: { level: GateLevel } | { blocked: string } = parsed.ok.tool
+      ? await scheduledToolLevel(chat, session, gateChat, parsed.ok.tool)
+      : { level: 'run' }
+    if ('blocked' in inner)
+      return done({
+        content: `${inner.blocked} — o agendamento NÃO foi criado.`,
+        status: 'denied'
+      })
+    const ownMissing = route.kind === 'user' && 'smartMissing' in route && !!route.smartMissing
+    const own: GateLevel = route.kind === 'run' ? 'run' : route.kind === 'judge' ? 'judge' : 'ask'
+    const level = stricterLevel(own, inner.level)
+    route =
+      level === 'run'
+        ? { kind: 'run' }
+        : level === 'judge'
+          ? judgeConfigured(chat.config.smartApprove)
+            ? { kind: 'judge' }
+            : { kind: 'user', smartMissing: true }
+          : ownMissing
+            ? { kind: 'user', smartMissing: true }
+            : { kind: 'user' }
+    scheduleInfo = scheduleJudgeInfo(parsed.ok)
+  }
   if (route.kind !== 'run' && takeOverride(session.id, name, args)) {
     // "Executar mesmo assim": o usuário já liberou exatamente esta chamada (uma vez)
     smartOverride = true
@@ -1934,6 +1981,7 @@ async function executeTool(
             tool: name,
             args,
             ...(mcpEntry ? { toolInfo: mcpJudgeInfo(mcpEntry, mcpServer) } : {}),
+            ...(scheduleInfo ? { toolInfo: scheduleInfo } : {}),
             cwd: chat.config.cwd,
             confine: chat.config.confineToRoot !== false,
             sandbox: !!chat.config.sandboxBash && bwrapAvailable(),
@@ -2056,6 +2104,9 @@ async function executeTool(
     if (name === 'message_subagent')
       return done(await runMessageSubagent(session, chat, args, signal))
     if (name === 'ask_user') return done(await runAskUser(session, chat, toolCallId, args, signal))
+    if (name === 'schedule') return done(runScheduleCreate(chat, session, gateChat, args))
+    if (name === 'schedule_list') return done(runScheduleList(chat, args))
+    if (name === 'schedule_stop') return done(runScheduleStop(chat, args))
     if (MEMORY_TOOL_NAMES.includes(name)) {
       const r = runMemoryToolFor(chat, session, name, args)
       return done({
@@ -2089,65 +2140,18 @@ async function executeTool(
         signal.removeEventListener('abort', stop)
       }
     }
-    const root = chat.config.cwd
-    const provider = name === 'list_models' ? providerFor(chat, session) : null
-    const sessionProvider =
-      name === 'read_file' || name === 'skill_read' ? providerFor(chat, session) : null
-    const sandbox = !!chat.config.sandboxBash
-    // skills: as ativas desta sessão (tools) e, no sandbox, as pastas delas montadas só leitura
-    const skills = SKILL_TOOL_NAMES.includes(name) ? await sessionSkills(chat, session) : undefined
-    const roBinds =
-      sandbox && (name === 'shell' || name === 'process_start')
-        ? await sandboxSkillDirs(chat, session)
-        : undefined
-    const allProviders = name === 'list_models' ? modelSources(chat, session) : []
-    const r = await runLocalTool(name, args, {
-      cwd: root,
-      confine: chat.config.confineToRoot !== false,
-      // turno de chamada de voz: list_dir/read_file toleram erro de caixa do STT no caminho
-      ...(call ? { voicePaths: true } : {}),
-      maxOutput: toolOutputLimit(chat, session),
-      // saída grande → userData/tool-outputs/<chat>/<toolCallId>.txt (setting global do dispositivo)
-      spillChars: settingsRepo.get<number>(TOOL_SPILL_SETTING) ?? undefined,
-      toolCallId,
-      sandbox,
-      ...(roBinds?.length ? { roBinds } : {}),
-      ...(skills ? { skills } : {}),
-      shell:
-        name === 'shell' || name === 'process_start'
-          ? shellStateFor(session.id, root, () => lastShellCwd(session.id))
-          : undefined,
-      cacheKey: session.id,
-      chatId: chat.id,
-      sessionId: session.id,
-      models:
-        provider || allProviders.length
-          ? {
-              providerName: provider?.name ?? '',
-              current: session.model,
-              list: () =>
-                provider ? listModels(provider) : Promise.reject(new Error('sem provedor')),
-              providers: allProviders
-            }
-          : undefined,
-      chats:
-        name === 'get_chat_info' || name === 'list_chats' ? chatToolsCtx(chat, session) : undefined,
-      history: name === 'read_history' ? () => messagesRepo.path(session.id) : undefined,
-      historyStore: name === 'read_history' ? historyStore(getDb()) : undefined,
-      // read_file: imagens/PDF só se o modelo da sessão os lê (mesma regra dos anexos)
-      media: sessionProvider
-        ? {
-            providerKind: providerKind(sessionProvider),
-            model: async () =>
-              (await listModels(sessionProvider)).find((m) => m.id === session.model) ?? null
-          }
-        : undefined,
-      signal,
-      onOutput: (partial) => {
-        latest = partial
-        out.call()
-      }
-    })
+    const r = await runLocalTool(
+      name,
+      args,
+      await localToolContext(chat, session, name, toolCallId, signal, {
+        // turno de chamada de voz: list_dir/read_file toleram erro de caixa do STT no caminho
+        ...(call ? { voicePaths: true } : {}),
+        onOutput: (partial) => {
+          latest = partial
+          out.call()
+        }
+      })
+    )
     // present_file: concede os arquivos ao protocolo do visualizador + anota o dispositivo
     const presentFiles = r.meta?.presentFiles
       ? await registerPresented(r.meta.presentFiles, viewerDevice())
@@ -2167,6 +2171,75 @@ async function executeTool(
   } finally {
     out.cancel()
     emit({ type: 'tool-running', sessionId: session.id, toolCallId, running: false })
+  }
+}
+
+/**
+ * Contexto das tools locais (runLocalTool) de uma chamada: raiz, limites, sandbox, shell da sessão
+ * (ou o de um agendamento — `shell`), skills, modelos, chats, histórico e mídia.
+ */
+async function localToolContext(
+  chat: Chat,
+  session: Session,
+  name: ToolName,
+  toolCallId: string,
+  signal: AbortSignal,
+  opts: { voicePaths?: boolean; shell?: ShellState; onOutput?: (partial: string) => void } = {}
+): Promise<ToolContext> {
+  const root = chat.config.cwd
+  const provider = name === 'list_models' ? providerFor(chat, session) : null
+  const sessionProvider =
+    name === 'read_file' || name === 'skill_read' ? providerFor(chat, session) : null
+  const sandbox = !!chat.config.sandboxBash
+  // skills: as ativas desta sessão (tools) e, no sandbox, as pastas delas montadas só leitura
+  const skills = SKILL_TOOL_NAMES.includes(name) ? await sessionSkills(chat, session) : undefined
+  const roBinds =
+    sandbox && (name === 'shell' || name === 'process_start')
+      ? await sandboxSkillDirs(chat, session)
+      : undefined
+  const allProviders = name === 'list_models' ? modelSources(chat, session) : []
+  return {
+    cwd: root,
+    confine: chat.config.confineToRoot !== false,
+    ...(opts.voicePaths ? { voicePaths: true } : {}),
+    maxOutput: toolOutputLimit(chat, session),
+    // saída grande → userData/tool-outputs/<chat>/<toolCallId>.txt (setting global do dispositivo)
+    spillChars: settingsRepo.get<number>(TOOL_SPILL_SETTING) ?? undefined,
+    toolCallId,
+    sandbox,
+    ...(roBinds?.length ? { roBinds } : {}),
+    ...(skills ? { skills } : {}),
+    shell:
+      name === 'shell' || name === 'process_start'
+        ? (opts.shell ?? shellStateFor(session.id, root, () => lastShellCwd(session.id)))
+        : undefined,
+    cacheKey: session.id,
+    chatId: chat.id,
+    sessionId: session.id,
+    models:
+      provider || allProviders.length
+        ? {
+            providerName: provider?.name ?? '',
+            current: session.model,
+            list: () =>
+              provider ? listModels(provider) : Promise.reject(new Error('sem provedor')),
+            providers: allProviders
+          }
+        : undefined,
+    chats:
+      name === 'get_chat_info' || name === 'list_chats' ? chatToolsCtx(chat, session) : undefined,
+    history: name === 'read_history' ? () => messagesRepo.path(session.id) : undefined,
+    historyStore: name === 'read_history' ? historyStore(getDb()) : undefined,
+    // read_file: imagens/PDF só se o modelo da sessão os lê (mesma regra dos anexos)
+    media: sessionProvider
+      ? {
+          providerKind: providerKind(sessionProvider),
+          model: async () =>
+            (await listModels(sessionProvider)).find((m) => m.id === session.model) ?? null
+        }
+      : undefined,
+    signal,
+    ...(opts.onOutput ? { onOutput: opts.onOutput } : {})
   }
 }
 
@@ -2425,6 +2498,241 @@ async function awaitRetryDecision(
     setStatus(session.id, 'running')
   return signal.aborted ? 'cancel' : outcome
 }
+
+// ---------------- agendamentos (schedule / schedule_list / schedule_stop) ----------------
+
+/** O que o `schedule` pode agendar nesta sessão: as tools disponíveis, fora as não agendáveis. */
+function scheduleParseCtx(gateChat: Chat, session: Session): ParseScheduleCtx {
+  let avail: Set<string> | null = null
+  return {
+    now: Date.now(),
+    toolAvailable: (n) =>
+      isSchedulable(n) && (avail ??= new Set(availableTools(gateChat, session))).has(n)
+  }
+}
+
+/**
+ * Nível de aprovação que a tool agendada teria se fosse chamada agora (o `schedule` usa o mais
+ * restritivo entre ele e o item "Agendamentos"): mesmas regras do gate — "Sempre permitir" roda
+ * (a blacklist não vale), caminho protegido pergunta, leitura e whitelist rodam, blacklist bloqueia.
+ */
+async function scheduledToolLevel(
+  chat: Chat,
+  session: Session,
+  gateChat: Chat,
+  tool: ScheduleTool
+): Promise<{ level: GateLevel } | { blocked: string }> {
+  const settings = getApprovalSettings()
+  const entry = mcpEntryFor(gateChat, session, tool.name)
+  if (entry) {
+    const server = mcpRepo.get(entry.serverId)
+    const m = server ? mcpApprovalMode(server, entry.tool.name) : 'ask'
+    return { level: m === 'always' ? 'run' : m === 'smart' ? 'judge' : 'ask' }
+  }
+  const name = tool.name as ToolName
+  const item = TOOL_ITEM[name]
+  if (!item) return { level: 'run' }
+  const mode = effectiveMode(chat.config, settings.modes, item)
+  const safety = safetyCtxFor(chat, session, name, tool.args)
+  if (isListItem(item)) {
+    const ev = evaluateLists(item, tool.args, settings.lists, safety)
+    if (mode === 'always') return { level: ev.protected ? 'ask' : 'run' }
+    if (ev.blocked) return { blocked: blockedText(item, ev.blocked) }
+    if (ev.protected) return { level: 'ask' }
+    if (ev.readOnly || ev.allAllowed) return { level: 'run' }
+    return { level: mode === 'smart' ? 'judge' : 'ask' }
+  }
+  if (name === 'write_file' || name === 'edit_file') {
+    const f = await fileGateInfo(chat, tool.args, safety).catch(() => ({ inside: false }) as const)
+    if ('protectedPath' in f && f.protectedPath) return { level: 'ask' }
+  }
+  return { level: mode === 'always' ? 'run' : mode === 'smart' ? 'judge' : 'ask' }
+}
+
+/** Contexto do juiz para o `schedule` (no lugar de {{commands}}): quando e o que vai rodar sozinho. */
+function scheduleJudgeInfo(spec: ScheduleSpec): string {
+  const lines = [
+    `Agendamento: ${fmtRepeat(spec)}, ${spec.everyMs ? 'a partir de' : 'em'} ${fmtLocalDateTime(spec.startAt)} — roda SOZINHO enquanto o app estiver aberto, sem nova confirmação a cada disparo.`
+  ]
+  if (spec.tool)
+    lines.push(
+      `Ferramenta executada em cada disparo: ${spec.tool.name} ${JSON.stringify(spec.tool.args)}`
+    )
+  if (spec.message) lines.push(`Lembrete entregue ao agente: ${spec.message}`)
+  return lines.join('\n')
+}
+
+function runScheduleCreate(
+  chat: Chat,
+  session: Session,
+  gateChat: Chat,
+  args: Record<string, unknown>
+): Omit<ToolOutcome, 'durationMs'> {
+  if (session.depth > 0)
+    return { content: 'Erro: só a sessão principal do chat pode agendar.', status: 'error' }
+  // de novo, com o relógio de agora: "in" conta a partir da aprovação (o card pode ter esperado)
+  const parsed = parseScheduleArgs(args, scheduleParseCtx(gateChat, session))
+  if ('error' in parsed) return { content: parsed.error, status: 'error' }
+  try {
+    const s = scheduler().create(parsed.ok, chat.id, chat.mainSessionId)
+    return { content: scheduleCreatedText(s, Date.now()), status: 'ok' }
+  } catch (e) {
+    return { content: errMsg(e), status: 'error' }
+  }
+}
+
+function runScheduleList(
+  chat: Chat,
+  args: Record<string, unknown>
+): Omit<ToolOutcome, 'durationMs'> {
+  const { ids, invalid } = scheduleIdsArg(args)
+  const text = formatScheduleList(scheduler().list(chat.id), ids, Date.now())
+  const bad = invalid.length
+    ? `\n[ids inválidos ignorados: ${invalid.map((x) => JSON.stringify(x)).join(', ')} — o formato é "sch-xxxxx"]`
+    : ''
+  return { content: `${text}${bad}`, status: 'ok' }
+}
+
+function runScheduleStop(
+  chat: Chat,
+  args: Record<string, unknown>
+): Omit<ToolOutcome, 'durationMs'> {
+  const { ids, invalid } = scheduleIdsArg(args)
+  if (!ids.length)
+    return {
+      content: `Erro: diga quais agendamentos parar em "ids" (ex.: ["sch-4f2kq"]; veja com schedule_list).${invalid.length ? ` Inválidos: ${invalid.join(', ')}.` : ''}`,
+      status: 'error'
+    }
+  const r = scheduler().stop(chat.id, ids, 'agent')
+  const lines: string[] = []
+  if (r.stopped.length)
+    lines.push(
+      `Parado${r.stopped.length > 1 ? 's' : ''} (não ${r.stopped.length > 1 ? 'disparam' : 'dispara'} mais): ${r.stopped.map((s) => `${s.id} "${s.title}"`).join(', ')}.`
+    )
+  for (const s of r.already)
+    lines.push(`${s.id}: já estava encerrado (${END_REASON_TEXT[s.endReason ?? 'completed']}).`)
+  if (r.missing.length) lines.push(`Não encontrados neste chat: ${r.missing.join(', ')}.`)
+  if (invalid.length) lines.push(`Ids inválidos ignorados: ${invalid.join(', ')}.`)
+  return {
+    content: lines.join('\n'),
+    status: r.stopped.length || r.already.length ? 'ok' : 'error'
+  }
+}
+
+/** Disparo de um agendamento → sessão principal (acorda; rodando → fila, substituindo o anterior). */
+function deliverScheduled(
+  s: ScheduleInfo,
+  text: string,
+  meta: MessageMeta,
+  replaceQueuedId?: string
+): { queuedId?: string } {
+  const session = sessionsRepo.get(s.sessionId)
+  if (!session || shuttingDown) return {}
+  if (replaceQueuedId) takeQueued(replaceQueuedId)
+  const d = deliverToSession(session, text, meta)
+  const fresh = chatsRepo.get(session.chatId)
+  if (fresh) emit({ type: 'chat-updated', chat: fresh })
+  return d.queuedId ? { queuedId: d.queuedId } : {}
+}
+
+/**
+ * Aviso de agendamentos cancelados, sem acordar o agente: sessão rodando → fila (entra no próximo
+ * passo); parada (ou o app fechando, depois de o runner reparar o fim do histórico) → gravado.
+ */
+function appendScheduleNotice(sessionId: string, text: string, meta: MessageMeta): boolean {
+  if (!sessionsRepo.get(sessionId)) return false
+  if (!shuttingDown && runs.has(sessionId)) {
+    enqueue(sessionId, text, [], meta)
+    wakeSession(sessionId)
+    return true
+  }
+  const m = messagesRepo.append(sessionId, { role: 'user', content: text }, meta)
+  emit({ type: 'message-added', message: m })
+  return true
+}
+
+/** Texto do resultado de uma tool (as partes de mídia não vão no disparo — só a menção). */
+function outcomeText(r: { content: string; parts?: ContentPart[] }): string {
+  if (!r.parts?.length) return r.content
+  const text = r.parts
+    .map((p) => (p.type === 'text' ? p.text : ''))
+    .filter(Boolean)
+    .join('\n')
+  return `${text || r.content}\n[mídia do resultado omitida no agendamento — leia com read_file se precisar]`
+}
+
+/**
+ * Roda a tool de um agendamento no horário (fora de um turno, sem card): a aprovação foi a da
+ * criação. Antes, as mesmas checagens que podem ter mudado: a tool ainda está no chat e a blacklist
+ * (fora do "Sempre permitir") não a bloqueia — senão o agendamento para.
+ */
+async function runScheduledTool(
+  s: ScheduleInfo,
+  signal: AbortSignal
+): Promise<ScheduledToolResult> {
+  const session = sessionsRepo.get(s.sessionId)
+  const chat = session ? chatsRepo.get(session.chatId) : null
+  if (!session || !chat || !s.tool) return { unavailable: 'O chat não existe mais.' }
+  const name = (TOOL_ALIASES[s.tool.name] ?? s.tool.name) as ToolName
+  const args = s.tool.args
+  if (!isSchedulable(name) || !availableTools(chat, session).includes(name))
+    return { unavailable: `A ferramenta ${name} não está mais disponível neste chat.` }
+  const settings = getApprovalSettings()
+  const item = TOOL_ITEM[name]
+  if (isListItem(item) && effectiveMode(chat.config, settings.modes, item) !== 'always') {
+    const ev = evaluateLists(item, args, settings.lists, safetyCtxFor(chat, session, name, args))
+    if (ev.blocked) return { unavailable: `${blockedText(item, ev.blocked)}.` }
+  }
+  const t0 = Date.now()
+  const toolCallId = `sched_${s.id}_${s.runs + 1}`
+  const fin = (r: {
+    content: string
+    status: string
+    parts?: ContentPart[]
+  }): ScheduledToolResult => ({
+    status: r.status === 'ok' ? 'ok' : r.status === 'denied' ? 'denied' : 'error',
+    content: outcomeText(r),
+    durationMs: Date.now() - t0
+  })
+  try {
+    if (MEMORY_TOOL_NAMES.includes(name)) return fin(runMemoryToolFor(chat, session, name, args))
+    const entry = mcpEntryFor(chat, session, name)
+    if (entry) {
+      const owner = { chatId: chat.id, sessionId: session.id, toolCallId }
+      const r = await runToolImpl((a, c) => runMcpTool(entry, a, c, owner), args, {
+        cwd: chat.config.cwd,
+        maxOutput: toolOutputLimit(chat, session),
+        spillChars: settingsRepo.get<number>(TOOL_SPILL_SETTING) ?? undefined,
+        toolCallId,
+        signal
+      })
+      return fin(r)
+    }
+    // o shell do agendamento é dele (começa na raiz; o `cd` de um disparo vale para os seguintes)
+    const shell = shellStateFor(`schedule:${s.id}`, chat.config.cwd)
+    const r = await runLocalTool(
+      name,
+      args,
+      await localToolContext(chat, session, name, toolCallId, signal, { shell })
+    )
+    return fin(r)
+  } catch (e) {
+    if (signal.aborted || (e as Error).name === 'AbortError')
+      return { status: 'error', content: CANCELLED_TEXT, durationMs: Date.now() - t0 }
+    return { status: 'error', content: `Erro: ${errMsg(e)}`, durationMs: Date.now() - t0 }
+  }
+}
+
+setScheduleRunnerHost({
+  sessionOk: (s) => {
+    const session = sessionsRepo.get(s.sessionId)
+    return !!session && !!chatsRepo.get(session.chatId)
+  },
+  runTool: runScheduledTool,
+  isQueued: (sid, qid) => isQueued(sid, qid),
+  deliver: deliverScheduled,
+  notice: appendScheduleNotice
+})
 
 // ---------------- chats: get_chat_info / list_chats / send_to_chat ----------------
 

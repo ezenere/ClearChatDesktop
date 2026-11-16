@@ -1,5 +1,6 @@
 // Registro dos handlers IPC (ipcMain.handle) — um para cada canal em `IPC` (src/shared/ipc.ts).
 // Handlers recebem os argumentos posicionais na mesma ordem da API do preload.
+import { scheduler } from './schedule/service'
 import { withoutStaleNative } from '@shared/toolSearch'
 import * as mcpApi from './mcp/api'
 import * as mcpOAuth from './mcp/oauth'
@@ -868,6 +869,7 @@ export function registerIpc(): void {
         )
       await runner.stopChat(id)
       await stopChatProcesses(id)
+      scheduler().dropChat(id)
       chatsRepo.delete(id)
       removeChatToolOutputs(id)
     },
@@ -1309,6 +1311,13 @@ export function registerIpc(): void {
     [IPC.processes.logs]: (chatId: string, id: string, tail?: number) => {
       remoteProcessGuard(chatId)
       return processLogLines(chatId, id, tail)
+    },
+
+    // ---- agendamentos (tool schedule) ----
+    [IPC.schedules.list]: (chatId: string) => scheduler().view(chatId),
+    [IPC.schedules.stop]: (chatId: string, id: string) => {
+      const r = scheduler().stop(chatId, [id], 'user')
+      if (r.missing.length) throw new Error('Agendamento não encontrado.')
     },
 
     // ---- presets (personas) ----

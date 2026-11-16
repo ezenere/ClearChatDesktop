@@ -72,6 +72,10 @@ export const TOOL_SHORT_DESCRIPTIONS: Record<string, string> = {
     'Envia uma mensagem a um subagente ou a um irmão, opcionalmente esperando a resposta.',
   ask_user: 'Mostra ao usuário um questionário de múltipla escolha e espera as respostas.',
   datetime: 'Data e hora atuais do aparelho, no fuso dele, com formato opcional.',
+  schedule:
+    'Agenda um lembrete ou uma ferramenta para um horário ou a cada intervalo (enquanto o app estiver aberto).',
+  schedule_list: 'Lista os agendamentos deste chat (sem ids, só os ativos).',
+  schedule_stop: 'Para agendamentos deste chat pelos ids.',
   memory_search: 'Busca nas memórias ativas sobre o usuário, pessoas e projetos.',
   memory_read: 'Lê memórias completas pelos ids ou slugs.',
   memory_write: 'Cria ou atualiza uma memória com fatos duráveis sobre o usuário.',

@@ -73,4 +73,17 @@ CREATE TABLE IF NOT EXISTS presets (
   created_at  INTEGER NOT NULL,
   updated_at  INTEGER NOT NULL
 );
+
+-- Agendamentos (tools schedule/schedule_list/schedule_stop — SPEC → "Agendamentos"): só deste
+-- aparelho, NUNCA sincroniza. data_json = ScheduleInfo inteiro (@shared/schedule). Ativos só
+-- existem com o app aberto: no start os que sobraram de um fechamento abrupto viram cancelados.
+CREATE TABLE IF NOT EXISTS schedules (
+  id         TEXT PRIMARY KEY,
+  chat_id    TEXT NOT NULL,
+  status     TEXT NOT NULL,
+  data_json  TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_schedules_chat ON schedules(chat_id, status);
 `

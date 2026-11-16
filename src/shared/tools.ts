@@ -6,6 +6,7 @@ import { ASK_USER_LIMITS as AL } from './askUser'
 import { shellDescriptionPrefix, toolShellInfo, type ShellInfoLite } from './shellInfo'
 import { PRESENT_FILE_LIMITS as PL } from './fileViewer'
 import { DATETIME_CODES } from './datetime'
+import { SCHEDULE_LIMITS } from './schedule'
 
 const shellDescription = (info: ShellInfoLite | null): string => {
   const p = shellDescriptionPrefix(info)
@@ -67,7 +68,10 @@ export const TOOL_NAMES: ToolName[] = [
   'cancel_subagent',
   'message_subagent',
   'ask_user',
-  'datetime'
+  'datetime',
+  'schedule',
+  'schedule_list',
+  'schedule_stop'
 ]
 
 /**
@@ -120,6 +124,9 @@ export const TOOL_LABELS: Record<ToolName, string> = {
   message_subagent: 'Mensagem ao subagente',
   ask_user: 'Perguntar ao usuário',
   datetime: 'Data e hora',
+  schedule: 'Agendar',
+  schedule_list: 'Listar agendamentos',
+  schedule_stop: 'Parar agendamento',
   memory_search: 'Buscar memória',
   memory_read: 'Ler memória',
   memory_write: 'Gravar memória',
@@ -764,6 +771,73 @@ export const TOOL_DEFINITIONS: Record<ToolName, ToolDefinition> = {
         description: 'Opcional: formato com códigos de strftime (ex.: "%A, %d de %B de %Y, %H:%M").'
       }
     }
+  ),
+  schedule: def(
+    'schedule',
+    `Agenda algo para depois, enquanto o app estiver aberto: um lembrete (message) entregue a você no horário e/ou uma ferramenta (tool + args) executada no horário, com a saída entregue a você. Quando: at (data/hora local fixa) OU in (daqui a), e/ou every (repete a cada, mínimo ${SCHEDULE_LIMITS.minEveryMs / 60_000} min; sem at/in o 1º disparo é daqui a every; times limita as repetições). No horário chega uma mensagem "[Agendamento <id> disparou …]" e você continua a partir dela (se estiver ocupado, ela entra no próximo passo). Use para lembretes, checagens periódicas (ex.: process_logs, shell com um teste rápido) e esperas longas — não fique em loop esperando. Cada agendamento tem um id: veja com schedule_list e pare com schedule_stop. Fechar o app cancela todos (você recebe um aviso com os ids). Criar pede aprovação do usuário; aprovado, cada disparo roda sem perguntar de novo. Não agendáveis: ask_user, subagentes, send_to_chat, present_file, gravar memória e as de agendamento.`,
+    {
+      message: {
+        type: 'string',
+        description:
+          'Lembrete entregue a você no horário (o que fazer/verificar). Com tool, vai junto com a saída.'
+      },
+      tool: {
+        type: 'string',
+        description:
+          'Opcional: ferramenta a rodar no horário (ex.: "shell", "process_logs", "web_search").'
+      },
+      args: {
+        type: 'object',
+        description:
+          'Argumentos da ferramenta, como numa chamada normal (ex.: {"command": "npm test"}).',
+        additionalProperties: true
+      },
+      at: {
+        type: 'string',
+        description:
+          'Horário fixo, no fuso do aparelho: "2026-11-15 18:30", "18:30" (a próxima vez que o relógio marcar) ou ISO com fuso.'
+      },
+      in: {
+        type: 'string',
+        description: 'Daqui a quanto tempo: "30s", "10m", "2h", "1h30m", "1d" (número = segundos).'
+      },
+      every: {
+        type: 'string',
+        description: `Repete a cada: "15m", "1h", "1d" (mínimo ${SCHEDULE_LIMITS.minEveryMs / 60_000} min).`
+      },
+      times: {
+        type: 'integer',
+        description: 'Com every: quantas execuções no total (padrão: até parar ou o app fechar).'
+      },
+      title: {
+        type: 'string',
+        description:
+          'Opcional: nome curto para as listas (padrão: o início do lembrete ou a ferramenta).'
+      }
+    }
+  ),
+  schedule_list: def(
+    'schedule_list',
+    'Lista os agendamentos deste chat. Sem ids: só os ativos (o quê, repetição, próximo disparo, execuções) — encerrados e cancelados não aparecem. Com ids: os detalhes de cada um em qualquer estado, inclusive os cancelados quando o app fechou.',
+    {
+      ids: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Opcional: ids (ex.: ["sch-4f2kq"]) para ver os detalhes, mesmo encerrados.'
+      }
+    }
+  ),
+  schedule_stop: def(
+    'schedule_stop',
+    'Para agendamentos deste chat: não disparam mais (um disparo que já está rodando termina e é entregue).',
+    {
+      ids: {
+        type: 'array',
+        items: { type: 'string' },
+        description: 'Ids dos agendamentos a parar (ex.: ["sch-4f2kq"]).'
+      }
+    },
+    ['ids']
   ),
   ...MEMORY_TOOL_DEFINITIONS,
   ...SKILL_TOOL_DEFINITIONS,

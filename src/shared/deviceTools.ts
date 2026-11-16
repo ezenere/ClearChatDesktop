@@ -29,6 +29,17 @@ export const COMPUTER_TOOL_NAMES: readonly ToolName[] = [
   'process_stop'
 ]
 
+/**
+ * Também só no computador (desde 1.15.0), mas FORA das "ferramentas locais" (§8.9 — não dependem
+ * de pastas nem de comandos da máquina): os agendamentos, que precisam do app aberto o tempo todo
+ * (o sistema do celular suspende o app em segundo plano).
+ */
+export const COMPUTER_RUNTIME_TOOL_NAMES: readonly ToolName[] = [
+  'schedule',
+  'schedule_list',
+  'schedule_stop'
+]
+
 /** Só no celular (§4.3.6): localização (o celular as define e executa — `src/location` do mobile). */
 export const PHONE_TOOL_NAMES = ['get_location', 'nearby_places'] as const
 export type PhoneToolName = (typeof PHONE_TOOL_NAMES)[number]
@@ -76,6 +87,7 @@ export const APP_TOOL_NAMES: readonly ToolName[] = [...TOOL_NAMES, ...PHONE_TOOL
 export function toolDevice(name: string): DeviceKind | null {
   const n = name === 'bash' ? 'shell' : name
   if ((COMPUTER_TOOL_NAMES as readonly string[]).includes(n)) return 'computer'
+  if ((COMPUTER_RUNTIME_TOOL_NAMES as readonly string[]).includes(n)) return 'computer'
   if (isPhoneTool(n)) return 'phone'
   return null
 }

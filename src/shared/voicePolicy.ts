@@ -244,14 +244,16 @@ export const TOOL_PHRASE_RECENT_WINDOW = 3
  * Tools sem frase: a própria tool já é a fala/interação (despedida, pergunta na tela) ou é
  * instantânea e não é "o trabalho" do turno — `tool_search` (só lê a definição de uma tool
  * compactada, 1.11.0; antes `search_tool`, 1.12.0: a frase fica para a tool de verdade que vem
- * depois) e `datetime`.
+ * depois), `datetime` e listar/parar agendamentos.
  */
 const TOOLS_WITHOUT_PHRASE = new Set([
   'end_call',
   'ask_user',
   'tool_search',
   'search_tool',
-  'datetime'
+  'datetime',
+  'schedule_list',
+  'schedule_stop'
 ])
 
 /**

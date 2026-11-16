@@ -111,6 +111,10 @@ export type ToolName =
   | 'ask_user'
   // data e hora do aparelho que roda o turno (protocolo 1.11.0; portátil, sem aprovação)
   | 'datetime'
+  // agendamentos (protocolo 1.15.0, @shared/schedule): só a sessão principal; criar pede aprovação
+  | 'schedule'
+  | 'schedule_list'
+  | 'schedule_stop'
   // memória modular (SPEC → Memória): disponibilidade pela config de memória, não por enabledTools
   | 'memory_search'
   | 'memory_read'
@@ -150,6 +154,8 @@ export type ApprovalItem =
   | 'memory_write'
   | 'memory_rewrite'
   | 'memory_delete'
+  // agendamentos (tool `schedule`, protocolo 1.15.0): padrão global "Perguntar"
+  | 'schedule'
 /**
  * always = sempre permitir · smart = Smart-Approve decide · lists = whitelist/blacklist
  * (commands/processes/pages; nos demais itens = "Perguntar").
@@ -704,6 +710,11 @@ export interface MessageMeta {
     | 'memory-extraction'
     /** Marcador de início/fim da chamada de voz (synthetic, só exibição — `meta.voiceCall`). */
     | 'voice-call'
+    /**
+     * Agendamento (protocolo 1.15.0, @shared/schedule): disparo (lembrete e/ou saída da tool, acorda
+     * o agente) ou aviso de cancelamento (não acorda) — role user, synthetic, `meta.schedule`.
+     */
+    | 'schedule'
   /** Resposta do assistente cortada pelo usuário. */
   interrupted?: boolean
   /**
@@ -793,6 +804,8 @@ export interface MessageMeta {
   voice?: VoiceMessageMeta
   /** kind 'voice-call': marcador de início/fim da chamada (duração, quem encerrou, custos). */
   voiceCall?: VoiceCallMark
+  /** kind 'schedule': disparo ou aviso de cancelamento de agendamentos (@shared/schedule). */
+  schedule?: import('./schedule').ScheduleMessageMeta
   /**
    * Mensagem do usuário (desde 1.13.0, SYNC §4.3.8): o arquivo selecionado ao enviar (aberto na
    * pré-visualização ou "Mencionar no chat"). `path` relativo à raiz do chat no host (dentro dela)
@@ -1105,6 +1118,12 @@ export type AgentEvent =
   | { type: 'error'; sessionId: string; error: string }
   /** Processos em segundo plano (process_start) do chat mudaram (início, saída, parada). */
   | { type: 'processes-updated'; chatId: string; processes: ProcessInfo[] }
+  /** Agendamentos do chat mudaram (criado, disparou, parado, cancelado) — ativos + encerrados recentes. */
+  | {
+      type: 'schedules-updated'
+      chatId: string
+      schedules: import('./schedule').ScheduleInfo[]
+    }
   /** Modos globais / listas de aprovação mudaram (Configurações → Aprovações ou "+ lista" no card). */
   | { type: 'approval-settings-updated'; settings: ApprovalSettings }
   /** Coleção/memória criada, alterada ou apagada (UI, tools do modelo ou extração). */

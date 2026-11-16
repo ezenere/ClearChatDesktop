@@ -20,6 +20,7 @@ import { registerEventWindow } from './events'
 import { installContextMenu, setupSpellcheck } from './contextMenu'
 import { initSync, shutdownSync, syncEngine } from './sync'
 import { initRunner, shutdownRunner } from './agent/runner'
+import { initScheduler, shutdownScheduler } from './schedule/service'
 import { emit } from './events'
 import { initShell, withMacToolPaths } from './tools/shellEnv'
 import {
@@ -266,6 +267,8 @@ app.whenReady().then(() => {
     openUrl: (url) => shell.openExternal(url)
   })
   initRunner()
+  // agendamentos: os que sobraram de um fechamento abrupto viram cancelados (aviso no chat)
+  initScheduler()
   registerIpc()
   mainWindow = createWindow()
   void initSync().catch((e) => console.error('[clearchat] sync', e))
@@ -294,6 +297,8 @@ app.on('before-quit', () => {
   shutdownSync()
   shutdownVoiceCall() // marcador de fim da chamada ativa antes de o runner parar de gravar
   shutdownRunner()
+  // depois do runner (fim do histórico já reparado): cancela os agendamentos e grava os avisos
+  shutdownScheduler()
   void shutdownMcp() // fecha as conexões (stdio: fecha stdin → SIGTERM → SIGKILL)
   shutdownSttWorker()
   shutdownTtsWorker()

@@ -4,7 +4,8 @@
 //
 // Itens: commands (shell) · processes (process_start) · pages (browse_url) · search (web_search) ·
 // writeFile (write_file) · editFile (edit_file) · sendToChat (send_to_chat) · delegate (delegate_task) ·
-// memory_write · memory_rewrite · memory_delete (tools de memória — mesmos nomes).
+// memory_write · memory_rewrite · memory_delete (tools de memória — mesmos nomes) ·
+// schedule (criar agendamento — vale o mais restritivo entre ele e a tool agendada; @shared/schedule).
 // Modo efetivo = override do chat (ChatConfig.approvalModes[item]) ?? global (settings
 // `approvalModes`) ?? DEFAULT_APPROVAL_MODES.
 //   always → roda sem perguntar (blacklist NÃO vale).
@@ -50,13 +51,15 @@ export const APPROVAL_ITEMS: ApprovalItem[] = [
   'delegate',
   'memory_write',
   'memory_rewrite',
-  'memory_delete'
+  'memory_delete',
+  'schedule'
 ]
 /** Grupos da UI (Configurações → Aprovações e aba Tools). */
 export const APPROVAL_ITEM_GROUPS: { title: string; items: ApprovalItem[] }[] = [
   { title: 'Terminal e web', items: ['commands', 'processes', 'pages', 'search'] },
   { title: 'Arquivos e agentes', items: ['writeFile', 'editFile', 'sendToChat', 'delegate'] },
-  { title: 'Memória', items: ['memory_write', 'memory_rewrite', 'memory_delete'] }
+  { title: 'Memória', items: ['memory_write', 'memory_rewrite', 'memory_delete'] },
+  { title: 'Agendamentos', items: ['schedule'] }
 ]
 export const APPROVAL_LIST_ITEMS: ApprovalListItem[] = ['commands', 'processes', 'pages']
 export const APPROVAL_MODES: ApprovalMode[] = ['always', 'smart', 'lists']
@@ -75,7 +78,8 @@ export const ITEM_TOOL: Record<ApprovalItem, ToolName> = {
   delegate: 'delegate_task',
   memory_write: 'memory_write',
   memory_rewrite: 'memory_rewrite',
-  memory_delete: 'memory_delete'
+  memory_delete: 'memory_delete',
+  schedule: 'schedule'
 }
 
 export const TOOL_ITEM: Partial<Record<ToolName, ApprovalItem>> = {
@@ -89,7 +93,8 @@ export const TOOL_ITEM: Partial<Record<ToolName, ApprovalItem>> = {
   delegate_task: 'delegate',
   memory_write: 'memory_write',
   memory_rewrite: 'memory_rewrite',
-  memory_delete: 'memory_delete'
+  memory_delete: 'memory_delete',
+  schedule: 'schedule'
 }
 
 /** Tools que passam pelo gate de aprovação (uma por item). */
@@ -106,7 +111,8 @@ export const ITEM_LABEL: Record<ApprovalItem, string> = {
   delegate: 'Delegar a subagente',
   memory_write: 'Gravar memória',
   memory_rewrite: 'Reescrever memória',
-  memory_delete: 'Apagar memória'
+  memory_delete: 'Apagar memória',
+  schedule: 'Criar agendamento'
 }
 
 /** Item com whitelist/blacklist (commands, processes, pages). Nos demais, `lists` = "Perguntar". */
@@ -153,6 +159,7 @@ export function modeHint(item: ApprovalItem, mode: ApprovalMode): string {
  * também pergunta: a consulta sai para um serviço externo (DuckDuckGo, Brave, Exa, Tavily…) e pode vazar contexto.
  * Arquivos, chats e subagentes: `always` (rodavam sem perguntar antes de virarem itens).
  * Memória (gravar/reescrever/apagar): `always` — a terceira opção é "Perguntar".
+ * Agendamentos: `lists` (= Perguntar) — o agendamento continua rodando sem ninguém olhando.
  */
 export const DEFAULT_APPROVAL_MODES: Record<ApprovalItem, ApprovalMode> = {
   commands: 'lists',
@@ -165,7 +172,8 @@ export const DEFAULT_APPROVAL_MODES: Record<ApprovalItem, ApprovalMode> = {
   delegate: 'always',
   memory_write: 'always',
   memory_rewrite: 'always',
-  memory_delete: 'always'
+  memory_delete: 'always',
+  schedule: 'lists'
 }
 
 const isMode = (v: unknown): v is ApprovalMode =>

@@ -82,11 +82,13 @@ test('system + env + tools + cache_control na cópia', () => {
     { type: 'text', text: 'leia x', cache_control: { type: 'ephemeral' } }
   ])
   assert.equal(JSON.stringify(hist), before, 'histórico não pode ser mutado')
-  assert.equal(body.tools.length, 26) // inclui present_file (só na principal) e datetime
+  // inclui present_file, datetime e os agendamentos (schedule/_list/_stop — só na principal)
+  assert.equal(body.tools.length, 29)
   // num subagente (sem ask_user: subagentes não perguntam ao usuário), as tools de gerenciar subagentes só aparecem depois do primeiro delegate_task
   const sub1 = buildRequest(mkChat(), { depth: 1, model: 'm' }, hist, orProvider, env).body as any
   assert.equal(sub1.tools.length, 20)
   assert.ok(!sub1.tools.some((t: any) => t.function.name === 'message_subagent'))
+  assert.ok(!sub1.tools.some((t: any) => t.function.name.startsWith('schedule')))
   const delegated = [
     ...hist,
     sm({

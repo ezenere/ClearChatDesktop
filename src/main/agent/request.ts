@@ -1,5 +1,6 @@
 // Construção da request (função pura). Usada pelo runner E pelo previewRequest.
 // Ver SPEC.md → "Construção da request" e "Token caching".
+import { SCHEDULE_TOOL_NAMES } from '@shared/schedule'
 import * as os from 'os'
 import { DEFAULT_SKILLS_SUPPORT_PROMPT, defaultToolsPrompt } from '@shared/defaults'
 import { providerKind, type ProviderKind } from '@shared/providerKinds'
@@ -324,6 +325,8 @@ export function availableTools(
       (n !== 'ask_user' || session.depth === 0) &&
       // o visualizador é do usuário: só a principal apresenta arquivos
       (n !== 'present_file' || session.depth === 0) &&
+      // agendamentos: só a sessão principal (os disparos chegam nela)
+      (!SCHEDULE_TOOL_NAMES.includes(n) || session.depth === 0) &&
       (!SUBAGENT_TOOLS.includes(n) || canDelegate || siblingOk(n))
   )
   // memória: pela config de memória do chat (não por enabledTools), sempre no fim
