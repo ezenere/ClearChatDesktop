@@ -345,6 +345,12 @@ const SCRIPT: Record<string, { name: string; args: string }> = {
   buscaAntiga: { name: 'search_tool', args: JSON.stringify({ names: ['datetime'] }) },
   desconhecida: { name: 'tool_search', args: JSON.stringify({ names: ['nope'] }) },
   hora: { name: 'datetime', args: JSON.stringify({ format: '%Y' }) },
+  // previsão do tempo (1.16.0): coordenadas (o Open-Meteo é falso, pelo fetch global) e sem lugar
+  tempo: {
+    name: 'weather',
+    args: JSON.stringify({ latitude: -25.43, longitude: -49.27, days: 1 })
+  },
+  tempoAqui: { name: 'weather', args: '{}' },
   // `files` como texto (fora do esquema, mas a tool aceita — ex.: caminho do Windows)
   apresenta: { name: 'present_file', args: JSON.stringify({ files: 'a.txt' }) },
   apresentaRuim: { name: 'present_file', args: JSON.stringify({ arquivos: ['a.txt'] }) }
@@ -519,6 +525,43 @@ test('runner: datetime roda sem aprovação (fuso do aparelho)', async () => {
   const r = await turn(sid, 'hora')
   assert.equal(r.status, 'ok')
   assert.equal(r.content, String(new Date().getFullYear()))
+})
+
+test('runner: weather roda sem aprovação (Open-Meteo falso); no computador, sem lugar pede o lugar', async () => {
+  const real = globalThis.fetch
+  const meteo: string[] = []
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input)
+    if (!url.includes('open-meteo.com')) return real(input, init)
+    meteo.push(url)
+    return new Response(
+      JSON.stringify({
+        latitude: -25.43,
+        longitude: -49.27,
+        timezone: 'America/Sao_Paulo',
+        utc_offset_seconds: -10800,
+        current: { time: '2026-11-16T14:00', temperature_2m: 24, weather_code: 1 },
+        daily: { time: ['2026-11-16'], temperature_2m_min: [17], temperature_2m_max: [26] }
+      }),
+      { status: 200 }
+    )
+  }) as typeof fetch
+  try {
+    const sid = await newChat({ enabledTools: ['read_file', 'shell', 'datetime', 'weather'] })
+    const r = await turn(sid, 'tempo')
+    assert.equal(r.status, 'ok', r.content)
+    assert.match(r.content, /^Tempo em coordenadas informadas · -25\.43, -49\.27/)
+    assert.match(r.content, /Agora \(14:00\): 24 °C · predominantemente limpo/)
+    assert.match(r.content, /Fonte: Open-Meteo\.com \(CC BY 4\.0\)/)
+    assert.equal(meteo.length, 1)
+    assert.equal(new URL(meteo[0]).searchParams.get('forecast_days'), '1')
+    const aqui = await turn(sid, 'tempoAqui')
+    assert.equal(aqui.status, 'error')
+    assert.match(aqui.content, /este aparelho \(computador\) não fornece a localização atual/)
+    assert.equal(meteo.length, 1, 'sem lugar não chama a rede')
+  } finally {
+    globalThis.fetch = real
+  }
 })
 
 test('runner: sem compactação não há tool_search (nem na request nem na execução)', async () => {

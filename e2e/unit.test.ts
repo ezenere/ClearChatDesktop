@@ -82,11 +82,11 @@ test('system + env + tools + cache_control na cópia', () => {
     { type: 'text', text: 'leia x', cache_control: { type: 'ephemeral' } }
   ])
   assert.equal(JSON.stringify(hist), before, 'histórico não pode ser mutado')
-  // inclui present_file, datetime e os agendamentos (schedule/_list/_stop — só na principal)
-  assert.equal(body.tools.length, 29)
+  // inclui present_file, datetime, weather e os agendamentos (schedule/_list/_stop — só na principal)
+  assert.equal(body.tools.length, 30)
   // num subagente (sem ask_user: subagentes não perguntam ao usuário), as tools de gerenciar subagentes só aparecem depois do primeiro delegate_task
   const sub1 = buildRequest(mkChat(), { depth: 1, model: 'm' }, hist, orProvider, env).body as any
-  assert.equal(sub1.tools.length, 20)
+  assert.equal(sub1.tools.length, 21)
   assert.ok(!sub1.tools.some((t: any) => t.function.name === 'message_subagent'))
   assert.ok(!sub1.tools.some((t: any) => t.function.name.startsWith('schedule')))
   const delegated = [
@@ -101,7 +101,7 @@ test('system + env + tools + cache_control na cópia', () => {
     sm({ role: 'tool', tool_call_id: 'd1', content: 'ok' })
   ]
   const req2 = buildRequest(mkChat(), { depth: 1, model: 'm' }, delegated, orProvider, env)
-  assert.equal((req2.body as any).tools.length, 24)
+  assert.equal((req2.body as any).tools.length, 25)
   assert.ok(!(req2.body as any).tools.some((t: any) => t.function.name === 'ask_user'))
   assert.equal(body.tools[0].function.name, 'list_dir')
   assert.ok(body.tools.some((t: any) => t.function.name === 'search_files'))
@@ -169,7 +169,7 @@ test('sem cache, sem env, system vazio → sem mensagem system; depth 2 sem dele
   assert.ok(!body.tools.some((t: any) => t.function.name === 'delegate_task'))
   // ferramentas de subagentes só existem com delegate_task disponível
   assert.ok(!body.tools.some((t: any) => t.function.name === 'check_subagents'))
-  assert.equal(body.tools.length, 19)
+  assert.equal(body.tools.length, 20)
 })
 
 test('toolsInPrompt usa só as tools disponíveis; nativeTools=false omite tools', () => {

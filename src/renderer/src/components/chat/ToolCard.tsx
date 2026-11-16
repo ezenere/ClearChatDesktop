@@ -6,6 +6,7 @@ import {
   BookOpenText,
   Bot,
   Clock,
+  CloudSun,
   Check,
   ChevronRight,
   CircleX,
@@ -47,6 +48,7 @@ import { approxTokens } from '@shared/limits'
 import type { ApprovalRequest, MessageMeta, Session, StoredMessage, ToolName } from '@shared/types'
 import { TOOL_ALIASES } from '@shared/types'
 import { scheduleArgsSummary, scheduleIdsArg } from '@shared/schedule'
+import { weatherToolSummary } from '@shared/weather'
 import { cn, formatTokens, prettyJson } from '../../lib/format'
 import { useStore, type ToolRun } from '../../store'
 import { MessageInfo, TaskInfo } from '../apiDocs'
@@ -100,6 +102,7 @@ const ICONS: Partial<Record<ToolName, LucideIcon>> = {
   message_subagent: MessageSquareText,
   ask_user: MessageCircleQuestion,
   datetime: Clock,
+  weather: CloudSun,
   schedule: AlarmClock,
   schedule_list: CalendarClock,
   schedule_stop: AlarmClockOff,
@@ -169,6 +172,8 @@ function summary(name: string, args: Record<string, unknown> | null): string {
       return pick('title') || pick('task')
     case 'datetime':
       return pick('format')
+    case 'weather':
+      return weatherToolSummary(args)
     case 'tool_search':
     case 'search_tool': // nome até 1.11.0 (chamadas antigas no histórico)
       return Array.isArray(args.names)

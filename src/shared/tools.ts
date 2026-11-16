@@ -6,6 +6,7 @@ import { ASK_USER_LIMITS as AL } from './askUser'
 import { shellDescriptionPrefix, toolShellInfo, type ShellInfoLite } from './shellInfo'
 import { PRESENT_FILE_LIMITS as PL } from './fileViewer'
 import { DATETIME_CODES } from './datetime'
+import { WEATHER_LIMITS } from './weather'
 import { SCHEDULE_LIMITS } from './schedule'
 
 const shellDescription = (info: ShellInfoLite | null): string => {
@@ -69,6 +70,7 @@ export const TOOL_NAMES: ToolName[] = [
   'message_subagent',
   'ask_user',
   'datetime',
+  'weather',
   'schedule',
   'schedule_list',
   'schedule_stop'
@@ -124,6 +126,7 @@ export const TOOL_LABELS: Record<ToolName, string> = {
   message_subagent: 'Mensagem ao subagente',
   ask_user: 'Perguntar ao usuário',
   datetime: 'Data e hora',
+  weather: 'Previsão do tempo',
   schedule: 'Agendar',
   schedule_list: 'Listar agendamentos',
   schedule_stop: 'Parar agendamento',
@@ -769,6 +772,35 @@ export const TOOL_DEFINITIONS: Record<ToolName, ToolDefinition> = {
       format: {
         type: 'string',
         description: 'Opcional: formato com códigos de strftime (ex.: "%A, %d de %B de %Y, %H:%M").'
+      }
+    }
+  ),
+  weather: def(
+    'weather',
+    `Previsão do tempo pelo Open-Meteo (modelos dos serviços meteorológicos nacionais): o tempo agora, por dia (hoje e os seguintes, até ${WEATHER_LIMITS.daysMax}) e, se pedir, por hora (até ${WEATHER_LIMITS.hoursMax} h) — temperatura e sensação, condição, chuva (mm e chance), vento e rajadas, umidade, UV, nascer e pôr do sol. Onde: place (nome da cidade ou lugar; se for ambíguo, inclua o estado/país — "Springfield, Illinois", "Vila Madalena, São Paulo" — ou country), ou latitude + longitude; sem nenhum, a localização atual do aparelho quando ele a fornece (celular, com a aprovação de localização do usuário) — no computador, informe o lugar. Horários no fuso do lugar. A saída diz qual lugar foi usado e lista outros com o mesmo nome: se não era o certo, chame de novo com as coordenadas dele.`,
+    {
+      place: {
+        type: 'string',
+        description:
+          'Cidade ou lugar (ex.: "Curitiba", "Lisboa, Portugal"). Omita para usar a localização atual (celular).'
+      },
+      country: {
+        type: 'string',
+        description: 'Opcional: código do país com 2 letras, para desambiguar place (ex.: "BR").'
+      },
+      latitude: { type: 'number', description: 'Em vez de place (com longitude).' },
+      longitude: { type: 'number', description: 'Em vez de place (com latitude).' },
+      days: {
+        type: 'number',
+        description: `Dias de previsão a partir de hoje (padrão ${WEATHER_LIMITS.daysDefault}, máximo ${WEATHER_LIMITS.daysMax}).`
+      },
+      hours: {
+        type: 'number',
+        description: `Opcional: previsão hora a hora a partir de agora (0 a ${WEATHER_LIMITS.hoursMax}; padrão 0 = nenhuma).`
+      },
+      past_days: {
+        type: 'number',
+        description: `Opcional: dias anteriores, em resumo diário (0 a ${WEATHER_LIMITS.pastDaysMax}).`
       }
     }
   ),

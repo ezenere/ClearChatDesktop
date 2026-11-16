@@ -111,6 +111,8 @@ export type ToolName =
   | 'ask_user'
   // data e hora do aparelho que roda o turno (protocolo 1.11.0; portátil, sem aprovação)
   | 'datetime'
+  // previsão do tempo (protocolo 1.16.0, @shared/weather): Open-Meteo; portátil, sem aprovação
+  | 'weather'
   // agendamentos (protocolo 1.15.0, @shared/schedule): só a sessão principal; criar pede aprovação
   | 'schedule'
   | 'schedule_list'

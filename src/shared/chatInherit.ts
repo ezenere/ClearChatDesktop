@@ -547,6 +547,8 @@ function deviceDifference(unit: string, ranOn: ChatRanOn): boolean {
  */
 export const TOOLS_NEWER_THAN_LEGACY_CHATS: readonly ToolName[] = [
   'datetime',
+  // previsão do tempo (1.16.0)
+  'weather',
   // agendamentos (1.15.0)
   'schedule',
   'schedule_list',
@@ -567,8 +569,8 @@ function newerToolMissing(unit: string, record: InheritConfig): boolean {
  * pull completo: `overrides` = as unidades cujo valor no chat difere (JSON) do valor efetivo da
  * persona; as iguais passam a herdar. Uma diferença numa tool de um tipo de aparelho só vira própria
  * se o chat já rodou naquele tipo (`ranOn` — `chatRanOn` em ./deviceTools: `hostCwd` do registro /
- * chat local deste computador). Tools que apps < 1.10.0 não conheciam (`datetime`, as de
- * agendamento) ausentes da lista herdam. Na `voice`, campos iguais ao campo não nulo da persona → null. Determinística (só depende do que sincroniza). null = nada a migrar (sem persona, persona que não
+ * chat local deste computador). Tools que apps < 1.10.0 não conheciam (`datetime`, `weather`, as
+ * de agendamento) ausentes da lista herdam. Na `voice`, campos iguais ao campo não nulo da persona → null. Determinística (só depende do que sincroniza). null = nada a migrar (sem persona, persona que não
  * existe aqui, ou já migrado).
  */
 export function migrateChatOverrides(

@@ -12,6 +12,7 @@ import { readHistoryTool } from './history'
 import { browseUrl, webSearch } from './web'
 import { listSkillsTool, skillLoadTool, skillReadTool } from './skills'
 import { runDatetimeTool } from '@shared/datetime'
+import { runWeatherTool } from '@shared/weather'
 import {
   fail,
   isInside,
@@ -71,7 +72,16 @@ const IMPLS: Partial<Record<ToolName, Impl>> = {
   skill_load: skillLoadTool,
   skill_read: skillReadTool,
   // data/hora do aparelho que roda o turno, no fuso dele (1.11.0; sem aprovação)
-  datetime: async (args) => runDatetimeTool(args)
+  datetime: async (args) => runDatetimeTool(args),
+  // previsão do tempo pelo Open-Meteo (1.16.0; sem aprovação). O computador não fornece a posição
+  // atual: sem place/coordenadas, a tool pede o lugar
+  weather: (args, ctx) =>
+    runWeatherTool(args, {
+      fetch: (url, init) => fetch(url, init),
+      signal: ctx.signal,
+      onOutput: ctx.onOutput,
+      userAgent: 'ClearChat (+https://clear.ezenere.com)'
+    })
 }
 
 /** Faz parse dos argumentos (string JSON da tool_call). */

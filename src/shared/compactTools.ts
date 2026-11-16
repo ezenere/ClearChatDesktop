@@ -72,6 +72,8 @@ export const TOOL_SHORT_DESCRIPTIONS: Record<string, string> = {
     'Envia uma mensagem a um subagente ou a um irmão, opcionalmente esperando a resposta.',
   ask_user: 'Mostra ao usuário um questionário de múltipla escolha e espera as respostas.',
   datetime: 'Data e hora atuais do aparelho, no fuso dele, com formato opcional.',
+  weather:
+    'Previsão do tempo (Open-Meteo): agora, por dia e por hora, num lugar, em coordenadas ou aqui.',
   schedule:
     'Agenda um lembrete ou uma ferramenta para um horário ou a cada intervalo (enquanto o app estiver aberto).',
   schedule_list: 'Lista os agendamentos deste chat (sem ids, só os ativos).',

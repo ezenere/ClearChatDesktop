@@ -1,6 +1,6 @@
 # ClearChat Sync — Protocolo v1 (contrato)
 
-> **Versão do protocolo: 1.15.0** · status: contrato inicial (ainda sem implementação) · data: 2026-11-15
+> **Versão do protocolo: 1.16.0** · status: contrato inicial (ainda sem implementação) · data: 2026-11-16
 >
 > ⚠️ **AVISO — CONTRATO COMPARTILHADO ENTRE OS REPOSITÓRIOS**
 > Fonte única: `docs/SYNC_PROTOCOL.md` e `docs/test-vectors/` do repositório pai `ezenere/ClearChat`.
@@ -376,7 +376,7 @@ Todo plaintext é um objeto JSON com `sv` (versão do esquema do tipo, hoje `1`)
 `environment`/`capture`/`capturePrompts`/`thinkingTokens`/`cache` (os dois últimos desde 1.4.1), `ContextCaptureConfig.thinkingTokens`/`cache` (desde 1.4.1),
 `MessageMeta.autoTitle`/`presentFiles`/`reasoningMs`; desde 1.5.0, tipos do app com o áudio (depois do 0.9.0):
 `ChatConfig.voice` (§4.3.6), `MessageMeta.voice`/`voiceCall` e `MessageMeta.kind: 'voice-call'` (§4.3.8),
-`VoiceCallConfig.endCall`/`promptMode`; desde 1.10.0, `ChatConfig.overrides` — herança ao vivo da persona, §4.3.6; desde 1.11.0, `ChatConfig.toolsCompact`/`toolsFull` e as tools `datetime`/`search_tool`, §4.3.6; desde 1.12.0, `ApiMessage.native`, `MessageMeta.toolSearch` e a tool `tool_search` (antes `search_tool`), §4.3.6/§4.3.8; desde 1.13.0, `MessageMeta.openFile`, §4.3.8; desde 1.14.0, `ChatConfig.mcpServers`/`mcpSubagents` — conectores, §4.3.10; desde 1.15.0, as tools de agendamento e `MessageMeta.kind: 'schedule'`/`schedule`, §4.3.6/§4.3.8). Leitores DEVEM ignorar campos
+`VoiceCallConfig.endCall`/`promptMode`; desde 1.10.0, `ChatConfig.overrides` — herança ao vivo da persona, §4.3.6; desde 1.11.0, `ChatConfig.toolsCompact`/`toolsFull` e as tools `datetime`/`search_tool`, §4.3.6; desde 1.12.0, `ApiMessage.native`, `MessageMeta.toolSearch` e a tool `tool_search` (antes `search_tool`), §4.3.6/§4.3.8; desde 1.13.0, `MessageMeta.openFile`, §4.3.8; desde 1.14.0, `ChatConfig.mcpServers`/`mcpSubagents` — conectores, §4.3.10; desde 1.15.0, as tools de agendamento e `MessageMeta.kind: 'schedule'`/`schedule`, §4.3.6/§4.3.8; desde 1.16.0, a tool `weather`, §4.3.6). Leitores DEVEM ignorar campos
 desconhecidos e DEVEM preservá-los ao regravar (merge por campo); escritores NÃO DEVEM enviar `undefined`.
 
 #### 4.3.1 `provider`
@@ -761,7 +761,7 @@ ChatConfig.toolsFull?: ToolName[]      // com a compactação, estas vão comple
   chave inteira, como as outras). Persona sem esses campos → padrão de "Novos chats" (`true` e `[]`). Na
   migração, `toolsFull.<t>` é comparada como booleano e `toolsCompact` ausente vale `true`; e uma tool
   que nenhum app < 1.10.0 conhecia (`datetime` e, desde 1.15.0, `schedule`, `schedule_list`,
-  `schedule_stop`) ausente da lista de um chat antigo **não** vira própria (herda — a ausência não foi
+  `schedule_stop`, e, desde 1.16.0, `weather`) ausente da lista de um chat antigo **não** vira própria (herda — a ausência não foi
   escolha do usuário).
 - **`datetime`** (tool nova, roda em qualquer aparelho, sem aprovação, no padrão de tools do app):
   `{ format?: string }` → a data e hora atuais **do aparelho que roda o turno**, no fuso dele. Sem
@@ -818,6 +818,33 @@ do app; só no computador; só na sessão principal — subagentes não as receb
 - Apps < 1.15.0 mostram as tools como desconhecidas e as mensagens `schedule` como sintéticas genéricas (elas
   vão ao modelo normalmente — são `role: 'user'`); preservam as tools nas listas (§4.3.6 "Tools de um tipo de
   aparelho").
+
+**Previsão do tempo (desde 1.16.0).** Tool `weather` (no padrão de tools do app; roda em qualquer aparelho;
+sem aprovação; na sessão principal e nos subagentes):
+- **Argumentos** `{ place?: string, country?: string, latitude?: number, longitude?: number, days?: number,
+  hours?: number, past_days?: number }`. Onde: `latitude` + `longitude` (juntas; −90..90 e −180..180; com
+  `place`, ele só nomeia o ponto), ou `place` (nome da cidade ou lugar — "Cidade, Estado", "Bairro, Cidade";
+  `country` = código ISO 3166-1 alfa-2 para desambiguar), ou nenhum: a posição atual **do aparelho que roda o
+  turno**, se ele a fornece (o celular, com a aprovação de localização do aparelho — a mesma de
+  `get_location`/`nearby_places`, §4.4 —, na precisão escolhida); um aparelho sem posição (computador)
+  devolve erro pedindo o lugar. `days` 1–16 (padrão 3; hoje incluído), `hours` 0–48 (padrão 0; previsão hora
+  a hora a partir da hora atual), `past_days` 0–31 (padrão 0; dias anteriores, em resumo diário); fora do
+  intervalo → ajustado, com aviso na saída; números em texto valem.
+- **Fonte:** [Open-Meteo](https://open-meteo.com) (sem chave; o pedido sai do aparelho que roda o turno):
+  geocodificação (`geocoding-api.open-meteo.com/v1/search`, GeoNames, `language=pt`, até 5 resultados —
+  usa o 1º, a menos que nenhum tenha exatamente o nome pedido, sem acento/caixa e até a 1ª vírgula: aí o
+  mais populoso; os outros vão na saída como alternativas, com coordenadas) e previsão
+  (`api.open-meteo.com/v1/forecast`, `timezone=auto`: horários locais do lugar). Nada encontrado → o
+  aparelho PODE usar um geocodificador próprio de reserva (o celular usa o do OpenStreetMap); senão, erro
+  com dicas. Teto de 15 s por pedido.
+- **Resultado:** texto pt-BR — o lugar usado (nome, coordenadas, altitude, fuso), o tempo agora, uma linha
+  por dia (anteriores primeiro; ontem/hoje/amanhã relativos ao dia do lugar), as linhas por hora pedidas, os
+  outros lugares com o mesmo nome, as observações e o crédito
+  `Fonte: Open-Meteo.com (CC BY 4.0)[; lugar: <geocodificador>] — previsão de modelos meteorológicos (não é
+  medição de estação).` (obrigatório — licença CC BY 4.0). Falhas do Open-Meteo (HTTP, 429, rede, tempo
+  esgotado) e lugar não encontrado → resultado de erro (`Erro: …`).
+- **Histórico:** chamadas de `weather` são mensagens de tool comuns (§4.3.8). Apps < 1.16.0 a mostram como
+  tool desconhecida e a preservam nas listas (§4.3.6 "Tools de um tipo de aparelho").
 
 **Busca nativa de ferramentas (desde 1.12.0).** Com a compactação ligada e pelo menos uma tool que não
 está em `toolsFull`, o host escolhe, **a cada request**, como enviar as tools (o modo é derivado, nunca
@@ -2708,6 +2735,7 @@ gastem o limite do dono do e-mail ou o bloqueiem.
 | 1.11.0 | 2026-11-13 | Adições compatíveis — **tools compactadas** (§4.3.6): `ChatConfig.toolsCompact` (padrão ligado) e `toolsFull` (as que vão completas); tool compacta = nome + descrição curta do app (1–20 palavras) com esquema vazio; `search_tool` automática (só com alguma tool compacta, nunca escolhível) devolve a definição completa; prompt fixo curto no fim do system prompt; textos do app visíveis na UI; erro de argumentos devolve a definição completa; vale para memória/skills, subagentes, chamada de voz (menos `end_call`) e o texto gerado do modo tools no prompt; unidades de herança `toolsCompact` e `toolsFull.<tool>`. Tool **`datetime`** (`format` opcional, códigos `strftime`, fuso do aparelho que roda o turno; no padrão de tools; o system prompt continua sem data). Apps < 1.11.0 ignoram os campos novos e mostram as tools novas como desconhecidas. Sem mudança no servidor além da versão. |
 | 1.12.0 | 2026-11-13 | Adições compatíveis — **busca nativa de ferramentas** (§4.3.6): com a compactação, o host escolhe por request a busca nativa da Anthropic (host oficial, Claude 4.5+: tools completas com `defer_loading` + `tool_search_tool_regex_20251119`, cache numa tool não adiada, prompt fixo nativo visível) ou a do OpenRouter (Messages API + `openrouter:tool_search`, só para modelos servidos por ela e chats compatíveis), e senão a versão local de 1.11.0 com aviso na UI; queda para a local quando o provedor recusa, lembrada por 24 h no dispositivo (`toolSearchCaps`, §4.4); `search_tool` renomeada `tool_search` (alias de leitura, histórico não regravado); `ApiMessage.native` (blocos da resposta, sem pensamento, reenviados só ao mesmo provedor/API/modelo e se ainda batem com a forma canônica) e `MessageMeta.toolSearch` (§4.3.8). Apps < 1.12.0 ignoram `native` e mostram `tool_search` como desconhecida. Sem mudança no servidor além da versão. |
 | 1.13.0 | 2026-11-14 | Adição compatível — **arquivo selecionado** na mensagem do usuário: `MessageMeta.openFile { path }` (o arquivo aberto na pré-visualização ou mencionado pelo menu do arquivo ao enviar); o host acrescenta à mensagem enviada ao modelo um texto fixo com o caminho, e os clientes mostram uma linha "Arquivo selecionado: …" com o texto exato visível (§4.3.8); os comandos remotos `send`/`force` levam `meta: { openFile }` (§8.6). Hosts < 1.13.0 ignoram o campo. Sem mudança no servidor além da versão. |
+| 1.16.0 | 2026-11-16 | Adição compatível — **previsão do tempo**: tool `weather` (`place`/`country`, `latitude`+`longitude` ou a posição do aparelho que a fornece — o celular, com a aprovação de localização dele; `days`, `hours`, `past_days`), pelo Open-Meteo (geocodificação + previsão, sem chave; crédito CC BY 4.0 na saída); no padrão de tools do app, em qualquer aparelho, sem aprovação; chat antigo sem ela herda (§4.3.6). Apps < 1.16.0 a mostram como desconhecida. Sem mudança no servidor além da versão. |
 | 1.15.0 | 2026-11-15 | Adição compatível — **agendamentos**: tools `schedule` (lembrete e/ou tool num horário fixo, daqui a X ou a cada X, com `times`), `schedule_list` e `schedule_stop` (só no computador, só na sessão principal; §4.3.6), item de aprovação `schedule` (padrão perguntar; vale o mais restritivo entre ele e a tool agendada; §4.3.2), mensagens `meta.kind: 'schedule'` (disparo que acorda o agente; aviso de cancelamento que não acorda) com `MessageMeta.schedule` (§4.3.8). Estado só do host e só com o app aberto (tabela local, §4.4): fechar o app ou o chat ir para outro aparelho cancela, com aviso. Stream: `snapshot.schedules` e o evento `schedules` (§11); comando `schedule.stop` (§8.6) — o servidor passa a aceitar o tipo. Apps < 1.15.0 mostram as tools como desconhecidas e as mensagens como sintéticas genéricas (vão ao modelo). |
 | 1.14.0 | 2026-11-15 | Adição compatível — **conectores (servidores MCP)**: registro `mcp_server` (LWW por campo; cadastro da conta: transporte stdio/HTTP, OAuth, aprovação por conector/tool, teto, última lista de tools vista) e a escolha por persona/chat em `ChatConfig.mcpServers` (unidade da herança por conector) e `mcpSubagents` (§4.3.10, §4.3.6). Estado do aparelho nunca sincronizado: stdio só roda depois de "Ativar neste computador" (comando exato; muda → confirma de novo), login OAuth e tokens por aparelho (`mcpLocal`/`mcpAuth`, §4.4). Servidor: aceita o tipo e anuncia `features.mcpServers` (§6.2); clientes só enviam o tipo com a feature. Merge do primeiro login deduplica conectores pelo nome e remapeia as chaves de `mcpServers` (§12). Conector ligado conta como ferramenta local na troca de host (§8.9). Apps < 1.14.0 ignoram o tipo (opaco) e preservam os campos da config. |
 

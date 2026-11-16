@@ -264,7 +264,7 @@ const TOOLS_WITHOUT_PHRASE = new Set([
 export function toolPhraseCategory(toolName: string): ToolPhraseCategory | null {
   const n = String(toolName ?? '').trim()
   if (TOOLS_WITHOUT_PHRASE.has(n)) return null
-  if (n === 'web_search' || n === 'browse_url') return 'web'
+  if (n === 'web_search' || n === 'browse_url' || n === 'weather') return 'web'
   if (
     /^(list_dir|read_file|search_files|find_files|present_file|write_file|edit_file)$/.test(n) ||
     /^fs_/.test(n)
