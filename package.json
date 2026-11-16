@@ -1,7 +1,7 @@
 {
   "name": "clearchat",
   "productName": "ClearChat",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "ClearChat — chat desktop minimalista para qualquer endpoint OpenAI-compatible",
   "desktopName": "clearchat.desktop",
   "homepage": "https://github.com/ezenere/clearchat",
