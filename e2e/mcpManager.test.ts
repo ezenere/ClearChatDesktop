@@ -121,6 +121,9 @@ test('stdio 2026: era moderna, progresso, cancelamento e elicitação no chat qu
     }
   )
   assert.equal(r.content[0].text, 'terminou em 300 ms')
+  // o SDK entrega o progresso de forma assíncrona: sob carga (suíte em paralelo) o último pode
+  // chegar logo depois do resultado — espera até 1 s antes de comparar
+  for (let i = 0; i < 50 && prog.length < 3; i++) await new Promise((res) => setTimeout(res, 20))
   assert.deepEqual(prog, ['1/3 · passo 1', '2/3 · passo 2', '3/3 · passo 3'])
   const ac = new AbortController()
   setTimeout(() => ac.abort(), 100)
