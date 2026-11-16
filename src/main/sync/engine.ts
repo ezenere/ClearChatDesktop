@@ -1392,6 +1392,10 @@ export class SyncEngine {
       // limpeza única das tools marcadas por causa do aparelho (§4.3.6), uma vez por dispositivo
       this.cleanupDeviceOverridesOnce()
       await this.pushAll()
+      // a assinatura do sync_dirty (contagem:soma das marcas) precisa ver a fila que o push esvaziou:
+      // sem isto, uma mudança nova com a mesma assinatura da anterior (ex.: 1:1 → push → 1:1) passava
+      // despercebida pelo pollDirty e só subia no próximo ciclo
+      this.pollDirty()
       await this.refetchPending()
       this.error = null
       this.retryDelay = 0
