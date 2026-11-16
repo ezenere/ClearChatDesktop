@@ -1337,7 +1337,8 @@ export function registerIpc(): void {
           )
         )
           throw new Error(
-            'O aparelho que executa este chat (ou o servidor) usa uma versão antiga — pare o agendamento por lá.'
+            'O aparelho que executa este chat (ou o servidor) usa uma versão antiga — pare o agendamento por lá.',
+            { cause: e }
           )
         throw e
       }
