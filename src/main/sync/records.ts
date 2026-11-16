@@ -68,6 +68,8 @@ export const SETTING_IDS = [
   // desde 1.16.0 (tempo e mapas)
   'weatherProvider',
   'googleMapsApiKey',
+  // desde 1.17.0
+  'placesProvider',
   // desde 1.4.0 (preferências; antes locais do dispositivo)
   'smartApproveDefaults',
   'autoTitle',

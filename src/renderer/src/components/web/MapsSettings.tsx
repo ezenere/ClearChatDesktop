@@ -1,12 +1,19 @@
-// Configurações → Tempo e mapas (protocolo 1.16.0): o provedor da previsão do tempo (tool `weather`:
-// Open-Meteo, o padrão sem chave, ou o Google) e a chave do Google Maps Platform (mascarada; mostrar a
-// pedido; "Testar" faz UMA chamada). Settings `weatherProvider` e `googleMapsApiKey` (sincronizados).
+// Configurações → Tempo e mapas (protocolo 1.16.0/1.17.0): o provedor da previsão do tempo (tool
+// `weather`: Open-Meteo, o padrão sem chave, ou o Google), o dos lugares próximos (`nearby_places`, no
+// celular: OpenStreetMap, o padrão, ou o Google Maps) e a chave do Google Maps Platform (mascarada;
+// mostrar a pedido; "Testar" faz UMA chamada). Settings `weatherProvider`, `placesProvider` e
+// `googleMapsApiKey` (sincronizados).
 import { CircleAlert, CircleCheck, ExternalLink, Eye, EyeOff, X } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import {
+  PLACES_PROVIDER_DEFAULT,
+  PLACES_PROVIDER_IDS,
+  PLACES_PROVIDER_META,
+  WEATHER_PROVIDER_DEFAULT,
   WEATHER_PROVIDER_IDS,
   WEATHER_PROVIDER_META,
   type MapsSettingsState,
+  type PlacesProviderId,
   type WeatherProviderId
 } from '@shared/mapsSettings'
 import { api } from '../../lib/api'
@@ -14,6 +21,96 @@ import { cn } from '../../lib/format'
 import { useStore } from '../../store'
 import { Button, IconButton } from '../ui/controls'
 import { HelpTip, Tip } from '../ui/Tooltip'
+
+interface ProviderOption<T extends string> {
+  id: T
+  label: string
+  needsKey: boolean
+  description: string
+}
+
+/** Lista de provedores (radio): padrão marcado, selo de chave, Google desabilitado sem chave. */
+function ProviderChoice<T extends string>({
+  ariaLabel,
+  testId,
+  options,
+  value,
+  defaultId,
+  hasKey,
+  onChoose
+}: {
+  ariaLabel: string
+  testId: string
+  options: ProviderOption<T>[]
+  value: T
+  defaultId: T
+  hasKey: boolean
+  onChoose: (id: T) => void
+}): React.JSX.Element {
+  return (
+    <div role="radiogroup" aria-label={ariaLabel} className="space-y-2">
+      {options.map((meta) => {
+        const id = meta.id
+        const on = value === id
+        const can = !meta.needsKey || hasKey
+        return (
+          <Tip key={id} label={can ? '' : 'Salve a chave do Google Maps Platform abaixo'}>
+            <button
+              type="button"
+              role="radio"
+              aria-checked={on}
+              disabled={!can}
+              data-testid={`${testId}-${id}`}
+              onClick={() => onChoose(id)}
+              className={cn(
+                'flex w-full items-center gap-3 rounded-xl border bg-elevated/40 px-3 py-2.5 text-left transition-colors',
+                on
+                  ? 'border-accent/60 bg-accent/[0.06]'
+                  : 'border-border hover:border-border-strong',
+                !can && 'cursor-not-allowed opacity-60'
+              )}
+            >
+              <span
+                className={cn(
+                  'flex size-4 shrink-0 items-center justify-center rounded-full border',
+                  on ? 'border-accent' : 'border-border-strong'
+                )}
+              >
+                {on && <span className="size-2 rounded-full bg-accent" />}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="flex flex-wrap items-center gap-x-1.5">
+                  <span className="text-[13px] font-medium text-fg/90">{meta.label}</span>
+                  {id === defaultId && (
+                    <span className="text-[10.5px] font-medium text-subtle">padrão</span>
+                  )}
+                  <span
+                    className={cn(
+                      'rounded-full border px-1.5 py-px text-[10px] leading-4',
+                      !meta.needsKey
+                        ? 'border-border text-subtle'
+                        : hasKey
+                          ? 'border-success/30 text-success'
+                          : 'border-warning/30 text-warning'
+                    )}
+                  >
+                    {!meta.needsKey ? 'sem chave' : hasKey ? 'chave salva' : 'requer chave'}
+                  </span>
+                </span>
+                <span
+                  className="mt-0.5 block truncate text-[11.5px] text-subtle"
+                  title={meta.description}
+                >
+                  {meta.description}
+                </span>
+              </span>
+            </button>
+          </Tip>
+        )
+      })}
+    </div>
+  )
+}
 
 export function MapsSettings(): React.JSX.Element {
   const run = useStore((s) => s.run)
@@ -27,11 +124,18 @@ export function MapsSettings(): React.JSX.Element {
     }
   }, [])
 
-  const choose = async (id: WeatherProviderId): Promise<void> => {
+  const chooseWeather = async (id: WeatherProviderId): Promise<void> => {
     if (!st || st.weatherProvider === id) return
     const prev = st
     setSt({ ...st, weatherProvider: id })
     const r = await run(() => api.maps.setWeatherProvider(id))
+    setSt(r ?? prev)
+  }
+  const choosePlaces = async (id: PlacesProviderId): Promise<void> => {
+    if (!st || st.placesProvider === id) return
+    const prev = st
+    setSt({ ...st, placesProvider: id })
+    const r = await run(() => api.maps.setPlacesProvider(id))
     setSt(r ?? prev)
   }
 
@@ -50,71 +154,38 @@ export function MapsSettings(): React.JSX.Element {
         {!st ? (
           <div className="h-28 animate-pulse rounded-xl border border-border bg-elevated/30" />
         ) : (
-          <div role="radiogroup" aria-label="Provedor da previsão do tempo" className="space-y-2">
-            {WEATHER_PROVIDER_IDS.map((id) => {
-              const meta = WEATHER_PROVIDER_META[id]
-              const on = st.weatherProvider === id
-              const can = !meta.needsKey || st.google.hasKey
-              return (
-                <Tip key={id} label={can ? '' : 'Salve a chave do Google Maps Platform abaixo'}>
-                  <button
-                    type="button"
-                    role="radio"
-                    aria-checked={on}
-                    disabled={!can}
-                    data-testid={`weather-provider-${id}`}
-                    onClick={() => void choose(id)}
-                    className={cn(
-                      'flex w-full items-center gap-3 rounded-xl border bg-elevated/40 px-3 py-2.5 text-left transition-colors',
-                      on
-                        ? 'border-accent/60 bg-accent/[0.06]'
-                        : 'border-border hover:border-border-strong',
-                      !can && 'cursor-not-allowed opacity-60'
-                    )}
-                  >
-                    <span
-                      className={cn(
-                        'flex size-4 shrink-0 items-center justify-center rounded-full border',
-                        on ? 'border-accent' : 'border-border-strong'
-                      )}
-                    >
-                      {on && <span className="size-2 rounded-full bg-accent" />}
-                    </span>
-                    <span className="min-w-0 flex-1">
-                      <span className="flex flex-wrap items-center gap-x-1.5">
-                        <span className="text-[13px] font-medium text-fg/90">{meta.label}</span>
-                        {id === 'open-meteo' && (
-                          <span className="text-[10.5px] font-medium text-subtle">padrão</span>
-                        )}
-                        <span
-                          className={cn(
-                            'rounded-full border px-1.5 py-px text-[10px] leading-4',
-                            !meta.needsKey
-                              ? 'border-border text-subtle'
-                              : st.google.hasKey
-                                ? 'border-success/30 text-success'
-                                : 'border-warning/30 text-warning'
-                          )}
-                        >
-                          {!meta.needsKey
-                            ? 'sem chave'
-                            : st.google.hasKey
-                              ? 'chave salva'
-                              : 'requer chave'}
-                        </span>
-                      </span>
-                      <span
-                        className="mt-0.5 block truncate text-[11.5px] text-subtle"
-                        title={meta.description}
-                      >
-                        {meta.description}
-                      </span>
-                    </span>
-                  </button>
-                </Tip>
-              )
-            })}
-          </div>
+          <ProviderChoice
+            ariaLabel="Provedor da previsão do tempo"
+            testId="weather-provider"
+            options={WEATHER_PROVIDER_IDS.map((id) => WEATHER_PROVIDER_META[id])}
+            value={st.weatherProvider}
+            defaultId={WEATHER_PROVIDER_DEFAULT}
+            hasKey={st.google.hasKey}
+            onChoose={(id) => void chooseWeather(id)}
+          />
+        )}
+      </section>
+
+      <section>
+        <div className="mb-3 flex items-baseline gap-2">
+          <span className="text-[13px] font-medium text-fg/90">Lugares próximos</span>
+          <HelpTip label="Lugares próximos" className="self-center">
+            Fonte da tool <strong className="text-fg/80">nearby_places</strong> (roda no celular). O
+            Google Maps traz nota, avaliações e um resumo de cada lugar, com o link do Maps para o
+            agente citar; o OpenStreetMap traz endereço, horário e telefone, sem notas. Se o Google
+            falhar (chave, cota, rede), a busca vai ao OpenStreetMap, com o motivo no resultado.
+          </HelpTip>
+        </div>
+        {st && (
+          <ProviderChoice
+            ariaLabel="Provedor dos lugares próximos"
+            testId="places-provider"
+            options={PLACES_PROVIDER_IDS.map((id) => PLACES_PROVIDER_META[id])}
+            value={st.placesProvider}
+            defaultId={PLACES_PROVIDER_DEFAULT}
+            hasKey={st.google.hasKey}
+            onChoose={(id) => void choosePlaces(id)}
+          />
         )}
       </section>
 
@@ -126,9 +197,9 @@ export function MapsSettings(): React.JSX.Element {
             <strong className="text-fg/80">Maps Experience agent tools</strong>{' '}
             (mapstools.googleapis.com) ativado no projeto e na chave. Cobrança por chamada: 10 mil
             grátis por mês no básico; a previsão usa uma chamada por momento (agora + 1 por dia + 1
-            por hora). Os termos do Google pedem citar a fonte (o resultado traz o link) e um modelo
-            que não treine com os dados enviados. A chave sincroniza criptografada com seus
-            aparelhos.
+            por hora) e cada busca de lugares, uma (até 5 lugares; de 6 a 10 é a faixa Pro). Os
+            termos do Google pedem citar a fonte (o resultado traz o link) e um modelo que não
+            treine com os dados enviados. A chave sincroniza criptografada com seus aparelhos.
           </HelpTip>
           <Tip label="Abrir a documentação">
             <a

@@ -88,6 +88,7 @@ import {
   checkMapsKey,
   mapsSettingsState,
   type MapsSettingsState,
+  type PlacesProviderId,
   type WeatherProviderId
 } from '@shared/mapsSettings'
 import { copyName, sanitizePresetConfig } from '@shared/presets'
@@ -3303,7 +3304,8 @@ export function createMockApi(scenario: string): ClearApi {
     maps: (() => {
       let mapsKey: string | null = null
       let provider: WeatherProviderId = 'open-meteo'
-      const state = (): MapsSettingsState => mapsSettingsState(provider, mapsKey)
+      let places: PlacesProviderId = 'osm'
+      const state = (): MapsSettingsState => mapsSettingsState(provider, mapsKey, places)
       return {
         getSettings: () => delay(state()),
         setWeatherProvider: async (id) => {
@@ -3312,11 +3314,20 @@ export function createMockApi(scenario: string): ClearApi {
           provider = id
           return delay(state())
         },
+        setPlacesProvider: async (id) => {
+          if (id === 'google' && !mapsKey)
+            throw new Error('Informe a chave do Google Maps Platform para usar o Google Maps.')
+          places = id
+          return delay(state())
+        },
         setGoogleKey: async (key) => {
           const c = checkMapsKey(key)
           if (!c.ok) throw new Error(c.error)
           mapsKey = c.key
-          if (!mapsKey) provider = 'open-meteo'
+          if (!mapsKey) {
+            provider = 'open-meteo'
+            places = 'osm'
+          }
           return delay(state())
         },
         revealGoogleKey: () => delay(mapsKey),

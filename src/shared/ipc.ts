@@ -272,6 +272,7 @@ export const IPC = {
   maps: {
     getSettings: 'maps:getSettings',
     setWeatherProvider: 'maps:setWeatherProvider',
+    setPlacesProvider: 'maps:setPlacesProvider',
     setGoogleKey: 'maps:setGoogleKey',
     revealGoogleKey: 'maps:revealGoogleKey',
     testGoogleKey: 'maps:testGoogleKey'
@@ -1471,7 +1472,11 @@ export interface ClearApi {
     setWeatherProvider(
       id: import('./mapsSettings').WeatherProviderId
     ): Promise<import('./mapsSettings').MapsSettingsState>
-    /** Salva a chave do Google Maps Platform (null/vazio remove; a previsão volta ao Open-Meteo). */
+    /** Provedor dos lugares próximos (1.17.0). Google sem chave → erro legível. */
+    setPlacesProvider(
+      id: import('./mapsSettings').PlacesProviderId
+    ): Promise<import('./mapsSettings').MapsSettingsState>
+    /** Salva a chave do Google Maps Platform (null/vazio remove; os provedores voltam aos padrões). */
     setGoogleKey(key: string | null): Promise<import('./mapsSettings').MapsSettingsState>
     /** Chave em claro, a pedido (botão mostrar). */
     revealGoogleKey(): Promise<string | null>

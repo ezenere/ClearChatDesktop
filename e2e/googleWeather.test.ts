@@ -393,6 +393,7 @@ test('teste da chave (uma chamada) e os settings de Tempo e mapas', async () => 
   assert.equal(normalizeWeatherProvider('xyz', true), 'open-meteo')
   assert.deepEqual(mapsSettingsState('google', '  AIzaSyABCDEFGHIJKLMNOP1234  '), {
     weatherProvider: 'google',
+    placesProvider: 'osm',
     google: {
       hasKey: true,
       keyMask: mapsSettingsState(null, 'AIzaSyABCDEFGHIJKLMNOP1234').google.keyMask
@@ -402,6 +403,7 @@ test('teste da chave (uma chamada) e os settings de Tempo e mapas', async () => 
   assert.ok(!mask.includes('ABCDEFGH'), mask)
   assert.deepEqual(mapsSettingsState(undefined, ''), {
     weatherProvider: 'open-meteo',
+    placesProvider: 'osm',
     google: { hasKey: false, keyMask: null }
   })
   assert.deepEqual(checkMapsKey('  k  '), { ok: true, key: 'k' })

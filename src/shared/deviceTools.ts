@@ -62,7 +62,8 @@ export const PHONE_TOOL_LABELS: Record<PhoneToolName, string> = {
 /** Uma linha sobre o que cada tool do celular faz (UI; a definição enviada é do celular). */
 export const PHONE_TOOL_HELP: Record<PhoneToolName, string> = {
   get_location: 'Sua posição atual (com a sua aprovação; Configurações → Localização).',
-  nearby_places: 'Restaurantes, farmácias, mercados… por perto (OpenStreetMap).'
+  nearby_places:
+    'Restaurantes, farmácias, mercados… por perto (OpenStreetMap ou Google Maps — Configurações → Tempo e mapas).'
 }
 
 /**
@@ -73,7 +74,7 @@ export const PHONE_TOOL_SHORT: Record<PhoneToolName, string> = {
   get_location:
     'Localização atual do usuário pelo celular: coordenadas, precisão e bairro/cidade (pode pedir aprovação).',
   nearby_places:
-    'Busca lugares por perto no OpenStreetMap (restaurantes, farmácias, mercados…), com endereço, horário e distância.'
+    'Busca lugares por perto (OpenStreetMap ou Google Maps): restaurantes, farmácias, mercados…, com distância e links de mapa.'
 }
 
 /**

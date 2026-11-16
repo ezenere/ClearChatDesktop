@@ -3228,7 +3228,7 @@ test('1.9.0: merge do primeiro login remapeia o provedor da voz da persona/chat 
   C.eng.destroy()
 })
 
-test('tempo e mapas (1.16.0): weatherProvider e googleMapsApiKey sincronizam como settings', () => {
+test('tempo e mapas (1.16.0/1.17.0): weatherProvider, placesProvider e googleMapsApiKey sincronizam como settings', () => {
   const a = newDb()
   putSetting(a, 'googleMapsApiKey', 'AIza-chave-falsa')
   putSetting(a, 'weatherProvider', 'google')
@@ -3243,6 +3243,11 @@ test('tempo e mapas (1.16.0): weatherProvider e googleMapsApiKey sincronizam com
   applyRemote(b, 'setting', 'weatherProvider', { sv: 1, value: 'open-meteo' })
   assert.equal(getSetting(b, 'googleMapsApiKey'), 'AIza-outra')
   assert.equal(getSetting(b, 'weatherProvider'), 'open-meteo')
+  // 1.17.0: provedor dos lugares próximos
+  putSetting(a, 'placesProvider', 'google')
+  assert.deepEqual(buildLocal(a, 'setting', 'placesProvider')?.plain, { sv: 1, value: 'google' })
+  applyRemote(b, 'setting', 'placesProvider', { sv: 1, value: 'google' })
+  assert.equal(getSetting(b, 'placesProvider'), 'google')
   applyRemote(b, 'setting', 'googleMapsApiKey', { sv: 1, value: null })
   assert.equal(getSetting(b, 'googleMapsApiKey'), undefined, 'removida')
 })

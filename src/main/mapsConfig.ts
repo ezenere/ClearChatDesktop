@@ -8,9 +8,12 @@ import {
   mapsSettingsState,
   normalizeMapsKey,
   normalizeWeatherProvider,
+  PLACES_PROVIDER_META,
+  PLACES_PROVIDER_SETTING,
   WEATHER_PROVIDER_META,
   WEATHER_PROVIDER_SETTING,
   type MapsSettingsState,
+  type PlacesProviderId,
   type WeatherProviderId
 } from '@shared/mapsSettings'
 import { googleWeatherProvider, testGoogleWeatherKey } from '@shared/googleWeather'
@@ -20,7 +23,20 @@ import { settingsRepo } from './repo'
 const key = (): string | null => normalizeMapsKey(settingsRepo.get(GOOGLE_MAPS_KEY_SETTING))
 
 export function getMapsSettings(): MapsSettingsState {
-  return mapsSettingsState(settingsRepo.get(WEATHER_PROVIDER_SETTING), key())
+  return mapsSettingsState(
+    settingsRepo.get(WEATHER_PROVIDER_SETTING),
+    key(),
+    settingsRepo.get(PLACES_PROVIDER_SETTING)
+  )
+}
+
+/** Escolhe o provedor dos lugares próximos (a tool roda no celular). Google sem chave → erro. */
+export function setPlacesProvider(id: PlacesProviderId): MapsSettingsState {
+  if (!(id in PLACES_PROVIDER_META)) throw new Error('Provedor desconhecido.')
+  if (PLACES_PROVIDER_META[id].needsKey && !key())
+    throw new Error('Informe a chave do Google Maps Platform para usar o Google Maps.')
+  settingsRepo.set(PLACES_PROVIDER_SETTING, id)
+  return getMapsSettings()
 }
 
 /** Escolhe o provedor da previsão. Google sem chave salva → erro legível. */
@@ -39,6 +55,8 @@ export function setGoogleMapsKey(k: string | null): MapsSettingsState {
   settingsRepo.set(GOOGLE_MAPS_KEY_SETTING, c.key)
   if (!c.key && settingsRepo.get(WEATHER_PROVIDER_SETTING) === 'google')
     settingsRepo.set(WEATHER_PROVIDER_SETTING, 'open-meteo')
+  if (!c.key && settingsRepo.get(PLACES_PROVIDER_SETTING) === 'google')
+    settingsRepo.set(PLACES_PROVIDER_SETTING, 'osm')
   return getMapsSettings()
 }
 

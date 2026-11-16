@@ -7,6 +7,13 @@
 // link para o agente citar. Puro (fetch injetado); o desktop e o mobile o passam em `deps.provider`.
 import { formatOffset, zonedParts } from './datetime'
 import {
+  abortError,
+  GoogleError,
+  googleErrorText,
+  MAPS_TOOLS_BASE,
+  mapsToolsPost
+} from './googleMapsTools'
+import {
   compassPoint,
   dayLabel,
   fmtNum,
@@ -17,7 +24,7 @@ import {
   type WeatherProvider
 } from './weather'
 
-export const GOOGLE_WEATHER_URL = 'https://mapstools.googleapis.com/v1:lookupWeather'
+export const GOOGLE_WEATHER_URL = `${MAPS_TOOLS_BASE}:lookupWeather`
 
 export const GOOGLE_WEATHER_LIMITS = {
   /** Previsão diária do Google: até 10 dias. */
@@ -28,84 +35,25 @@ export const GOOGLE_WEATHER_LIMITS = {
   concurrency: 6
 } as const
 
-class GoogleError extends Error {}
-
-const abortError = (): Error => {
-  const e = new Error('Aborted')
-  e.name = 'AbortError'
-  return e
-}
-
 const fin = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v)
 const obj = (v: unknown): Record<string, unknown> =>
   v && typeof v === 'object' ? (v as Record<string, unknown>) : {}
 const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim() : null)
 const coord = (v: number): string => String(Math.round(v * 10_000) / 10_000)
 
-/** Erro do Google (`{ error: { code, message, status, details[].reason } }`) → texto pt-BR curto. */
-export function googleErrorText(status: number, body: unknown): string {
-  const e = obj(obj(body).error)
-  const reasons = (Array.isArray(e.details) ? e.details : []).map((x) => str(obj(x).reason))
-  const msg = str(e.message) ?? ''
-  if (reasons.includes('API_KEY_INVALID') || /API key not valid/i.test(msg))
-    return 'a chave do Google Maps é inválida (Configurações → Tempo e mapas)'
-  if (
-    reasons.includes('SERVICE_DISABLED') ||
-    reasons.includes('API_KEY_SERVICE_BLOCKED') ||
-    e.status === 'PERMISSION_DENIED'
-  )
-    return 'a chave não pode usar o "Maps Experience agent tools" (ative mapstools.googleapis.com no projeto e na chave)'
-  if (status === 429 || e.status === 'RESOURCE_EXHAUSTED')
-    return 'cota do Google esgotada (tente mais tarde ou aumente a cota no Cloud Console)'
-  return `HTTP ${status}${msg ? `: ${msg}` : ''}`
-}
+// o cliente comum (@shared/googleMapsTools); reexportado para quem já importava daqui
+export { googleErrorText }
 
-async function postJson(
+const postJson = (
   d: WeatherDeps,
   key: string,
   body: Record<string, unknown>
-): Promise<Record<string, unknown>> {
-  if (d.signal.aborted) throw abortError()
-  const ms = d.timeoutMs ?? WEATHER_LIMITS.timeoutMs
-  const ac = new AbortController()
-  let timedOut = false
-  const timer = setTimeout(() => {
-    timedOut = true
-    ac.abort()
-  }, ms)
-  const onAbort = (): void => ac.abort()
-  d.signal.addEventListener('abort', onAbort, { once: true })
-  try {
-    const res = await d.fetch(GOOGLE_WEATHER_URL, {
-      method: 'POST',
-      signal: ac.signal,
-      headers: {
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-        'X-Goog-Api-Key': key
-      },
-      body: JSON.stringify(body)
-    })
-    const text = await res.text()
-    let json: unknown = null
-    try {
-      json = JSON.parse(text)
-    } catch {
-      json = null
-    }
-    if (!res.ok) throw new GoogleError(googleErrorText(res.status, json))
-    if (!json || typeof json !== 'object') throw new GoogleError('resposta ilegível')
-    return json as Record<string, unknown>
-  } catch (e) {
-    if (d.signal.aborted) throw abortError()
-    if (e instanceof GoogleError) throw e
-    if (timedOut) throw new GoogleError(`sem resposta em ${Math.round(ms / 1000)} s`)
-    throw new GoogleError(`sem conexão (${(e as Error)?.message ?? String(e)})`)
-  } finally {
-    clearTimeout(timer)
-    d.signal.removeEventListener('abort', onAbort)
-  }
-}
+): Promise<Record<string, unknown>> =>
+  mapsToolsPost('lookupWeather', key, body, {
+    fetch: d.fetch,
+    signal: d.signal,
+    timeoutMs: d.timeoutMs ?? WEATHER_LIMITS.timeoutMs
+  })
 
 /** Até `n` tarefas ao mesmo tempo; o resultado de cada uma (ou o erro) na ordem. */
 async function pool<T>(

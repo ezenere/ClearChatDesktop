@@ -22,6 +22,8 @@ export const SYNC_SETTING_KEYS: Record<string, string> = {
   // desde 1.16.0: tempo e mapas (provedor da previsão e a chave do Google Maps Platform)
   weatherProvider: 'weatherProvider',
   googleMapsApiKey: 'googleMapsApiKey',
+  // desde 1.17.0: provedor dos lugares próximos (nearby_places, no celular)
+  placesProvider: 'placesProvider',
   // desde o protocolo 1.4.0: preferências que antes ficavam só no dispositivo
   smartApproveDefaults: 'smartApproveDefaults',
   autoTitle: 'autoTitle',

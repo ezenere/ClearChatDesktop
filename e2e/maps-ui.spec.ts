@@ -61,6 +61,8 @@ async function step(name: string, fn: () => Promise<string | void>): Promise<voi
 const dlg = (): ReturnType<Page['locator']> => page.locator('[role="dialog"]')
 const radio = (id: string): ReturnType<Page['locator']> =>
   page.getByTestId(`weather-provider-${id}`)
+const places = (id: string): ReturnType<Page['locator']> =>
+  page.getByTestId(`places-provider-${id}`)
 
 async function main(): Promise<void> {
   rmSync(SHOTS, { recursive: true, force: true })
@@ -107,6 +109,10 @@ app.on('window-all-closed', () => app.quit())
       assert.ok(await radio('google').isDisabled(), 'Google sem chave fica desabilitado')
       assert.match(await radio('open-meteo').innerText(), /padrão[\s\S]*sem chave/)
       assert.match(await radio('google').innerText(), /requer chave/)
+      // lugares próximos (1.17.0): OpenStreetMap padrão, Google Maps desabilitado sem chave
+      assert.equal(await places('osm').getAttribute('aria-checked'), 'true')
+      assert.ok(await places('google').isDisabled())
+      assert.match(await places('osm').innerText(), /OpenStreetMap[\s\S]*padrão/)
       await shot('01-sem-chave')
     }
   )
@@ -130,7 +136,7 @@ app.on('window-all-closed', () => app.quit())
     await shot('02-chave-salva-teste-ok')
   })
 
-  await step('escolher o Google; mostrar a chave a pedido', async () => {
+  await step('escolher o Google (previsão e lugares); mostrar a chave a pedido', async () => {
     await radio('google').click()
     await page.waitForFunction(
       () =>
@@ -146,6 +152,14 @@ app.on('window-all-closed', () => app.quit())
           ?.value === 'AIzaSyMOCK0123456789abcdefXYZ'
     )
     await page.getByRole('button', { name: 'Ocultar chave' }).click()
+    await places('google').click()
+    await page.waitForFunction(
+      () =>
+        document
+          .querySelector('[data-testid="places-provider-google"]')
+          ?.getAttribute('aria-checked') === 'true'
+    )
+    assert.equal(await places('osm').getAttribute('aria-checked'), 'false')
     await shot('03-google-escolhido')
   })
 
@@ -159,6 +173,8 @@ app.on('window-all-closed', () => app.quit())
     )
     assert.ok(await radio('google').isDisabled())
     assert.match(await radio('google').innerText(), /requer chave/)
+    assert.equal(await places('osm').getAttribute('aria-checked'), 'true', 'lugares voltam ao OSM')
+    assert.ok(await places('google').isDisabled())
   })
 
   await step('chave ruim digitada: Testar mostra o erro (sem salvar)', async () => {

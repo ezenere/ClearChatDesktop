@@ -1,6 +1,6 @@
-// Configuração GLOBAL de "Tempo e mapas" (protocolo 1.16.0, SYNC_PROTOCOL.md §4.3.2/§4.3.6): o provedor
-// da previsão do tempo (tool `weather`) e a chave do Google Maps Platform (Maps Experience agent tools —
-// a mesma servirá às tools de lugares). Settings sincronizados como os da busca: a chave NUNCA sai do
+// Configuração GLOBAL de "Tempo e mapas" (protocolo 1.16.0/1.17.0, SYNC_PROTOCOL.md §4.3.2/§4.3.6): o
+// provedor da previsão do tempo (tool `weather`), o dos lugares próximos (`nearby_places`, desde 1.17.0)
+// e a chave do Google Maps Platform (Maps Experience agent tools — a mesma para os dois). Settings sincronizados como os da busca: a chave NUNCA sai do
 // main/serviço pelo settings:get genérico — a UI recebe a máscara. Puro (main, renderer, mobile).
 import { maskKey } from './webSearchSettings'
 
@@ -64,15 +64,54 @@ export function checkMapsKey(
 /** Estado para as telas (a chave só mascarada). */
 export interface MapsSettingsState {
   weatherProvider: WeatherProviderId
+  placesProvider: PlacesProviderId
   google: { hasKey: boolean; keyMask: string | null }
 }
 
-export function mapsSettingsState(providerRaw: unknown, keyRaw: unknown): MapsSettingsState {
+export function mapsSettingsState(
+  providerRaw: unknown,
+  keyRaw: unknown,
+  placesRaw?: unknown
+): MapsSettingsState {
   const key = normalizeMapsKey(keyRaw)
   return {
     weatherProvider: normalizeWeatherProvider(providerRaw, !!key),
+    placesProvider: normalizePlacesProvider(placesRaw, !!key),
     google: { hasKey: !!key, keyMask: maskKey(key) }
   }
+}
+
+// ---------------- lugares próximos (1.17.0) ----------------
+
+export type PlacesProviderId = 'osm' | 'google'
+
+/** Setting com o provedor do `nearby_places` (ausente/inválido → OpenStreetMap). */
+export const PLACES_PROVIDER_SETTING = 'placesProvider'
+export const PLACES_PROVIDER_DEFAULT: PlacesProviderId = 'osm'
+export const PLACES_PROVIDER_IDS: readonly PlacesProviderId[] = ['osm', 'google']
+
+export const PLACES_PROVIDER_META: Record<
+  PlacesProviderId,
+  { id: PlacesProviderId; label: string; needsKey: boolean; description: string }
+> = {
+  osm: {
+    id: 'osm',
+    label: 'OpenStreetMap',
+    needsKey: false,
+    description: 'Gratuito, sem chave: dados colaborativos (sem notas nem avaliações).'
+  },
+  google: {
+    id: 'google',
+    label: 'Google Maps',
+    needsKey: true,
+    description:
+      'Lugares do Google com nota, avaliações e um resumo. Uma chamada por busca (até 5 lugares no básico).'
+  }
+}
+
+/** Google sem chave salva vale OpenStreetMap. */
+export function normalizePlacesProvider(v: unknown, hasGoogleKey: boolean): PlacesProviderId {
+  return v === 'google' && hasGoogleKey ? 'google' : PLACES_PROVIDER_DEFAULT
 }
 
 /** Settings que o settings:get/set genérico não lê nem grava (a chave real só pelo domínio próprio). */

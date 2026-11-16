@@ -124,10 +124,15 @@ import {
   getMapsSettings,
   revealGoogleMapsKey,
   setGoogleMapsKey,
+  setPlacesProvider,
   setWeatherProvider,
   testGoogleMapsKey
 } from './mapsConfig'
-import { MAPS_PROTECTED_SETTINGS, type WeatherProviderId } from '@shared/mapsSettings'
+import {
+  MAPS_PROTECTED_SETTINGS,
+  type PlacesProviderId,
+  type WeatherProviderId
+} from '@shared/mapsSettings'
 import * as skills from './skills'
 import { updateChecker } from './updates'
 import { isReleaseUrl, RELEASES_PAGE, type UpdateStatus } from '@shared/updates'
@@ -1088,6 +1093,7 @@ export function registerIpc(): void {
     // ---- tempo e mapas (1.16.0) ----
     [IPC.maps.getSettings]: () => getMapsSettings(),
     [IPC.maps.setWeatherProvider]: (id: WeatherProviderId) => setWeatherProvider(id),
+    [IPC.maps.setPlacesProvider]: (id: PlacesProviderId) => setPlacesProvider(id),
     [IPC.maps.setGoogleKey]: (key: string | null) => setGoogleMapsKey(key),
     [IPC.maps.revealGoogleKey]: () => revealGoogleMapsKey(),
     [IPC.maps.testGoogleKey]: (typed?: string | null) => testGoogleMapsKey(typed),
