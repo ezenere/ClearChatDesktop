@@ -112,7 +112,7 @@ export class Scheduler {
       .filter((s) => s.status !== 'active')
       .sort((a, b) => (b.endedAt ?? 0) - (a.endedAt ?? 0))
       .slice(0, VIEW_ENDED)
-    return [...active, ...ended]
+    return [...active.map((s) => (this.firing.has(s.id) ? { ...s, firing: true } : s)), ...ended]
   }
 
   activeCount(chatId: string): number {

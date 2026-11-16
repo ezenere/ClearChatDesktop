@@ -15,6 +15,7 @@ export type BarItemId =
   | 'session-switcher'
   | 'auto-approve'
   | 'processes'
+  | 'schedules'
   // composer
   | 'composer-status'
   | 'context-meter'
@@ -70,6 +71,7 @@ export const BAR_ITEMS: Record<BarItemId, BarItemSpec> = {
     doc: '"Sempre: Páginas, Busca web" / "Smart-Approve" → ícone'
   },
   processes: { priority: 40, levels: [0, 1], doc: '"2 processos" → ícone + "2"' },
+  schedules: { priority: 38, levels: [0, 1], doc: '"2 agendamentos" → ícone + "2"' },
   spend: { priority: 30, levels: [0, 2], doc: 'ícone + "$0,42" → ícone' },
   'voice-controls': {
     priority: 20,

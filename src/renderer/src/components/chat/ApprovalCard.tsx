@@ -6,6 +6,7 @@
 // os comandos internos de ssh/sudo/docker exec… ficam indentados sob o cabeçalho do grupo
 // ("no servidor deploy@host (via ssh)"), cada um com o próprio veredito.
 import {
+  AlarmClock,
   AlertTriangle,
   Ban,
   Check,
@@ -38,6 +39,34 @@ import { C } from '../ui/Tooltip'
 import { SmartApproveLine } from './SmartApprove'
 import { isMcpToolName } from '@shared/mcp'
 import { McpApprovalPrompt } from '../mcp/McpCards'
+import {
+  fmtLocalDateTime,
+  fmtRelative,
+  fmtRepeat,
+  parseScheduleArgs,
+  scheduleWhenSummary
+} from '@shared/schedule'
+
+/** O que o card do `schedule` mostra: quando (primeiro disparo e repetição) e o quê. */
+function scheduleApprovalView(
+  args: unknown
+): { when: string; tool?: string; message?: string } | null {
+  const a = args && typeof args === 'object' ? (args as Record<string, unknown>) : null
+  if (!a) return null
+  const now = Date.now()
+  const r = parseScheduleArgs(a, { now, toolAvailable: () => true })
+  const toolName = typeof a.tool === 'string' ? a.tool : ''
+  const message = typeof a.message === 'string' && a.message.trim() ? a.message.trim() : undefined
+  const toolText = toolName ? `${toolName} ${JSON.stringify(a.args ?? {}, null, 2)}` : undefined
+  if ('error' in r) return { when: scheduleWhenSummary(a) || '?', tool: toolText, message }
+  const s = r.ok
+  const first = `${fmtLocalDateTime(s.startAt)} (${fmtRelative(s.startAt, now)})`
+  return {
+    when: s.everyMs ? `${fmtRepeat(s)}, a partir de ${first}` : `Uma vez, em ${first}`,
+    ...(toolText ? { tool: toolText } : {}),
+    ...(message ? { message } : {})
+  }
+}
 
 type Choice = { allow: boolean; pattern?: string }
 
@@ -57,6 +86,7 @@ export function ApprovalPrompt({
   // conector (MCP): conector · tool, o que o servidor declara e os argumentos formatados
   if (isMcpToolName(request.toolName))
     return <McpApprovalPrompt request={request} fromSubagent={fromSubagent} />
+  const sched = request.toolName === 'schedule' ? scheduleApprovalView(request.args) : null
   if (request.check && isListItem(request.check.item))
     return (
       <ListsPrompt
@@ -74,9 +104,38 @@ export function ApprovalPrompt({
       <div className="flex items-center gap-2 text-[13px] text-fg">
         <Hand className="size-3.5 shrink-0 text-warning" />
         <span className="min-w-0">
-          Permitir que {who} execute <C>{request.toolName}</C>?
+          {sched ? (
+            <>Permitir que {who} agende isto?</>
+          ) : (
+            <>
+              Permitir que {who} execute <C>{request.toolName}</C>?
+            </>
+          )}
         </span>
       </div>
+      {sched && (
+        <div data-testid="approval-schedule" className="mt-2 space-y-1.5 text-[12.5px]">
+          <p className="flex items-center gap-1.5 text-fg/90">
+            <AlarmClock className="size-3.5 shrink-0 text-accent-strong" />
+            <span>{sched.when}</span>
+          </p>
+          {sched.tool && (
+            <pre className="max-h-40 overflow-auto rounded-lg bg-bg/70 px-3 py-2 font-mono text-[11.5px] whitespace-pre-wrap text-fg/85">
+              {sched.tool}
+            </pre>
+          )}
+          {sched.message && (
+            <p className="rounded-lg border border-border/70 bg-bg/40 px-3 py-1.5 text-[12.5px] whitespace-pre-wrap text-fg/85">
+              {sched.message}
+            </p>
+          )}
+          <p className="text-[11.5px] leading-snug text-subtle">
+            Roda sozinho enquanto o ClearChat estiver aberto — cada disparo
+            {sched.tool ? ' roda a ferramenta' : ''} sem perguntar de novo e acorda o agente. Fechar
+            o app cancela.
+          </p>
+        </div>
+      )}
       {detail && (
         <pre className="mt-2 max-h-40 overflow-auto rounded-lg bg-bg/70 px-3 py-2 font-mono text-[11.5px] whitespace-pre-wrap text-fg/85">
           {detail}

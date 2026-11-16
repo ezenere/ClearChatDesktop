@@ -1,4 +1,6 @@
 import {
+  AlarmClock,
+  AlarmClockOff,
   ArrowDown,
   ArrowUpRight,
   Bot,
@@ -18,9 +20,16 @@ import {
   Trash2,
   User,
   Users,
+  Wrench,
   X,
   Zap
 } from 'lucide-react'
+import {
+  END_REASON_TEXT,
+  fmtDuration,
+  scheduleFireOutput,
+  scheduleToolSummary
+} from '@shared/schedule'
 import { splitInterChatText } from '@shared/interChat'
 import {
   nativeSearchChip,
@@ -1280,6 +1289,139 @@ function CallbackCard({
   )
 }
 
+/**
+ * Agendamento (kind 'schedule', role user sintética): disparo — título, execução, lembrete e a saída
+ * da tool (recolhível) — ou aviso de cancelamento com os ids. O texto exato vai no (i).
+ */
+function ScheduleCard({
+  msg,
+  canEdit
+}: {
+  msg: StoredMessage
+  canEdit: boolean
+}): React.JSX.Element {
+  const [open, setOpen] = useState(false)
+  const sm = msg.meta.schedule
+  const text = msg.message.role === 'user' ? messageText(msg.message.content) : ''
+  if (sm?.event === 'canceled') {
+    return (
+      <div
+        data-testid="schedule-notice"
+        className="group/msg my-2 flex items-start gap-2.5 rounded-xl border border-warning/20 bg-warning/[0.04] px-3 py-2"
+      >
+        <AlarmClockOff className="mt-0.5 size-3.5 shrink-0 text-warning" />
+        <div className="min-w-0 flex-1 text-[12.5px] leading-relaxed text-fg/85">
+          <span>
+            {sm.items.length === 1 ? 'Agendamento cancelado' : 'Agendamentos cancelados'} —{' '}
+            {END_REASON_TEXT[sm.reason].replace(/^cancelado: /, '')}
+          </span>
+          <div className="mt-1 flex flex-wrap gap-1">
+            {sm.items.map((i) => (
+              <span
+                key={i.id}
+                className="max-w-full truncate rounded-md border border-border bg-bg/50 px-1.5 py-0.5 text-[11px] text-muted"
+              >
+                <span className="font-mono text-faint">{i.id}</span> {i.title}
+              </span>
+            ))}
+          </div>
+        </div>
+        <span className="flex items-center gap-1">
+          <MessageInfo msg={msg} side="left" />
+          <MsgTime ts={msg.createdAt} className="ml-1" />
+        </span>
+      </div>
+    )
+  }
+  const output = scheduleFireOutput(text)
+  const tool = sm?.event === 'fire' ? sm.tool : undefined
+  const failed = !!tool && tool.status !== 'ok'
+  const run =
+    sm?.event === 'fire' && (sm.everyMs || sm.run > 1)
+      ? `execução ${sm.run}${sm.times ? ` de ${sm.times}` : ''}${sm.nextAt ? '' : ' (última)'}`
+      : ''
+  return (
+    <div
+      data-testid="schedule-fire"
+      className="group/msg my-2 overflow-hidden rounded-xl border border-accent/25 bg-accent-soft/20"
+    >
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={() => setOpen((o) => !o)}
+        onKeyDown={(e) => e.key === 'Enter' && setOpen((o) => !o)}
+        className="flex h-9 items-center gap-2.5 px-3 hover:bg-white/[0.015]"
+      >
+        <ChevronRight
+          className={cn(
+            'size-3.5 shrink-0 text-faint transition-transform duration-150',
+            open && 'rotate-90'
+          )}
+        />
+        <AlarmClock
+          className={cn('size-3.5 shrink-0', failed ? 'text-danger' : 'text-accent-strong')}
+        />
+        <span className="min-w-0 flex-1 truncate text-[12.5px] text-fg/90">
+          <span className="text-subtle">Agendamento</span> {sm?.event === 'fire' ? sm.title : ''}
+          {run && <span className="text-faint"> · {run}</span>}
+          {sm?.event === 'fire' && sm.lateMs ? (
+            <span className="text-warning/90"> · atrasado {fmtDuration(sm.lateMs)}</span>
+          ) : null}
+          {sm?.event === 'fire' && sm.replaced ? (
+            <span className="text-faint">
+              {' '}
+              · substitui {sm.replaced} não entregue{sm.replaced > 1 ? 's' : ''}
+            </span>
+          ) : null}
+        </span>
+        <span onClick={(e) => e.stopPropagation()} className="flex items-center gap-1">
+          <span className="font-mono text-[11px] text-faint">
+            {sm?.event === 'fire' ? sm.id : ''}
+          </span>
+          <MessageInfo msg={msg} side="left" />
+          {canEdit && (
+            <ActionBtn
+              label="Apagar mensagem"
+              onClick={() => void useStore.getState().run(() => api.messages.delete(msg.id))}
+              danger
+            >
+              <Trash2 className="size-3.5" />
+            </ActionBtn>
+          )}
+          <MsgTime ts={msg.createdAt} className="ml-1" />
+        </span>
+      </div>
+      {sm?.event === 'fire' && sm.message && (
+        <p className="border-t border-accent/15 px-3.5 py-2 text-[13px] leading-relaxed whitespace-pre-wrap text-fg/90">
+          {sm.message}
+        </p>
+      )}
+      {tool && (
+        <div className="border-t border-accent/15 px-3.5 py-2">
+          <p className="flex items-center gap-1.5 font-mono text-[11px] text-muted">
+            <Wrench className="size-3 shrink-0 text-faint" />
+            <span className="min-w-0 truncate">{scheduleToolSummary(tool, 90)}</span>
+            <span className={cn('shrink-0', failed ? 'text-danger/90' : 'text-success/90')}>
+              · {tool.status === 'ok' ? 'ok' : tool.status === 'denied' ? 'bloqueada' : 'erro'}
+            </span>
+          </p>
+          {output !== null && (
+            <pre
+              data-testid="schedule-output"
+              className={cn(
+                'mt-1.5 overflow-auto rounded-lg bg-bg/70 px-2.5 py-2 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-fg/85',
+                open ? 'max-h-96' : 'max-h-[4.5rem]'
+              )}
+            >
+              {output.trim() || '(sem saída)'}
+            </pre>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
 interface Ctx {
   chatId: string
   sessionId: string
@@ -1924,6 +2066,8 @@ export function MessageList({
       return <InterChatMessage key={m.id} msg={m} canEdit={canEdit} branch={ctx.switcher(m)} />
     if (role === 'user' && m.meta.kind === 'subagent-callback')
       return <CallbackCard key={m.id} msg={m} chatId={chatId} canEdit={canEdit} />
+    if (role === 'user' && m.meta.kind === 'schedule')
+      return <ScheduleCard key={m.id} msg={m} canEdit={canEdit} />
     if (role === 'user' && m.meta.kind === 'parent-message')
       return <SubsessionUserMessage key={m.id} msg={m} canEdit={false} from="parent" />
     if (role === 'user' && isSiblingKind(m.meta.kind))

@@ -88,6 +88,8 @@ export interface ScheduleInfo extends ScheduleSpec {
   endNote?: string
   /** Cancelado sem o aviso ainda gravado no chat (gravado quando este aparelho puder escrever nele). */
   noticePending?: boolean
+  /** Só na lista da UI (nunca gravado): o disparo está rodando agora (a tool agendada). */
+  firing?: boolean
 }
 
 /** Meta da mensagem `kind: 'schedule'` (role user, synthetic) — disparo ou aviso de cancelamento. */
@@ -335,11 +337,14 @@ export function fmtLocalDateTime(
   return opts.tz === false ? base : `${base} (${utcOffsetLabel(ts)})`
 }
 
-/** Hora curta para listas: "18:30" hoje, "amanhã 08:00", senão "2026-11-20 08:00". */
+/**
+ * Hora curta para listas: "18:30" hoje, "amanhã 08:00", senão "2026-11-20 08:00" — sem segundos,
+ * arredondada ao minuto mais próximo (o horário exato vai no tooltip / na listagem por id).
+ */
 export function fmtShortWhen(ts: number, now: number): string {
-  const d = new Date(ts)
+  const d = new Date(Math.round(ts / 60_000) * 60_000)
   const n = new Date(now)
-  const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}${d.getSeconds() ? `:${pad(d.getSeconds())}` : ''}`
+  const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}`
   const sameDay = (a: Date, b: Date): boolean =>
     a.getFullYear() === b.getFullYear() &&
     a.getMonth() === b.getMonth() &&
@@ -369,11 +374,13 @@ export function fmtDuration(ms: number): string {
   return parts.join(' ')
 }
 
-/** "daqui a 12 min", "agora", "há 3 min". */
+/** "daqui a 12 min", "agora", "há 3 min" (a partir de 1 min, arredondado ao minuto). */
 export function fmtRelative(ts: number, now: number): string {
   const diff = ts - now
   if (Math.abs(diff) < 1000) return 'agora'
-  return diff > 0 ? `daqui a ${fmtDuration(diff)}` : `há ${fmtDuration(-diff)}`
+  const abs =
+    Math.abs(diff) >= 60_000 ? Math.round(Math.abs(diff) / 60_000) * 60_000 : Math.abs(diff)
+  return diff > 0 ? `daqui a ${fmtDuration(abs)}` : `há ${fmtDuration(abs)}`
 }
 
 // ---------------- parse dos argumentos do `schedule` ----------------
@@ -730,3 +737,42 @@ const LEVEL_ORDER: Record<GateLevel, number> = { run: 0, judge: 1, ask: 2 }
 
 export const stricterLevel = (a: GateLevel, b: GateLevel): GateLevel =>
   LEVEL_ORDER[a] >= LEVEL_ORDER[b] ? a : b
+
+// ---------------- UI: resumo dos argumentos (cards da tool e da aprovação) ----------------
+
+/** "daqui a 10 min" / "às 18:30" / "a cada 15 min, 4 vezes" a partir dos argumentos crus. */
+export function scheduleWhenSummary(args: Record<string, unknown>): string {
+  const parts: string[] = []
+  const at = str(args.at)
+  const inMs = parseDuration(args.in)
+  const every = parseDuration(args.every)
+  if (at) parts.push(`em ${at}`)
+  else if (inMs) parts.push(`daqui a ${fmtDuration(inMs)}`)
+  if (every) {
+    const n = Number(args.times)
+    parts.push(
+      `a cada ${fmtDuration(every)}${Number.isInteger(n) && n > 0 ? `, ${n} ${n === 1 ? 'vez' : 'vezes'}` : ''}`
+    )
+  }
+  return parts.join(' · ')
+}
+
+/** Linha do ToolCard do `schedule`: quando · o quê. */
+export function scheduleArgsSummary(args: Record<string, unknown>): string {
+  const toolName = str(args.tool)
+  const a = args.args && typeof args.args === 'object' && !Array.isArray(args.args) ? args.args : {}
+  const what = fmtWhat(
+    {
+      ...(toolName ? { tool: { name: toolName, args: a as Record<string, unknown> } } : {}),
+      ...(str(args.message) ? { message: str(args.message) } : {})
+    },
+    50
+  )
+  return [scheduleWhenSummary(args), what].filter(Boolean).join(' · ')
+}
+
+/** Saída da tool dentro do texto de um disparo (o que vem depois de "Ferramenta … (st):"). */
+export function scheduleFireOutput(text: string): string | null {
+  const m = /\nFerramenta [^\n]* \((?:ok|erro|bloqueada)\):\n/.exec(text)
+  return m ? text.slice(m.index + m[0].length) : null
+}

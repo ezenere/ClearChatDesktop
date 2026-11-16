@@ -1,4 +1,7 @@
 import {
+  AlarmClock,
+  AlarmClockOff,
+  CalendarClock,
   Ban,
   BookOpenText,
   Bot,
@@ -43,6 +46,7 @@ import { toolLabel } from '@shared/deviceTools'
 import { approxTokens } from '@shared/limits'
 import type { ApprovalRequest, MessageMeta, Session, StoredMessage, ToolName } from '@shared/types'
 import { TOOL_ALIASES } from '@shared/types'
+import { scheduleArgsSummary, scheduleIdsArg } from '@shared/schedule'
 import { cn, formatTokens, prettyJson } from '../../lib/format'
 import { useStore, type ToolRun } from '../../store'
 import { MessageInfo, TaskInfo } from '../apiDocs'
@@ -96,6 +100,9 @@ const ICONS: Partial<Record<ToolName, LucideIcon>> = {
   message_subagent: MessageSquareText,
   ask_user: MessageCircleQuestion,
   datetime: Clock,
+  schedule: AlarmClock,
+  schedule_list: CalendarClock,
+  schedule_stop: AlarmClockOff,
   tool_search: BookOpenText
 }
 
@@ -122,6 +129,13 @@ function summary(name: string, args: Record<string, unknown> | null): string {
   if (isSkillTool(name)) return skillToolSummary(name, args)
   const pick = (k: string): string => (typeof args[k] === 'string' ? (args[k] as string) : '')
   switch (name) {
+    case 'schedule':
+      return scheduleArgsSummary(args)
+    case 'schedule_list':
+    case 'schedule_stop': {
+      const { ids } = scheduleIdsArg(args)
+      return ids.length ? ids.join(', ') : name === 'schedule_list' ? 'ativos' : ''
+    }
     case 'shell':
     case 'bash':
       return pick('command')

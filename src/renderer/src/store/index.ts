@@ -1,3 +1,4 @@
+import type { ScheduleInfo } from '@shared/schedule'
 import { create } from 'zustand'
 import type {
   AgentEvent,
@@ -273,6 +274,8 @@ interface State {
   pendingAttachments: Record<string, PendingAttachment[]>
   /** Processos em segundo plano (process_start) por chat (evento `processes-updated`). */
   processes: Record<string, ProcessInfo[]>
+  /** Agendamentos (tool schedule) por chat: ativos + encerrados recentes (`schedules-updated`). */
+  schedules: Record<string, ScheduleInfo[]>
   /** Aprovações: modos globais por item + listas globais. */
   approvalSettings: ApprovalSettings
   /** Visibilidade dos cards-âncora do chat aberto (IntersectionObserver) — ver lib/approvalAnchors. */
@@ -464,6 +467,8 @@ interface Actions {
   /** Recarrega os processos em segundo plano do chat. */
   loadProcesses(chatId: string): Promise<void>
   stopProcess(chatId: string, id: string): Promise<void>
+  loadSchedules(chatId: string): Promise<void>
+  stopSchedule(chatId: string, id: string): Promise<void>
   /** Aplica medidas de visibilidade dos cards-âncora (undefined = card desmontado). */
   setAnchorVis(patch: Record<string, boolean | null | undefined>): void
   /** Some o aviso de falha do subagente acima do composer. */
@@ -618,6 +623,7 @@ export const useStore = create<Store>()((set, get) => ({
   configFocus: null,
   pendingAttachments: {},
   processes: {},
+  schedules: {},
   approvalSettings: normalizeApprovalSettings(null, null),
   anchorVis: {},
   subFailures: {},
@@ -967,6 +973,7 @@ export const useStore = create<Store>()((set, get) => ({
       })
     }
     void get().loadProcesses(chatId)
+    void get().loadSchedules(chatId)
     await get().loadMessages(target)
   },
 
@@ -981,6 +988,19 @@ export const useStore = create<Store>()((set, get) => ({
 
   async stopProcess(chatId, id) {
     await get().run(() => api.processes.stop(chatId, id), 'Erro ao parar o processo')
+  },
+
+  async loadSchedules(chatId) {
+    try {
+      const list = await api.schedules.list(chatId)
+      set((s) => ({ schedules: { ...s.schedules, [chatId]: list } }))
+    } catch {
+      /* sem agendamentos */
+    }
+  },
+
+  async stopSchedule(chatId, id) {
+    await get().run(() => api.schedules.stop(chatId, id), 'Erro ao parar o agendamento')
   },
 
   async openSession(sessionId) {
@@ -1822,6 +1842,9 @@ function applyEvent(e: AgentEvent): void {
     case 'processes-updated':
       set((s) => ({ processes: { ...s.processes, [e.chatId]: e.processes } }))
       break
+    case 'schedules-updated':
+      set((s) => ({ schedules: { ...s.schedules, [e.chatId]: e.schedules } }))
+      break
     case 'memory-changed':
       set((s) => ({ memoryTick: s.memoryTick + 1 }))
       scheduleMemoryReload()
@@ -1967,6 +1990,12 @@ export const selectProcesses =
   (chatId: string) =>
   (s: Store): ProcessInfo[] =>
     s.processes[chatId] ?? EMPTY_PROCESSES
+
+const EMPTY_SCHEDULES: ScheduleInfo[] = []
+export const selectSchedules =
+  (chatId: string) =>
+  (s: Store): ScheduleInfo[] =>
+    s.schedules[chatId] ?? EMPTY_SCHEDULES
 
 const EMPTY_SKILLS: string[] = []
 export const selectPendingSkills =

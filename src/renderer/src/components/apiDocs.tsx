@@ -899,6 +899,35 @@ function originInfo(msg: StoredMessage): { title: string; body: React.ReactNode 
         </>
       )
     }
+  if (k === 'schedule')
+    return msg.meta.schedule?.event === 'canceled'
+      ? {
+          title: 'Aviso de agendamentos cancelados (criado pelo app)',
+          body: (
+            <p>
+              Agendamentos só existem com o app aberto, no aparelho que executa o chat. Quando o app
+              fecha (ou o chat passa a rodar em outro aparelho), o app cancela os ativos e grava
+              este aviso como mensagem <C>{'role: "user"'}</C> sintética, sem acordar o agente: ele
+              o recebe na próxima request.
+            </p>
+          )
+        }
+      : {
+          title: 'Disparo de agendamento (criado pelo app)',
+          body: (
+            <>
+              <p>
+                No horário de um agendamento (<C>schedule</C>), o app roda a ferramenta agendada (se
+                houver) e entrega o lembrete e/ou a saída como mensagem <C>{'role: "user"'}</C>{' '}
+                sintética: inicia um turno se o agente estava ocioso, ou entra na fila do próximo
+                passo se estava rodando (um disparo anterior ainda não entregue é substituído).
+              </p>
+              <p className="text-subtle">
+                Primeira linha = cabeçalho do app (id, horário, execução, próximo disparo).
+              </p>
+            </>
+          )
+        }
   return null
 }
 

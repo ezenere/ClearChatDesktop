@@ -1,6 +1,11 @@
 // SOMENTE DESENVOLVIMENTO: window.api simulado para validar o design sem backend.
 // Carregado apenas quando o renderer é buildado com VITE_CLEAR_MOCK=1 (ver main.tsx).
-import type { ScheduleInfo } from '@shared/schedule'
+import {
+  scheduleCanceledText,
+  scheduleCreatedText,
+  scheduleFireText,
+  type ScheduleInfo
+} from '@shared/schedule'
 import { DEFAULT_CHAT_CONFIG } from '@shared/defaults'
 import { planTools } from '@shared/compactTools'
 import { resolveToolSearchMode, toolSearchView } from '@shared/toolSearch'
@@ -133,17 +138,17 @@ const id = (p: string): string => `${p}-${++seq}`
 
 export function createMockApi(scenario: string): ClearApi {
   const listeners = new Set<(e: AgentEvent) => void>()
-  // agendamentos do chat c1 (chip "N agendamentos" no header): um com tool repetindo, um lembrete
-  // e um cancelado quando o app fechou (só aparece em "Encerrados")
+  // agendamentos (cenário "schedule", chat csch — chip "N agendamentos" no header): um com tool
+  // repetindo, um lembrete e um cancelado quando o app fechou (só aparece em "Encerrados")
   const t0 = Date.now()
   const schedules: ScheduleInfo[] =
-    scenario === 'onboarding'
+    scenario !== 'schedule'
       ? []
       : [
           {
             id: 'sch-4f2kq',
-            chatId: 'c1',
-            sessionId: 's1',
+            chatId: 'csch',
+            sessionId: 'ssch',
             title: 'Checar o build',
             message: 'Se falhar, me diga qual teste quebrou.',
             tool: { name: 'shell', args: { command: 'npm test -- --reporter=dot' } },
@@ -161,8 +166,8 @@ export function createMockApi(scenario: string): ClearApi {
           },
           {
             id: 'sch-9a7b1',
-            chatId: 'c1',
-            sessionId: 's1',
+            chatId: 'csch',
+            sessionId: 'ssch',
             title: 'Revisar o PR do Bruno',
             message: 'Revisar o PR do Bruno',
             startAt: t0 + 2 * 3_600_000,
@@ -174,8 +179,8 @@ export function createMockApi(scenario: string): ClearApi {
           },
           {
             id: 'sch-k2m8p',
-            chatId: 'c1',
-            sessionId: 's1',
+            chatId: 'csch',
+            sessionId: 'ssch',
             title: 'process_logs "p1"',
             tool: { name: 'process_logs', args: { id: 'p1' } },
             startAt: t0 - 3 * 3_600_000,
@@ -1560,6 +1565,201 @@ export function createMockApi(scenario: string): ClearApi {
         form,
         createdAt: now
       })
+  }
+
+  if (scenario === 'schedule') {
+    chats.unshift(
+      {
+        id: 'csch2',
+        title: 'Lembrete da reunião',
+        config: cfg,
+        mainSessionId: 'ssch2',
+        createdAt: now - 40_000,
+        updatedAt: now - 5_000
+      },
+      {
+        id: 'csch',
+        title: 'Build e PRs',
+        config: cfg,
+        mainSessionId: 'ssch',
+        createdAt: now - 30 * 60_000,
+        updatedAt: now - 10_000
+      }
+    )
+    const sess = (sid: string, cid: string, status: Session['status']): Session => ({
+      id: sid,
+      chatId: cid,
+      parentSessionId: null,
+      parentToolCallId: null,
+      depth: 0,
+      model: cfg.model,
+      title: 'Principal',
+      task: null,
+      status,
+      createdAt: now - 30 * 60_000
+    })
+    sessions.push(sess('ssch', 'csch', 'idle'), sess('ssch2', 'csch2', 'awaiting_approval'))
+    const call = (tid: string, name: string, args: unknown): StoredMessage['message'] => ({
+      role: 'assistant',
+      content: '',
+      tool_calls: [
+        { id: tid, type: 'function', function: { name, arguments: JSON.stringify(args) } }
+      ]
+    })
+    const [build, pr, logs] = schedules
+    const schedArgs = {
+      tool: 'shell',
+      args: { command: 'npm test -- --reporter=dot' },
+      every: '10m',
+      times: 12,
+      title: 'Checar o build',
+      message: 'Se falhar, me diga qual teste quebrou.'
+    }
+    const fire = (at: number, run: number, status: 'ok' | 'error', out: string): StoredMessage =>
+      msg(
+        'ssch',
+        {
+          role: 'user',
+          content: scheduleFireText(build, {
+            at,
+            run,
+            nextAt: at + 10 * 60_000,
+            message: build.message,
+            tool: { ...build.tool!, status, content: out }
+          })
+        },
+        {
+          kind: 'schedule',
+          synthetic: true,
+          schedule: {
+            event: 'fire',
+            id: build.id,
+            title: build.title,
+            run,
+            times: 12,
+            everyMs: 10 * 60_000,
+            nextAt: at + 10 * 60_000,
+            message: build.message,
+            tool: { ...build.tool!, status, durationMs: 4200 }
+          }
+        },
+        at
+      )
+    messages.push(
+      msg(
+        'ssch',
+        {
+          role: 'user',
+          content: scheduleCanceledText([logs], 'app-closed')
+        },
+        {
+          kind: 'schedule',
+          synthetic: true,
+          schedule: {
+            event: 'canceled',
+            reason: 'app-closed',
+            items: [{ id: logs.id, title: logs.title }]
+          }
+        },
+        now - 2 * 3_600_000 + 1000
+      ),
+      msg(
+        'ssch',
+        { role: 'user', content: 'Roda os testes a cada 10 minutos e me avisa se quebrar.' },
+        {},
+        now - 27 * 60_000
+      ),
+      msg('ssch', call('tc_s1', 'schedule', schedArgs), {}, now - 26.5 * 60_000),
+      msg(
+        'ssch',
+        {
+          role: 'tool',
+          tool_call_id: 'tc_s1',
+          content: scheduleCreatedText(build, build.createdAt)
+        },
+        {
+          toolStatus: 'ok',
+          approval: { item: 'schedule', mode: 'lists', userAllowed: ['schedule'] }
+        },
+        now - 26 * 60_000
+      ),
+      msg(
+        'ssch',
+        {
+          role: 'assistant',
+          content: 'Pronto: rodo `npm test` a cada 10 min (12 vezes) e te aviso se algo quebrar.'
+        },
+        {},
+        now - 26 * 60_000
+      ),
+      fire(now - 25 * 60_000, 1, 'ok', '..........................\n\n  26 passing (3s)'),
+      msg(
+        'ssch',
+        { role: 'assistant', content: 'Primeira rodada: 26 testes passando.' },
+        {},
+        now - 25 * 60_000
+      ),
+      fire(
+        now - 15 * 60_000,
+        2,
+        'error',
+        '......F...................\n\n  25 passing (3s)\n  1 failing\n\n  1) schedule\n       parseAt: hora já passada:\n     AssertionError: expected 1763204400000 to equal null\n\n[saída: código 1]'
+      ),
+      msg(
+        'ssch',
+        {
+          role: 'assistant',
+          content:
+            'Quebrou 1 teste: **parseAt: hora já passada** (`e2e/schedule.test.ts`). Quer que eu olhe?'
+        },
+        {},
+        now - 15 * 60_000
+      ),
+      msg(
+        'ssch',
+        call('tc_s2', 'schedule', { message: pr.message, in: '2h' }),
+        {},
+        now - 5 * 60_000
+      ),
+      msg(
+        'ssch',
+        { role: 'tool', tool_call_id: 'tc_s2', content: scheduleCreatedText(pr, pr.createdAt) },
+        { toolStatus: 'ok', approval: { item: 'schedule', mode: 'always' } },
+        now - 5 * 60_000
+      ),
+      msg(
+        'ssch2',
+        {
+          role: 'user',
+          content: 'Me lembra da reunião com o time às 16h, e de novo 10 min antes.'
+        },
+        {},
+        now - 40_000
+      ),
+      msg(
+        'ssch2',
+        call('tc_s3', 'schedule', {
+          message: 'Reunião com o time em 10 min (sala 3).',
+          at: '15:50',
+          title: 'Reunião em 10 min'
+        }),
+        {},
+        now - 30_000
+      )
+    )
+    approvals.push({
+      id: 'a_sch',
+      chatId: 'csch2',
+      sessionId: 'ssch2',
+      toolCallId: 'tc_s3',
+      toolName: 'schedule',
+      args: {
+        message: 'Reunião com o time em 10 min (sala 3).',
+        at: '15:50',
+        title: 'Reunião em 10 min'
+      },
+      createdAt: now
+    })
   }
 
   const resolveQuestion = (qid: string, content: string, meta: StoredMessage['meta']): void => {

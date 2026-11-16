@@ -44,6 +44,7 @@ import { ContextMeter } from './ContextMeter'
 import { GenerateTitleButton } from './GenerateTitleButton'
 import { MessageList } from './MessageList'
 import { ProcessesBadge } from './ProcessesBadge'
+import { SchedulesBadge } from './SchedulesBadge'
 import { SessionSwitcher, StatusDot } from './SessionSwitcher'
 import { DivergencePanel } from '../sync/ChatHost'
 import { useHostInfo } from '../sync/hooks'
@@ -395,6 +396,7 @@ export function ChatHeader({
       </div>
       <SessionSwitcher chatId={chat.id} currentId={session?.id ?? chat.mainSessionId} />
       <ProcessesBadge chatId={chat.id} />
+      <SchedulesBadge chatId={chat.id} />
       <AutoApproveBadge chat={chat} />
     </TopBar>
   )
