@@ -120,6 +120,14 @@ import {
   updateWebSearchEngines
 } from './webSearchConfig'
 import { testWebSearchEngine } from './tools/web'
+import {
+  getMapsSettings,
+  revealGoogleMapsKey,
+  setGoogleMapsKey,
+  setWeatherProvider,
+  testGoogleMapsKey
+} from './mapsConfig'
+import { MAPS_PROTECTED_SETTINGS, type WeatherProviderId } from '@shared/mapsSettings'
 import * as skills from './skills'
 import { updateChecker } from './updates'
 import { isReleaseUrl, RELEASES_PAGE, type UpdateStatus } from '@shared/updates'
@@ -799,13 +807,16 @@ export function registerIpc(): void {
     [IPC.providers.test]: (p: ProviderTestInput) => testProvider(p),
 
     // ---- settings ----
-    // (as chaves de API dos buscadores não passam por aqui: só pelo domínio webSearch, mascaradas)
+    // (as chaves de API dos buscadores e do Google Maps não passam por aqui: só pelos domínios
+    // webSearch/maps, mascaradas)
     [IPC.settings.get]: (key: string) => {
-      if (PROTECTED_SETTINGS.includes(key)) throw new Error('Setting protegido.')
+      if (PROTECTED_SETTINGS.includes(key) || MAPS_PROTECTED_SETTINGS.includes(key))
+        throw new Error('Setting protegido.')
       return settingsRepo.get(key)
     },
     [IPC.settings.set]: (key: string, value: unknown) => {
-      if (PROTECTED_SETTINGS.includes(key)) throw new Error('Setting protegido.')
+      if (PROTECTED_SETTINGS.includes(key) || MAPS_PROTECTED_SETTINGS.includes(key))
+        throw new Error('Setting protegido.')
       return settingsRepo.set(key, value)
     },
 
@@ -1073,6 +1084,13 @@ export function registerIpc(): void {
       setWebSearchKey(engine, key),
     [IPC.webSearch.revealKey]: (engine: SearchEngineId) => revealWebSearchKey(engine),
     [IPC.webSearch.test]: (engine: SearchEngineId) => testWebSearchEngine(engine),
+
+    // ---- tempo e mapas (1.16.0) ----
+    [IPC.maps.getSettings]: () => getMapsSettings(),
+    [IPC.maps.setWeatherProvider]: (id: WeatherProviderId) => setWeatherProvider(id),
+    [IPC.maps.setGoogleKey]: (key: string | null) => setGoogleMapsKey(key),
+    [IPC.maps.revealGoogleKey]: () => revealGoogleMapsKey(),
+    [IPC.maps.testGoogleKey]: (typed?: string | null) => testGoogleMapsKey(typed),
 
     // ---- conectores (SPEC → "Conectores (MCP)") ----
     [IPC.mcp.list]: () => mcpApi.listViews(),

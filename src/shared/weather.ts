@@ -167,7 +167,7 @@ export function weatherUsesDevicePosition(args: Record<string, unknown>): boolea
 /** O mínimo de `fetch` que a tool usa (o global do Node/Electron e do React Native servem). */
 export type WeatherFetch = (
   url: string,
-  init: { signal: AbortSignal; headers: Record<string, string> }
+  init: { signal: AbortSignal; headers: Record<string, string>; method?: 'POST'; body?: string }
 ) => Promise<{ ok: boolean; status: number; text(): Promise<string> }>
 
 /** Posição do aparelho, já na precisão escolhida pelo usuário. */
@@ -193,8 +193,30 @@ export interface WeatherDeps {
    * aparelho não fornece (computador). */
   devicePosition?: () => Promise<DevicePoint>
   fallbackGeocoder?: FallbackGeocoder
+  /** Provedor escolhido em vez do Open-Meteo (o Google, com a chave — @shared/googleWeather). O
+   * Open-Meteo assume o que ele não cobre e quando ele falha (com aviso na saída). */
+  provider?: WeatherProvider
   userAgent?: string
   timeoutMs?: number
+}
+
+/** Onde, para um provedor: um ponto (coordenadas/posição do aparelho) ou o nome como veio. */
+export type ProviderWhere =
+  | { kind: 'point'; lat: number; lon: number; label: string; notes?: string[] }
+  | { kind: 'place'; place: string; country: string | null }
+
+/**
+ * Outro provedor da previsão. `fit` diz se ele cobre o pedido (podendo ajustá-lo, com avisos);
+ * `forecast` devolve o texto completo da saída ou lança (erro do provedor → o Open-Meteo assume).
+ */
+export interface WeatherProvider {
+  id: string
+  /** Nome na saída ("Google"). */
+  label: string
+  fit(
+    a: WeatherArgs
+  ): { ok: true; args: WeatherArgs; notes: string[] } | { ok: false; reason: string }
+  forecast(where: ProviderWhere, a: WeatherArgs, d: WeatherDeps): Promise<string>
 }
 
 class WeatherError extends Error {}
@@ -628,57 +650,65 @@ export type WeatherToolResult = { content: string; status: 'ok' | 'error' }
 
 const fail = (msg: string): WeatherToolResult => ({ content: `Erro: ${msg}`, status: 'error' })
 
-/** Resolve o ponto: coordenadas → nome (Open-Meteo; reserva do aparelho) → posição do aparelho. */
-async function resolveWhere(
+/** Ponto já conhecido sem geocodificar: coordenadas informadas ou a posição do aparelho (lida uma vez). */
+async function basePoint(
   a: WeatherArgs,
   d: WeatherDeps
-): Promise<WeatherWhere | WeatherToolResult> {
+): Promise<Extract<ProviderWhere, { kind: 'point' }> | WeatherToolResult | null> {
   if (a.latitude != null && a.longitude != null)
     return {
+      kind: 'point',
       label: a.place ? `${a.place} (coordenadas informadas)` : 'coordenadas informadas',
       lat: a.latitude,
       lon: a.longitude
     }
-  if (a.place) {
-    d.onOutput?.(`Procurando “${a.place}”…`)
-    const found = rankPlaces(
-      parseGeocoding(await getJson(d, geocodingUrl(a.place, a.country))),
-      a.place
-    )
-    if (found.length) {
-      const [first, ...rest] = found
-      return {
-        label: geoPlaceLabel(first),
-        lat: first.lat,
-        lon: first.lon,
-        geocodedBy: 'GeoNames via Open-Meteo',
-        alternatives: rest.slice(0, WEATHER_LIMITS.geocodeCount - 1)
-      }
-    }
-    if (d.fallbackGeocoder) {
-      const hit = await d.fallbackGeocoder(a.place, d.signal).catch((e: unknown) => {
-        if (d.signal.aborted) throw abortError()
-        void e
-        return null
-      })
-      if (hit) return { label: hit.label, lat: hit.lat, lon: hit.lon, geocodedBy: hit.source }
-    }
-    return fail(
-      `não encontrei “${a.place}”${a.country ? ` (país ${a.country})` : ''}. Use o nome da cidade (ex.: "Curitiba", "Springfield, Illinois", "Vila Madalena, São Paulo"), o país em "country" ou latitude e longitude.`
-    )
-  }
+  if (a.place) return null
   if (!d.devicePosition)
     return fail(
       'informe "place" (cidade ou lugar) ou "latitude" e "longitude" — este aparelho (computador) não fornece a localização atual.'
     )
   const p = await d.devicePosition()
-  return { label: p.label, lat: p.lat, lon: p.lon, notes: p.notes }
+  return { kind: 'point', label: p.label, lat: p.lat, lon: p.lon, notes: p.notes }
 }
+
+/** Nome → ponto pelo geocodificador do Open-Meteo (reserva do aparelho). */
+async function geocodePlace(
+  place: string,
+  country: string | null,
+  d: WeatherDeps
+): Promise<WeatherWhere | WeatherToolResult> {
+  d.onOutput?.(`Procurando “${place}”…`)
+  const found = rankPlaces(parseGeocoding(await getJson(d, geocodingUrl(place, country))), place)
+  if (found.length) {
+    const [first, ...rest] = found
+    return {
+      label: geoPlaceLabel(first),
+      lat: first.lat,
+      lon: first.lon,
+      geocodedBy: 'GeoNames via Open-Meteo',
+      alternatives: rest.slice(0, WEATHER_LIMITS.geocodeCount - 1)
+    }
+  }
+  if (d.fallbackGeocoder) {
+    const hit = await d.fallbackGeocoder(place, d.signal).catch((e: unknown) => {
+      if (d.signal.aborted) throw abortError()
+      void e
+      return null
+    })
+    if (hit) return { label: hit.label, lat: hit.lat, lon: hit.lon, geocodedBy: hit.source }
+  }
+  return fail(
+    `não encontrei “${place}”${country ? ` (país ${country})` : ''}. Use o nome da cidade (ex.: "Curitiba", "Springfield, Illinois", "Vila Madalena, São Paulo"), o país em "country" ou latitude e longitude.`
+  )
+}
+
+const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(e))
 
 /**
  * Executa a tool. Erros previsíveis (argumentos, lugar não encontrado, Open-Meteo fora) voltam como
  * resultado de erro; cancelamento lança AbortError; o erro da posição do aparelho (permissão,
- * "Nunca"…) é propagado como veio (o runner do celular o converte).
+ * "Nunca"…) é propagado como veio (o runner do celular o converte). Com `d.provider` (o Google), ele
+ * responde o que cobre; o resto — e qualquer falha dele — vai ao Open-Meteo, com o motivo na saída.
  */
 export async function runWeatherTool(
   args: Record<string, unknown>,
@@ -688,12 +718,39 @@ export async function runWeatherTool(
   if (!parsed.ok) return fail(parsed.error)
   const a = parsed.value
   try {
-    const where = await resolveWhere(a, d)
+    const base = await basePoint(a, d)
+    if (base && 'status' in base) return base
+    const extra: string[] = []
+    const alt = d.provider
+    if (alt) {
+      const fit = alt.fit(a)
+      if (!fit.ok) extra.push(`${fit.reason} — usei o Open-Meteo nesta chamada.`)
+      else {
+        try {
+          const where: ProviderWhere = base ?? {
+            kind: 'place',
+            place: a.place!,
+            country: a.country
+          }
+          const fa = { ...fit.args, notes: [...fit.args.notes, ...fit.notes] }
+          return { content: await alt.forecast(where, fa, d), status: 'ok' }
+        } catch (e) {
+          if (d.signal.aborted || (e as Error)?.name === 'AbortError') throw abortError()
+          extra.push(`o ${alt.label} falhou (${errMsg(e)}) — usei o Open-Meteo.`)
+        }
+      }
+    }
+    const where: WeatherWhere | WeatherToolResult = base
+      ? { label: base.label, lat: base.lat, lon: base.lon, notes: base.notes }
+      : await geocodePlace(a.place!, a.country, d)
     if ('status' in where) return where
     d.onOutput?.('Consultando a previsão…')
     const fc = parseForecast(await getJson(d, forecastUrl(where, a)))
     if (!fc) return fail('o Open-Meteo devolveu uma resposta sem a previsão.')
-    return { content: formatWeather(fc, a, where), status: 'ok' }
+    return {
+      content: formatWeather(fc, a, { ...where, notes: [...extra, ...(where.notes ?? [])] }),
+      status: 'ok'
+    }
   } catch (e) {
     if (e instanceof WeatherError) return fail(e.message)
     throw e

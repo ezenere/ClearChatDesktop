@@ -3228,6 +3228,25 @@ test('1.9.0: merge do primeiro login remapeia o provedor da voz da persona/chat 
   C.eng.destroy()
 })
 
+test('tempo e mapas (1.16.0): weatherProvider e googleMapsApiKey sincronizam como settings', () => {
+  const a = newDb()
+  putSetting(a, 'googleMapsApiKey', 'AIza-chave-falsa')
+  putSetting(a, 'weatherProvider', 'google')
+  assert.deepEqual(buildLocal(a, 'setting', 'googleMapsApiKey')?.plain, {
+    sv: 1,
+    value: 'AIza-chave-falsa'
+  })
+  assert.deepEqual(buildLocal(a, 'setting', 'weatherProvider')?.plain, { sv: 1, value: 'google' })
+  const b = newDb()
+  const r = applyRemote(b, 'setting', 'googleMapsApiKey', { sv: 1, value: 'AIza-outra' })
+  assert.ok(r.scopes.has('settings'))
+  applyRemote(b, 'setting', 'weatherProvider', { sv: 1, value: 'open-meteo' })
+  assert.equal(getSetting(b, 'googleMapsApiKey'), 'AIza-outra')
+  assert.equal(getSetting(b, 'weatherProvider'), 'open-meteo')
+  applyRemote(b, 'setting', 'googleMapsApiKey', { sv: 1, value: null })
+  assert.equal(getSetting(b, 'googleMapsApiKey'), undefined, 'removida')
+})
+
 test('cliente antigo — id de setting e campos que ele não conhece não quebram nada', () => {
   // leitor 1.9.0 recebendo coisas de um escritor mais novo: ignora o id desconhecido e preserva campos
   const a = newDb()

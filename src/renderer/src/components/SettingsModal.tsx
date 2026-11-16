@@ -20,6 +20,7 @@ import { HelpTip } from './ui/Tooltip'
 import { ModelInfoLine } from './panel/editors'
 import { ApprovalsHelp, ApprovalsSettings } from './approvals/ApprovalsSettings'
 import { WebSearchSettings } from './web/WebSearchSettings'
+import { MapsSettings } from './web/MapsSettings'
 import { MemoryHelp, MemorySettings } from './memory/MemorySettings'
 import { SkillsSettings } from './skills/SkillsSettings'
 import { McpHelp, McpSettings } from './mcp/McpSettings'
@@ -448,6 +449,8 @@ function SettingsPanel({
         <McpSettings />
       ) : tab === 'web' ? (
         <WebSearchSettings />
+      ) : tab === 'maps' ? (
+        <MapsSettings />
       ) : tab === 'audio' ? (
         <AudioSettings />
       ) : (

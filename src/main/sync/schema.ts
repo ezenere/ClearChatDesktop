@@ -19,6 +19,9 @@ export const SYNC_SETTING_KEYS: Record<string, string> = {
   webSearchEngines: 'webSearchEngines',
   webSearchApiKeys: 'webSearchApiKeys',
   webSearchMinIntervalSec: 'webSearchMinIntervalSec',
+  // desde 1.16.0: tempo e mapas (provedor da previsão e a chave do Google Maps Platform)
+  weatherProvider: 'weatherProvider',
+  googleMapsApiKey: 'googleMapsApiKey',
   // desde o protocolo 1.4.0: preferências que antes ficavam só no dispositivo
   smartApproveDefaults: 'smartApproveDefaults',
   autoTitle: 'autoTitle',

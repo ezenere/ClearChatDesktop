@@ -4,6 +4,7 @@ import {
   CircleUserRound,
   CornerDownLeft,
   Drama,
+  CloudSun,
   Globe,
   Lightbulb,
   MessageSquarePlus,
@@ -30,6 +31,7 @@ const ICONS: Record<SettingsTab, LucideIcon> = {
   skills: Lightbulb,
   mcp: Plug,
   web: Globe,
+  maps: CloudSun,
   providers: Server,
   account: CircleUserRound
 }

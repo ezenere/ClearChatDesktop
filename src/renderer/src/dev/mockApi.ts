@@ -84,6 +84,12 @@ import {
   normalizeEngines,
   type SearchEngineId
 } from '@shared/webSearchSettings'
+import {
+  checkMapsKey,
+  mapsSettingsState,
+  type MapsSettingsState,
+  type WeatherProviderId
+} from '@shared/mapsSettings'
 import { copyName, sanitizePresetConfig } from '@shared/presets'
 import {
   activeLeaf,
@@ -3290,6 +3296,44 @@ export function createMockApi(scenario: string): ClearApi {
               ? { ok: false, message: 'sem chave de API' }
               : { ok: true, count: 3, ms: 840, message: '3 resultados em 0,8 s' },
             700
+          )
+      }
+    })(),
+    // Tempo e mapas (mock): a chave só no "main" do mock; a UI recebe a máscara
+    maps: (() => {
+      let mapsKey: string | null = null
+      let provider: WeatherProviderId = 'open-meteo'
+      const state = (): MapsSettingsState => mapsSettingsState(provider, mapsKey)
+      return {
+        getSettings: () => delay(state()),
+        setWeatherProvider: async (id) => {
+          if (id === 'google' && !mapsKey)
+            throw new Error('Informe a chave do Google Maps Platform para usar o Google.')
+          provider = id
+          return delay(state())
+        },
+        setGoogleKey: async (key) => {
+          const c = checkMapsKey(key)
+          if (!c.ok) throw new Error(c.error)
+          mapsKey = c.key
+          if (!mapsKey) provider = 'open-meteo'
+          return delay(state())
+        },
+        revealGoogleKey: () => delay(mapsKey),
+        testGoogleKey: (typed) =>
+          delay(
+            (typed?.trim() || mapsKey) === 'ruim'
+              ? {
+                  ok: false as const,
+                  error: 'a chave do Google Maps é inválida (Configurações → Tempo e mapas)'
+                }
+              : typed?.trim() || mapsKey
+                ? {
+                    ok: true as const,
+                    text: 'Chave ok — São Paulo agora: 24 °C, Parcialmente nublado.'
+                  }
+                : { ok: false as const, error: 'Nenhuma chave salva.' },
+            600
           )
       }
     })(),

@@ -228,6 +228,21 @@ export const SETTINGS_NAV: SettingsNavGroup[] = [
           'intervalo entre pesquisas',
           'user-agent'
         ]
+      },
+      {
+        id: 'maps',
+        label: 'Tempo e mapas',
+        keywords: [
+          'previsão do tempo',
+          'clima',
+          'weather',
+          'open-meteo',
+          'google',
+          'google maps',
+          'chave do google',
+          'maps platform',
+          'agent tools'
+        ]
       }
     ]
   },

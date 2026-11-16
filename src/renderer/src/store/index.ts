@@ -99,6 +99,7 @@ export type SettingsTab =
   | 'skills'
   | 'mcp'
   | 'web'
+  | 'maps'
   | 'audio'
 
 /**

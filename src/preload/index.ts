@@ -196,6 +196,13 @@ const api: FullClearApi = {
     revealKey: (engine) => invoke(IPC.webSearch.revealKey, engine),
     test: (engine) => invoke(IPC.webSearch.test, engine)
   },
+  maps: {
+    getSettings: () => invoke(IPC.maps.getSettings),
+    setWeatherProvider: (id) => invoke(IPC.maps.setWeatherProvider, id),
+    setGoogleKey: (key) => invoke(IPC.maps.setGoogleKey, key),
+    revealGoogleKey: () => invoke(IPC.maps.revealGoogleKey),
+    testGoogleKey: (typed) => invoke(IPC.maps.testGoogleKey, typed)
+  },
   voice: {
     settings: {
       get: () => invoke(IPC.voice.settingsGet),

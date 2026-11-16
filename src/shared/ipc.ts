@@ -269,6 +269,13 @@ export const IPC = {
     revealKey: 'webSearch:revealKey',
     test: 'webSearch:test'
   },
+  maps: {
+    getSettings: 'maps:getSettings',
+    setWeatherProvider: 'maps:setWeatherProvider',
+    setGoogleKey: 'maps:setGoogleKey',
+    revealGoogleKey: 'maps:revealGoogleKey',
+    testGoogleKey: 'maps:testGoogleKey'
+  },
   voice: {
     settingsGet: 'voice:settings:get',
     settingsSet: 'voice:settings:set',
@@ -1456,6 +1463,22 @@ export interface ClearApi {
     /** Chave em claro, a pedido (botão mostrar). */
     revealKey(engine: import('./webSearchSettings').SearchEngineId): Promise<string | null>
     test(engine: import('./webSearchSettings').SearchEngineId): Promise<WebSearchTestResult>
+  }
+  /** Tempo e mapas (Configurações → Tempo e mapas; protocolo 1.16.0). */
+  maps: {
+    getSettings(): Promise<import('./mapsSettings').MapsSettingsState>
+    /** Provedor da previsão do tempo. Google sem chave → erro legível. */
+    setWeatherProvider(
+      id: import('./mapsSettings').WeatherProviderId
+    ): Promise<import('./mapsSettings').MapsSettingsState>
+    /** Salva a chave do Google Maps Platform (null/vazio remove; a previsão volta ao Open-Meteo). */
+    setGoogleKey(key: string | null): Promise<import('./mapsSettings').MapsSettingsState>
+    /** Chave em claro, a pedido (botão mostrar). */
+    revealGoogleKey(): Promise<string | null>
+    /** Testa a chave (a digitada ou a salva) com uma chamada. */
+    testGoogleKey(
+      typed?: string | null
+    ): Promise<{ ok: true; text: string } | { ok: false; error: string }>
   }
   /**
    * Áudio/voz (SPEC → "Áudio"): settings globais tipadas + sessão de transcrição. Opcional no tipo

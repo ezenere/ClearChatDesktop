@@ -20,7 +20,10 @@ test('grupos, ordem e rótulos (todas as abas, uma vez cada)', () => {
     SETTINGS_NAV.map((g) => [g.label, g.items.map((i) => i.label)]),
     [
       ['Geral', ['Novos chats', 'Personas', 'Áudio']],
-      ['Agente', ['Aprovações', 'Memórias', 'Skills', 'Conectores', 'Pesquisa na web']],
+      [
+        'Agente',
+        ['Aprovações', 'Memórias', 'Skills', 'Conectores', 'Pesquisa na web', 'Tempo e mapas']
+      ],
       ['Conexões', ['Provedores', 'Conta']]
     ]
   )
@@ -30,6 +33,7 @@ test('grupos, ordem e rótulos (todas as abas, uma vez cada)', () => {
     'approvals',
     'audio',
     'defaults',
+    'maps',
     'mcp',
     'memory',
     'presets',
@@ -45,7 +49,7 @@ test('grupos, ordem e rótulos (todas as abas, uma vez cada)', () => {
 
 test('busca vazia: tudo, sem "melhor"', () => {
   const r = filterSettingsNav('   ')
-  assert.equal(r.total, 10)
+  assert.equal(r.total, 11)
   assert.equal(r.best, null)
   assert.equal(r.groups.length, 3)
 })
@@ -64,6 +68,8 @@ test('palavras-chave levam à aba e aparecem como dica', () => {
   assert.deepEqual(ids('whitelist'), ['approvals'])
   assert.equal(filterSettingsNav('juiz').best?.id, 'approvals')
   assert.equal(filterSettingsNav('tavily').best?.id, 'web')
+  assert.equal(filterSettingsNav('previsão do tempo').best?.id, 'maps')
+  assert.equal(filterSettingsNav('open-meteo').best?.id, 'maps')
   assert.equal(filterSettingsNav('sincronização').best?.id, 'account')
   assert.equal(filterSettingsNav('título automático').best?.id, 'defaults')
   // conectores (MCP)
