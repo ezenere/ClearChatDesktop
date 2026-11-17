@@ -19,10 +19,9 @@ export const CONTEXT_CAPTURE_LIMITS = {
   /** Falas do agente antes da sua (padrão / máximo). */
   defaultLookback: 2,
   maxLookback: 10,
-  /** max_tokens da chamada (padrão / limites). */
+  /** max_tokens da chamada (padrão / mínimo — sem teto: o modelo decide o máximo). */
   defaultMaxTokens: 400,
   minMaxTokens: 64,
-  maxMaxTokens: 4000,
   /** Espera antes de resumir (agrupa mensagens seguidas). */
   debounceMs: 1500,
   /** O juiz espera o resumo em andamento no máximo isso (depois julga com o que houver). */
@@ -49,6 +48,11 @@ const clampInt = (v: unknown, min: number, max: number, def: number): number => 
   const n = typeof v === 'number' && Number.isFinite(v) ? Math.round(v) : def
   return Math.min(max, Math.max(min, n))
 }
+
+/** `max_tokens` informado (inteiro ≥ `min`, sem teto) ou null (ausente/inválido = herda/padrão). */
+export function normalizeMaxTokens(v: unknown, min: number): number | null {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 1 ? Math.max(min, Math.round(v)) : null
+}
 const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v.trim() : null)
 
 export function normalizeCapture(v: unknown): ContextCaptureConfig {
@@ -59,10 +63,7 @@ export function normalizeCapture(v: unknown): ContextCaptureConfig {
     enabled: c.enabled === true,
     providerId: str(c.providerId),
     model: str(c.model),
-    maxTokens:
-      typeof c.maxTokens === 'number' && Number.isFinite(c.maxTokens)
-        ? clampInt(c.maxTokens, L.minMaxTokens, L.maxMaxTokens, L.defaultMaxTokens)
-        : null,
+    maxTokens: normalizeMaxTokens(c.maxTokens, L.minMaxTokens),
     lookback: clampInt(c.lookback, 1, L.maxLookback, L.defaultLookback),
     // 0.8.8: só com valor (ausente/null = o padrão SIDE_THINKING.capture)
     ...(thinkingTokens != null ? { thinkingTokens } : {}),
@@ -91,12 +92,43 @@ export function normalizeCapturePrompts(v: unknown): CapturePrompts {
   }
 }
 
+/**
+ * Sobrescritas da coleta de um chat/persona (1.18.0): só os campos presentes e válidos — o resto
+ * herda o global (`effectiveCapture`). Um bloco antigo (completo) continua sobrescrevendo tudo o que
+ * traz; `maxTokens`/`thinkingTokens` null = herda.
+ */
+export function normalizeCaptureOverrides(v: unknown): Partial<ContextCaptureConfig> {
+  const c = (v && typeof v === 'object' ? v : {}) as Partial<ContextCaptureConfig>
+  const L = CONTEXT_CAPTURE_LIMITS
+  const out: Partial<ContextCaptureConfig> = {}
+  if (typeof c.enabled === 'boolean') out.enabled = c.enabled
+  // modelo: o par vai junto (um sem o outro não vale)
+  if (str(c.providerId) && str(c.model)) {
+    out.providerId = str(c.providerId)
+    out.model = str(c.model)
+  } else if (c.providerId === null && c.model === null && 'model' in c) {
+    // "sem modelo" explícito (desliga a coleta neste chat/persona)
+    out.providerId = null
+    out.model = null
+  }
+  const maxTokens = normalizeMaxTokens(c.maxTokens, L.minMaxTokens)
+  if (maxTokens != null) out.maxTokens = maxTokens
+  if (typeof c.lookback === 'number' && Number.isFinite(c.lookback))
+    out.lookback = clampInt(c.lookback, 1, L.maxLookback, L.defaultLookback)
+  const thinkingTokens = normalizeThinkingTokens(c.thinkingTokens)
+  if (thinkingTokens != null) out.thinkingTokens = thinkingTokens
+  if (c.cache === false) out.cache = false
+  return out
+}
+
 /** Padrões globais (setting `smartApproveDefaults`). Aceitar edições: desligado. */
 export function normalizeSmartDefaults(v: unknown): SmartApproveDefaults {
   const d = (v && typeof v === 'object' ? v : {}) as Partial<SmartApproveDefaults>
+  const judgeMaxTokens = normalizeMaxTokens(d.judgeMaxTokens, 16)
   return {
     environment: typeof d.environment === 'string' ? d.environment : '',
     acceptEditsInRoot: d.acceptEditsInRoot === true,
+    ...(judgeMaxTokens != null ? { judgeMaxTokens } : {}),
     capture: normalizeCapture(d.capture),
     capturePrompts: normalizeCapturePrompts(d.capturePrompts)
   }

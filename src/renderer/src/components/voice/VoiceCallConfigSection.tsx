@@ -8,6 +8,7 @@
 // ocultas"): o ÚNICO texto que a chamada muda é o "Prompt do modo voz" + a instrução das tags (só
 // com o opt-in) — e os dois campos ("Prompt do modo voz", depois "Tags de voz" com a instrução) são
 // o próprio texto que entra na request, nessa ordem.
+import { RotateCcw } from 'lucide-react'
 import { useState } from 'react'
 import { TOOL_DEFINITIONS, TOOL_LABELS, TOOL_NAMES } from '@shared/tools'
 import { withTool } from '@shared/deviceTools'
@@ -17,6 +18,8 @@ import {
   DEFAULT_VOICE_CALL_CONFIG,
   VOICE_CALL_PROMPT_MODES,
   normalizeVoiceCallConfig,
+  resolveFillerPool,
+  resolveToolPhrasePool,
   resolveVoiceCallConfig,
   resolveVoiceCallEnabled,
   SUGGESTED_VOICE_PROMPT,
@@ -36,6 +39,7 @@ import { DEFAULT_AUDIO_TAGS_PROMPT } from '@shared/audioTags'
 import { ApiInfo, C } from '../ui/Tooltip'
 import { ToolDefInfo } from '../apiDocs'
 import { VoiceCallModelEditor } from './VoiceCallModelEditor'
+import { FillerPoolFields, ToolPhrasePoolFields } from './PhrasePoolFields'
 
 export function VoiceCallConfigSection({
   cfg,
@@ -63,6 +67,13 @@ export function VoiceCallConfigSection({
   const where = scope === 'chat' ? 'neste chat' : 'nesta persona'
   const { enabled, source } = resolveVoiceCallEnabled(voice, personaVoice, defaults)
   const resolved = resolveVoiceCallConfig(voice, defaults, personaVoice)
+  // pools que o "★" herda neste nível (persona no chat; global deste dispositivo → os do app)
+  const inheritedToolPool = resolveToolPhrasePool(
+    (scope === 'chat' ? personaVoice?.toolPhrasePool : null) ?? defaults.toolPhrases.pool
+  )
+  const inheritedFillerPool = resolveFillerPool(
+    (scope === 'chat' ? personaVoice?.fillerPool : null) ?? defaults.fillers.pool
+  )
   // o que o "★" herda neste nível (persona no chat; global na persona)
   const inheritedEnabled = personaVoice?.enabled != null ? personaVoice.enabled : globalEnabled
   const inheritedFrom =
@@ -76,7 +87,9 @@ export function VoiceCallConfigSection({
     voice.endCall != null ||
     voice.audioTags != null ||
     !!voice.audioTagsPrompt ||
-    voice.toolPhrases != null
+    voice.toolPhrases != null ||
+    !!voice.toolPhrasePool ||
+    !!voice.fillerPool
   const summary = !enabled
     ? source === 'persona' && scope === 'chat'
       ? 'desligada pela persona'
@@ -215,6 +228,43 @@ export function VoiceCallConfigSection({
               }
               onChange={(toolPhrases) => set({ toolPhrases })}
             />
+            {/* frases próprias (1.18.0): ★ herda (persona no chat → global deste dispositivo) */}
+            <OwnPoolBlock
+              title="Frases de ferramenta desta voz"
+              testId="voice-call-own-tool-phrases"
+              own={!!voice.toolPhrasePool}
+              inheritedCount={inheritedToolPool.length}
+              inheritedFrom={
+                scope === 'chat' && personaVoice?.toolPhrasePool ? 'da persona' : 'do global'
+              }
+              onCustomize={() => set({ toolPhrasePool: inheritedToolPool.map((p) => ({ ...p })) })}
+              onInherit={() => set({ toolPhrasePool: null })}
+            >
+              <ToolPhrasePoolFields
+                pool={voice.toolPhrasePool ?? inheritedToolPool}
+                keepDefault
+                testIdPrefix="voice-call-own-tool-phrases"
+                onCommit={(pool) => pool && set({ toolPhrasePool: pool })}
+              />
+            </OwnPoolBlock>
+            <OwnPoolBlock
+              title="Preâmbulos desta voz"
+              testId="voice-call-own-fillers"
+              own={!!voice.fillerPool}
+              inheritedCount={inheritedFillerPool.length}
+              inheritedFrom={
+                scope === 'chat' && personaVoice?.fillerPool ? 'da persona' : 'do global'
+              }
+              onCustomize={() => set({ fillerPool: inheritedFillerPool.map((p) => ({ ...p })) })}
+              onInherit={() => set({ fillerPool: null })}
+            >
+              <FillerPoolFields
+                pool={voice.fillerPool ?? inheritedFillerPool}
+                keepDefault
+                testIdPrefix="voice-call-own-fillers"
+                onCommit={(pool) => pool && set({ fillerPool: pool })}
+              />
+            </OwnPoolBlock>
             <VoicePromptModeField
               value={voice.promptMode ?? null}
               inherited={
@@ -322,6 +372,75 @@ function EndCallField({
  * "Frases de ferramenta" (1ª tool do turno fala "Vou pesquisar isso." — SPEC → "Frases de
  * ferramenta"): Ligadas / Desligadas com ★ no valor herdado; as frases em si são globais.
  */
+/**
+ * Pool PRÓPRIO de frases da persona/chat (1.18.0): sem ele, mostra o que herda (★) e "Personalizar"
+ * (copia o herdado para editar); com ele, os campos e "voltar a herdar". Os clipes destas frases
+ * são gerados à parte (pasta própria da voz) — o "Gerar clipes" da chamada já usa este pool.
+ */
+function OwnPoolBlock({
+  title,
+  testId,
+  own,
+  inheritedCount,
+  inheritedFrom,
+  onCustomize,
+  onInherit,
+  children
+}: {
+  title: string
+  testId: string
+  own: boolean
+  inheritedCount: number
+  inheritedFrom: string
+  onCustomize: () => void
+  onInherit: () => void
+  children: React.ReactNode
+}): React.JSX.Element {
+  return (
+    <div className="space-y-2" data-testid={testId}>
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-[13px] text-fg/90">{title}</span>
+        {own ? (
+          <Button
+            size="sm"
+            variant="ghost"
+            className="ml-auto h-6 px-2 text-[11px]"
+            data-testid={`${testId}-inherit`}
+            icon={<RotateCcw className="size-3" />}
+            onClick={onInherit}
+          >
+            voltar a herdar
+          </Button>
+        ) : (
+          <>
+            <span className="text-[12px] text-subtle" data-testid={`${testId}-inherited`}>
+              ★ {inheritedFrom} ({inheritedCount} frases)
+            </span>
+            <Button
+              size="sm"
+              variant="secondary"
+              className="ml-auto h-6 px-2 text-[11px]"
+              data-testid={`${testId}-customize`}
+              onClick={onCustomize}
+            >
+              Personalizar
+            </Button>
+          </>
+        )}
+      </div>
+      {own && (
+        <>
+          {children}
+          <p className="text-[11px] text-subtle">
+            Depois de editar, gere os clipes de novo (“Gerar clipes” na chamada) — sem eles, a frase
+            de ferramenta sai sintetizada na hora e o preâmbulo não toca.
+          </p>
+        </>
+      )}
+    </div>
+  )
+}
+
 function ToolPhrasesField({
   value,
   inherited,

@@ -295,7 +295,9 @@ export function NumberInput({
   int,
   wide,
   label,
-  onCommit
+  placeholder,
+  onCommit,
+  onClear
 }: {
   value: number | undefined
   disabled: boolean
@@ -305,7 +307,11 @@ export function NumberInput({
   int?: boolean
   wide?: boolean
   label?: string
+  /** Texto do campo vazio (ex.: o valor herdado — "★ 400"). */
+  placeholder?: string
   onCommit: (v: number) => void
+  /** O campo ficou vazio (ex.: voltar a herdar / o padrão). Sem ele, vazio não muda nada. */
+  onClear?: () => void
 }): React.JSX.Element {
   const [text, setText] = useState(value == null ? '' : String(value))
   const [prev, setPrev] = useState(value)
@@ -322,8 +328,13 @@ export function NumberInput({
       max={max}
       disabled={disabled}
       aria-label={label}
+      placeholder={placeholder}
       onChange={(e) => {
         setText(e.target.value)
+        if (!e.target.value.trim()) {
+          onClear?.()
+          return
+        }
         const n = int ? parseInt(e.target.value, 10) : parseFloat(e.target.value)
         if (!Number.isNaN(n)) onCommit(n)
       }}

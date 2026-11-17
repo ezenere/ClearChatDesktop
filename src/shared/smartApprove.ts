@@ -8,7 +8,11 @@
 // vira perguntar (mapJudgeDecision). Qualquer erro, tempo esgotado ou resposta ambígua do juiz →
 // pergunta ao usuário (nunca libera nem nega). Contexto extra: smartApproveContext.ts.
 import { contentText } from './attachments'
-import { normalizeCapture, normalizeCapturePrompts } from './smartDefaults'
+import {
+  normalizeCaptureOverrides,
+  normalizeCapturePrompts,
+  normalizeMaxTokens
+} from './smartDefaults'
 import { normalizeThinkingTokens } from './sideReasoning'
 import {
   CACHE_BREAK_KEY,
@@ -42,6 +46,7 @@ import {
   type SmartApproveCategory,
   type SmartApproveConfig,
   type SmartApproveDecision,
+  type SmartApproveDefaults,
   type SmartApproveLabels,
   type StoredMessage,
   type ToolName
@@ -54,10 +59,27 @@ export const SMART_APPROVE_DEFAULTS = {
   minTimeoutS: 3,
   maxTimeoutS: 300,
   maxContextMessages: 50,
-  /** Parâmetros fixos da chamada ao juiz. */
+  /** Parâmetros da chamada ao juiz: temperatura fixa; `max_tokens` padrão (global e chat/persona
+   * sobrescrevem — effectiveJudgeMaxTokens; sem teto) e o mínimo aceito. */
   temperature: 0,
-  maxTokens: 300
+  maxTokens: 300,
+  minMaxTokens: 16
 } as const
+
+/**
+ * `max_tokens` do juiz que vale no chat: o do chat/persona, senão o global
+ * (`smartApproveDefaults.judgeMaxTokens`), senão 300.
+ */
+export function effectiveJudgeMaxTokens(
+  sa: Pick<SmartApproveConfig, 'maxTokens'> | null | undefined,
+  defaults: Pick<SmartApproveDefaults, 'judgeMaxTokens'> | null | undefined
+): number {
+  return (
+    normalizeMaxTokens(sa?.maxTokens, SMART_APPROVE_DEFAULTS.minMaxTokens) ??
+    normalizeMaxTokens(defaults?.judgeMaxTokens, SMART_APPROVE_DEFAULTS.minMaxTokens) ??
+    SMART_APPROVE_DEFAULTS.maxTokens
+  )
+}
 
 /** Placeholders aceitos no prompt e no template (cola na UI). */
 export const SMART_APPROVE_PLACEHOLDERS: { key: string; desc: string }[] = [
@@ -156,6 +178,7 @@ export function normalizeSmartApprove(
       : { ...DEFAULT_SMART_APPROVE_LABELS }
   const str = (v: unknown): string | null => (typeof v === 'string' && v.trim() ? v : null)
   const thinkingTokens = normalizeThinkingTokens(s.thinkingTokens)
+  const judgeMaxTokens = normalizeMaxTokens(s.maxTokens, SMART_APPROVE_DEFAULTS.minMaxTokens)
   return {
     providerId: str(s.providerId),
     model: str(s.model)?.trim() ?? null,
@@ -180,12 +203,17 @@ export function normalizeSmartApprove(
     judgeWhitelisted: s.judgeWhitelisted === true,
     // 0.8.5: ajustes do chat/persona sobre os padrões globais (ausente/null = o global)
     ...(typeof s.environment === 'string' ? { environment: s.environment } : {}),
-    ...(s.capture && typeof s.capture === 'object' ? { capture: normalizeCapture(s.capture) } : {}),
+    // 1.18.0: a coleta do chat/persona é sobrescrita campo a campo (o ausente herda o global)
+    ...(s.capture && typeof s.capture === 'object'
+      ? { capture: normalizeCaptureOverrides(s.capture) }
+      : {}),
     ...(s.capturePrompts && typeof s.capturePrompts === 'object'
       ? { capturePrompts: normalizeCapturePrompts(s.capturePrompts) }
       : {}),
     // 0.8.8: tokens de pensamento (modelo de raciocínio obrigatório); ausente = SIDE_THINKING.judge
     ...(thinkingTokens != null ? { thinkingTokens } : {}),
+    // 1.18.0: max_tokens do juiz neste chat/persona; ausente = o global (effectiveJudgeMaxTokens)
+    ...(judgeMaxTokens != null ? { maxTokens: judgeMaxTokens } : {}),
     // 0.8.8: cache do prompt; ausente = ligado (só o desligado é gravado)
     ...(s.cache === false ? { cache: false } : {})
   }
@@ -546,13 +574,14 @@ export function buildJudgeMessages(sa: SmartApproveConfig, ctx: JudgeContext): S
 export function buildJudgeBody(
   model: string,
   messages: { role: 'system' | 'user'; content: string }[],
-  openRouter: boolean
+  openRouter: boolean,
+  maxTokens: number = SMART_APPROVE_DEFAULTS.maxTokens
 ): Record<string, unknown> {
   return {
     model,
     messages,
     temperature: SMART_APPROVE_DEFAULTS.temperature,
-    max_tokens: SMART_APPROVE_DEFAULTS.maxTokens,
+    max_tokens: maxTokens,
     stream: true,
     stream_options: { include_usage: true },
     ...(openRouter ? { usage: { include: true } } : {})

@@ -19,13 +19,18 @@ import { analyzeShell, groupHeadings } from '@shared/shellParse'
 import type { ApprovalItem, ApprovalListItem, ApprovalMode } from '@shared/types'
 import { api } from '../../lib/api'
 import { cn } from '../../lib/format'
-import { capturePromptsSummary, capturePromptsWarning } from '@shared/contextCapture'
+import {
+  capturePromptsSummary,
+  capturePromptsWarning,
+  normalizeCapture
+} from '@shared/contextCapture'
+import { SMART_APPROVE_DEFAULTS } from '@shared/smartApprove'
 import {
   CaptureFields,
   CapturePromptsFields,
   ENVIRONMENT_PLACEHOLDER
 } from '../panel/SmartContextFields'
-import { CollapsibleSection, ToggleRow } from '../panel/fields'
+import { CollapsibleSection, NumberInput, ToggleRow } from '../panel/fields'
 import { AutoTextarea } from '../ui/controls'
 import { useStore } from '../../store'
 import { C, HelpTip } from '../ui/Tooltip'
@@ -509,9 +514,30 @@ function SmartDefaults(): React.JSX.Element {
           className="field text-[12px] leading-relaxed"
         />
       </div>
+      <div className="flex items-center gap-2.5">
+        <span className="inline-flex min-w-0 flex-1 items-center gap-1 text-[12px] text-fg/90">
+          Máx. de tokens da resposta do juiz
+          <HelpTip label="Máx. de tokens do juiz">
+            <code>max_tokens</code> da chamada ao juiz do Smart-Approve em todos os chats (vazio ={' '}
+            {SMART_APPROVE_DEFAULTS.maxTokens}). A persona e o chat podem sobrescrever. Em modelo
+            que sempre raciocina, os “Tokens de pensamento” somam a ele.
+          </HelpTip>
+        </span>
+        <NumberInput
+          value={smart.judgeMaxTokens ?? undefined}
+          disabled={false}
+          step={50}
+          min={SMART_APPROVE_DEFAULTS.minMaxTokens}
+          int
+          label="Máximo de tokens do juiz"
+          placeholder={String(SMART_APPROVE_DEFAULTS.maxTokens)}
+          onCommit={(v) => v >= SMART_APPROVE_DEFAULTS.minMaxTokens && set({ judgeMaxTokens: v })}
+          onClear={() => set({ judgeMaxTokens: null })}
+        />
+      </div>
       <CaptureFields
         value={smart.capture}
-        onChange={(capture) => set({ capture })}
+        onChange={(capture) => set({ capture: normalizeCapture(capture) })}
         testId="global-capture-fields"
       />
       <CollapsibleSection

@@ -39,6 +39,7 @@ import {
   loadCurrentClipAudio,
   loadCurrentClips,
   loadVoiceClips,
+  ownPoolsKey,
   pruneClips,
   trimWavSilence,
   clipVoiceId,
@@ -906,5 +907,53 @@ test('limpeza: variantes das vozes em uso ficam sempre; as sem uso há 30 dias s
   await pruneClips({ baseDir: base, keep: [a], now: later })
   assert.ok(existsSync(join(base, 'voice-clips', 'LEIA-ME.txt')))
   assert.ok(existsSync(join(clipsDir(base, ma.voiceId)!, 'minha-pasta')))
+  rmSync(base, { recursive: true, force: true })
+})
+
+test('1.18.0: frases PRÓPRIAS da persona/chat — pasta própria (variante + hash do pool); a do dispositivo segue a mesma; limpeza mantém as duas', async () => {
+  const base = newBase()
+  const { backend } = fakeEngine()
+  const s = localSettings('pf_dora')
+  const toolPool = [{ text: 'Frase da persona.', categories: ['web' as const] }]
+  const device = await generateClips({ baseDir: base, settings: s, local: backend })
+  const own = await generateClips({
+    baseDir: base,
+    settings: s,
+    local: backend,
+    toolPool,
+    own: { filler: false, tool: true }
+  })
+  assert.equal(own.voiceId, device.voiceId, 'mesma voz')
+  assert.equal(device.variant, (await clipsLocation(base, s)).variant, 'a do dispositivo não mudou')
+  assert.match(own.variant, /^[0-9a-f]{16}-[0-9a-f]{8}$/)
+  assert.ok(own.variant.startsWith(device.variant), 'mesma configuração de voz + o hash do pool')
+  assert.equal(await ownPoolsKey(null, null, toolPool), null)
+  assert.equal(await ownPoolsKey({ filler: false, tool: false }, null, toolPool), null)
+  // cada lado acha os clipes dele (nenhum sobrescreveu o outro)
+  const ownTool = await loadCurrentClipAudio(base, s, null, 'TOOL', 1, toolPool, null, {
+    filler: false,
+    tool: true
+  })
+  const devTool = await loadCurrentClipAudio(base, s, null, 'TOOL', 1)
+  assert.ok(ownTool && devTool)
+  assert.notDeepEqual(Buffer.from(ownTool.audio), Buffer.from(devTool.audio))
+  // pool próprio diferente → outra pasta
+  const other = await ownPoolsKey({ filler: false, tool: true }, null, [
+    { text: 'Outra frase.', categories: ['web'] }
+  ])
+  assert.notEqual(other, own.variant.slice(17))
+  // limpeza bem depois: as duas em uso ficam
+  const later = Date.now() + CLIP_UNUSED_MAX_AGE_MS + 24 * 60 * 60 * 1000
+  const r = await pruneClips({
+    baseDir: base,
+    keep: [s],
+    keepOwn: [{ settings: s, fillerPool: null, toolPool, own: { filler: false, tool: true } }],
+    now: later
+  })
+  assert.deepEqual(r.removed, [])
+  // sem a persona em uso: a pasta própria sai, a do dispositivo fica
+  const r2 = await pruneClips({ baseDir: base, keep: [s], now: later })
+  assert.deepEqual(r2.removed, [`${own.voiceId}/${own.variant}`])
+  assert.ok(await loadCurrentClips(base, s))
   rmSync(base, { recursive: true, force: true })
 })

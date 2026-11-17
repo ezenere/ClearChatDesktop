@@ -358,10 +358,11 @@ export interface SmartApproveConfig {
    */
   environment?: string | null
   /**
-   * "Coleta automática de contexto" (resumidor): ausente/null = o padrão global. Ver
-   * contextCapture.ts.
+   * "Coleta automática de contexto" (resumidor) deste chat/persona: CADA campo presente sobrescreve
+   * o global e o ausente/null herda (protocolo 1.18.0 — antes o bloco inteiro substituía o global).
+   * Ausente/null = tudo do global. Ver contextCapture.ts → effectiveCapture.
    */
-  capture?: ContextCaptureConfig | null
+  capture?: Partial<ContextCaptureConfig> | null
   /**
    * Prompts do resumidor (coleta de contexto) deste chat/persona: ausente/null = os globais
    * (Configurações → Aprovações → Padrões globais). Ver contextCapture.ts.
@@ -373,6 +374,11 @@ export interface SmartApproveConfig {
    * padrão (SIDE_THINKING.judge).
    */
   thinkingTokens?: number | null
+  /**
+   * `max_tokens` da resposta do juiz neste chat/persona (protocolo 1.18.0). Ausente/null = o global
+   * (`SmartApproveDefaults.judgeMaxTokens`, senão SMART_APPROVE_DEFAULTS.maxTokens = 300).
+   */
+  maxTokens?: number | null
   /**
    * "Cache do prompt" do juiz (0.8.8): `cache_control` no fim do system e no {{cache_break}} do
    * template (@shared/sideCache). Ausente = ligado; só `false` é gravado.
@@ -476,6 +482,11 @@ export interface CapturedContextState {
 export interface SmartApproveDefaults {
   environment: string
   acceptEditsInRoot: boolean
+  /**
+   * `max_tokens` da resposta do juiz (global; protocolo 1.18.0). Ausente/null = 300
+   * (SMART_APPROVE_DEFAULTS.maxTokens). O chat/persona sobrescreve em `SmartApproveConfig.maxTokens`.
+   */
+  judgeMaxTokens?: number | null
   capture: ContextCaptureConfig
   /** Prompts do resumidor (cada um null = o padrão). */
   capturePrompts: CapturePrompts

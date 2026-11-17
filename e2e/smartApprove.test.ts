@@ -13,10 +13,12 @@ import {
   relevantWhitelist
 } from '../src/shared/smartApproveContext.ts'
 import { approvalOutcome } from '../src/renderer/src/lib/approvalOutcome.ts'
+import { normalizeSmartDefaults } from '../src/shared/smartDefaults.ts'
 import {
   argsKey,
   buildJudgeBody,
   buildJudgeMessages,
+  effectiveJudgeMaxTokens,
   judgeVars,
   lastUserMessage,
   mapJudgeDecision,
@@ -1008,4 +1010,17 @@ test('card: aprovada → detalhes no selo (quem aprovou); negada/bloqueada → f
     approvalOutcome({ toolStatus: 'cancelled', approval: { item: 'commands', mode: 'lists' } }),
     null
   )
+})
+
+test('1.18.0: max_tokens do juiz — chat/persona > global (smartApproveDefaults.judgeMaxTokens) > 300; vai na request', () => {
+  assert.equal(effectiveJudgeMaxTokens(null, null), 300)
+  assert.equal(effectiveJudgeMaxTokens(null, { judgeMaxTokens: 800 }), 800)
+  assert.equal(effectiveJudgeMaxTokens({ maxTokens: 1500 }, { judgeMaxTokens: 800 }), 1500)
+  assert.equal(effectiveJudgeMaxTokens({ maxTokens: null }, { judgeMaxTokens: 800 }), 800)
+  assert.equal(effectiveJudgeMaxTokens({ maxTokens: 3 }, null), 16, 'mínimo')
+  assert.equal(effectiveJudgeMaxTokens({ maxTokens: 100_000 }, null), 100_000, 'sem teto')
+  assert.equal(normalizeSmartApprove({ maxTokens: 900 }).maxTokens, 900)
+  assert.equal('maxTokens' in normalizeSmartApprove({ maxTokens: null }), false, 'null = herda')
+  assert.equal(normalizeSmartDefaults({ judgeMaxTokens: 700 }).judgeMaxTokens, 700)
+  assert.equal('judgeMaxTokens' in normalizeSmartDefaults({}), false)
 })

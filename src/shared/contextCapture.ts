@@ -24,7 +24,12 @@ import {
   sideMessage,
   type SideMessage
 } from './sideCache'
-import { CONTEXT_CAPTURE_LIMITS, normalizeCapture, normalizeCapturePrompts } from './smartDefaults'
+import {
+  CONTEXT_CAPTURE_LIMITS,
+  normalizeCapture,
+  normalizeCaptureOverrides,
+  normalizeCapturePrompts
+} from './smartDefaults'
 import type {
   ApprovalItem,
   ApprovalMode,
@@ -43,17 +48,24 @@ export {
   DEFAULT_CAPTURE,
   DEFAULT_CAPTURE_PROMPTS,
   normalizeCapture,
+  normalizeCaptureOverrides,
   normalizeCapturePrompts,
   normalizeSmartDefaults,
   SMART_DEFAULTS_SETTING
 } from './smartDefaults'
 
-/** Config de coleta que vale no chat: a do chat/persona (se houver) ou a global. */
+/**
+ * Config de coleta que vale no chat: a global com os campos que o chat/persona sobrescreve por cima
+ * (1.18.0 — cada campo herda sozinho: dá para mudar só o `max_tokens` ou as falas do agente e
+ * continuar com o modelo global).
+ */
 export function effectiveCapture(
   sa: Partial<SmartApproveConfig> | null | undefined,
   defaults: SmartApproveDefaults | null | undefined
 ): ContextCaptureConfig {
-  return sa?.capture ? normalizeCapture(sa.capture) : normalizeCapture(defaults?.capture)
+  const base = normalizeCapture(defaults?.capture)
+  if (!sa?.capture) return base
+  return normalizeCapture({ ...base, ...normalizeCaptureOverrides(sa.capture) })
 }
 
 /**

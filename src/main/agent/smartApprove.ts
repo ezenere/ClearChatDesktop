@@ -32,6 +32,8 @@ export interface JudgeInput {
   provider: Provider | null
   chatConfig: Pick<ChatConfig, 'appSignature' | 'appSignatureCustom'>
   ctx: JudgeContext
+  /** `max_tokens` da resposta (o efetivo — effectiveJudgeMaxTokens); ausente = 300. */
+  maxTokens?: number
   /** Signal da sessão (Parar/⚡). */
   signal: AbortSignal
 }
@@ -107,7 +109,7 @@ export function buildJudgeRequest(input: Omit<JudgeInput, 'signal'>): BuiltReque
     model: sa.model,
     messages: buildJudgeMessages(sa, input.ctx),
     cache: sa.cache !== false,
-    maxTokens: SMART_APPROVE_DEFAULTS.maxTokens,
+    maxTokens: input.maxTokens ?? sa.maxTokens ?? SMART_APPROVE_DEFAULTS.maxTokens,
     temperature: SMART_APPROVE_DEFAULTS.temperature,
     thinkingTokens: sa.thinkingTokens,
     defaultThinkingTokens: SIDE_THINKING.judge,

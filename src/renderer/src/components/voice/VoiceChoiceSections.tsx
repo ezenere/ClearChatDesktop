@@ -153,6 +153,20 @@ export function VoiceChoiceSections({
     appSignatureCustom: cfg.appSignatureCustom ?? null
   })
   const signature = useMemo(() => JSON.parse(signatureKey) as unknown, [signatureKey])
+  // frases próprias (chat → persona): os clipes desta voz são gerados com elas
+  const toolPhrasePool = voice.toolPhrasePool ?? personaVoice?.toolPhrasePool ?? null
+  const fillerPool = voice.fillerPool ?? personaVoice?.fillerPool ?? null
+  const poolsKey =
+    toolPhrasePool || fillerPool
+      ? JSON.stringify({
+          ...(toolPhrasePool ? { toolPhrasePool } : {}),
+          ...(fillerPool ? { fillerPool } : {})
+        })
+      : null
+  const ownPools = useMemo(
+    () => (poolsKey ? (JSON.parse(poolsKey) as Record<string, unknown>) : null),
+    [poolsKey]
+  )
   if (!voiceApi) return null
 
   const where = scope === 'chat' ? 'deste chat' : 'desta persona'
@@ -186,6 +200,7 @@ export function VoiceChoiceSections({
         where={where}
         scope={scope}
         signature={signature}
+        pools={ownPools}
         onChange={(tts) => set({ tts })}
       />
       <SttChoiceSection
@@ -223,6 +238,8 @@ interface ChoiceProps<C, S> {
   scope: 'chat' | 'persona'
   /** Assinatura de app desta persona/chat (prévias/clipes da fala — headers de atribuição). */
   signature?: unknown
+  /** Frases PRÓPRIAS desta persona/chat (1.18.0 — os clipes delas): ausentes = as do dispositivo. */
+  pools?: { toolPhrasePool?: unknown; fillerPool?: unknown } | null
   onChange: (c: C | null) => void
 }
 
@@ -275,7 +292,7 @@ function TtsChoiceSection(p: ChoiceProps<VoiceTtsChoice, TtsSettings>): React.JS
               providers={providers}
               models={p.models}
               runtime={p.runtime}
-              choice={{ where: p.where, signature: p.signature }}
+              choice={{ where: p.where, signature: p.signature, pools: p.pools ?? null }}
               onCommit={async (next) => {
                 const c = ttsChoiceFromSettings(next)
                 if (c) p.onChange(c)

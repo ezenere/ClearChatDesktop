@@ -24,6 +24,7 @@ import {
   DEFAULT_AUDIO_INPUT,
   DEFAULT_BARGE_IN,
   DEFAULT_FILLER_DELAY_MS,
+  DEFAULT_FILLER_POOL,
   FILLER_DELAY_MS_RANGE,
   DEFAULT_STT_SETTINGS,
   DEFAULT_TTS_SETTINGS,
@@ -42,6 +43,7 @@ import { useEscapeLayer } from '../ui/escape'
 import type { LocalModelAction } from '../../lib/voice/modelList'
 import { ToggleRow } from '../panel/fields'
 import { Button, Kbd, Label } from '../ui/controls'
+import { FillerPoolFields } from './PhrasePoolFields'
 import { Select } from '../ui/Select'
 import { Chip } from '../ui/Chip'
 import { HelpTip } from '../ui/Tooltip'
@@ -804,6 +806,38 @@ export function AudioSettings(): React.JSX.Element | null {
           onCommit={(v) => saveCallDefaults({ fillers: { ...callDefaults.fillers, delayMs: v } })}
         />
         {/* `fillers.prompt` ainda não é consumido (a decisão é por regra): campo escondido até ser */}
+        {callDefaults.fillers.enabled && (
+          <details data-testid="voice-call-fillers-pools" className="group">
+            <summary className="cursor-pointer text-[12px] text-subtle select-none hover:text-fg">
+              Editar os preâmbulos
+            </summary>
+            <div className="mt-2 space-y-3">
+              {callDefaults.fillers.pool && (
+                <div className="flex items-center gap-2 text-[11.5px] text-subtle">
+                  <span>Preâmbulos personalizados — gere os clipes de novo depois de editar.</span>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="ml-auto h-6 px-2 text-[11px]"
+                    data-testid="voice-call-fillers-reset"
+                    onClick={() =>
+                      saveCallDefaults({ fillers: { ...callDefaults.fillers, pool: null } })
+                    }
+                  >
+                    Restaurar padrão
+                  </Button>
+                </div>
+              )}
+              <FillerPoolFields
+                key={callDefaults.fillers.pool ? 'custom' : 'default'}
+                pool={callDefaults.fillers.pool ?? DEFAULT_FILLER_POOL}
+                onCommit={(pool) =>
+                  saveCallDefaults({ fillers: { ...callDefaults.fillers, pool } })
+                }
+              />
+            </div>
+          </details>
+        )}
       </AudioSection>
     </div>
   )

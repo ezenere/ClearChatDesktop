@@ -16,6 +16,7 @@ import {
   effectiveCapturePrompts,
   effectiveEnvironment,
   normalizeCapture,
+  normalizeCaptureOverrides,
   normalizeCapturePrompts,
   smartInUse,
   validateCapturePrompts,
@@ -43,40 +44,88 @@ import { SIDE_THINKING } from '@shared/sideReasoning'
 export const ENVIRONMENT_PLACEHOLDER =
   'Ex.: 172.16.1.7 é meu servidor de testes; pode reiniciar containers lá. Produção é deploy@prod.exemplo.com — nunca mexer sem perguntar.'
 
-/** Campos da coleta automática (ligada, modelo do resumo, mensagens do agente, max_tokens). */
+/** "↺" de um campo sobrescrito no chat/persona: volta a herdar o global. */
+function InheritBack({ what, onClick }: { what: string; onClick: () => void }): React.JSX.Element {
+  return (
+    <Tip label={`Voltar a herdar o global (${what})`}>
+      <button
+        type="button"
+        aria-label={`Voltar a herdar: ${what}`}
+        onClick={onClick}
+        className="grid size-6 shrink-0 place-items-center rounded-md text-subtle hover:bg-hover hover:text-fg"
+      >
+        <RotateCcw className="size-3" />
+      </button>
+    </Tip>
+  )
+}
+
+/**
+ * Campos da coleta automática (ligada, modelo do resumo, falas do agente, max_tokens, pensamento,
+ * cache). Sem `inherited`: edita a config completa (padrões globais). Com `inherited` (chat/persona,
+ * protocolo 1.18.0): `value` são só as SOBRESCRITAS — cada campo ausente herda o global (★ no
+ * campo vazio / "↺" para voltar a herdar).
+ */
 export function CaptureFields({
   value,
   onChange,
-  testId
+  testId,
+  inherited
 }: {
-  value: ContextCaptureConfig
-  onChange: (v: ContextCaptureConfig) => void
+  value: Partial<ContextCaptureConfig> | null | undefined
+  onChange: (v: Partial<ContextCaptureConfig>) => void
   testId?: string
+  inherited?: ContextCaptureConfig
 }): React.JSX.Element {
-  const c = normalizeCapture(value)
-  const hasModel = !!c.providerId && !!c.model
   const L = CONTEXT_CAPTURE_LIMITS
+  const own = inherited ? normalizeCaptureOverrides(value) : null
+  const c = inherited ? normalizeCapture({ ...inherited, ...own }) : normalizeCapture(value)
+  const hasModel = !!c.providerId && !!c.model
+  /** Muda campos (no modo herança: só as sobrescritas; `undefined` = volta a herdar). */
+  const set = (patch: Partial<Record<keyof ContextCaptureConfig, unknown>>): void => {
+    if (!own) {
+      onChange({ ...c, ...(patch as Partial<ContextCaptureConfig>) })
+      return
+    }
+    const next: Record<string, unknown> = { ...own }
+    for (const [k, v] of Object.entries(patch)) {
+      if (v === undefined) delete next[k]
+      else next[k] = v
+    }
+    onChange(next as Partial<ContextCaptureConfig>)
+  }
+  const isOwn = (k: keyof ContextCaptureConfig): boolean => !!own && k in own
+  const star = (v: string | number): string => `★ ${v}`
   return (
     <div data-testid={testId} className="space-y-2.5">
-      <ToggleRow
-        label="Coleta automática de contexto"
-        help={
-          <>
-            <p>
-              Depois de cada mensagem sua, um modelo barato atualiza (em segundo plano) uma
-              descrição curta do que você quer e permite — o juiz lê antes de decidir. Recebe só as
-              suas mensagens e o texto das últimas falas do agente (nunca resultados de tool).
-            </p>
-            <p>
-              Só olha o que veio depois da última mensagem já resumida (nada é reenviado); mensagens
-              seguidas viram uma chamada só; Parar cancela o resumo em andamento. Sem itens em
-              Smart-Approve, nenhuma chamada é feita.
-            </p>
-          </>
-        }
-        checked={c.enabled && hasModel}
-        onChange={(enabled) => onChange({ ...c, enabled })}
-      />
+      <div className="flex items-center gap-1">
+        <div className="min-w-0 flex-1">
+          <ToggleRow
+            label="Coleta automática de contexto"
+            help={
+              <>
+                <p>
+                  Depois de cada mensagem sua, um modelo barato atualiza (em segundo plano) uma
+                  descrição curta do que você quer e permite — o juiz lê antes de decidir. Recebe só
+                  as suas mensagens e o texto das últimas falas do agente (nunca resultados de
+                  tool).
+                </p>
+                <p>
+                  Só olha o que veio depois da última mensagem já resumida (nada é reenviado);
+                  mensagens seguidas viram uma chamada só; Parar cancela o resumo em andamento. Sem
+                  itens em Smart-Approve, nenhuma chamada é feita.
+                </p>
+                {inherited && <p>Cada campo vazio/★ herda o padrão global (Aprovações).</p>}
+              </>
+            }
+            checked={c.enabled && hasModel}
+            onChange={(enabled) => set({ enabled })}
+          />
+        </div>
+        {isOwn('enabled') && (
+          <InheritBack what="ligada/desligada" onClick={() => set({ enabled: undefined })} />
+        )}
+      </div>
       <div className="flex items-center gap-1.5">
         <span className="w-[118px] shrink-0 text-[12px] text-fg/90">Modelo do resumo</span>
         <ModelPicker
@@ -84,21 +133,26 @@ export function CaptureFields({
           value={hasModel ? { providerId: c.providerId!, model: c.model! } : null}
           placeholder="Nenhum"
           // padrão desligado até escolher um modelo: escolher liga
-          onChange={(ref) =>
-            onChange({ ...c, providerId: ref.providerId, model: ref.model, enabled: true })
-          }
+          onChange={(ref) => set({ providerId: ref.providerId, model: ref.model, enabled: true })}
         />
-        {hasModel && (
-          <Tip label="Remover modelo do resumo (desliga a coleta)">
-            <button
-              type="button"
-              aria-label="Remover modelo do resumo"
-              onClick={() => onChange({ ...c, providerId: null, model: null, enabled: false })}
-              className="grid size-8 shrink-0 place-items-center rounded-lg text-subtle hover:bg-hover hover:text-fg"
-            >
-              <X className="size-3.5" />
-            </button>
-          </Tip>
+        {isOwn('model') ? (
+          <InheritBack
+            what="modelo"
+            onClick={() => set({ providerId: undefined, model: undefined })}
+          />
+        ) : (
+          hasModel && (
+            <Tip label="Remover modelo do resumo (desliga a coleta)">
+              <button
+                type="button"
+                aria-label="Remover modelo do resumo"
+                onClick={() => set({ providerId: null, model: null, enabled: false })}
+                className="grid size-8 shrink-0 place-items-center rounded-lg text-subtle hover:bg-hover hover:text-fg"
+              >
+                <X className="size-3.5" />
+              </button>
+            </Tip>
+          )
         )}
       </div>
       <div className="flex items-center gap-2.5">
@@ -106,43 +160,45 @@ export function CaptureFields({
           Falas do agente antes da sua (contexto)
         </span>
         <NumberInput
-          value={c.lookback}
+          value={inherited ? own?.lookback : c.lookback}
           disabled={false}
           step={1}
           min={1}
           max={L.maxLookback}
           int
           label="Falas do agente lidas pelo resumo"
-          onCommit={(v) => v >= 1 && v <= L.maxLookback && onChange({ ...c, lookback: v })}
+          placeholder={inherited ? star(inherited.lookback) : undefined}
+          onCommit={(v) => v >= 1 && v <= L.maxLookback && set({ lookback: v })}
+          onClear={inherited ? () => set({ lookback: undefined }) : undefined}
         />
       </div>
       <div className="flex items-center gap-2.5">
         <span className="min-w-0 flex-1 text-[12px] text-fg/90">
           Máx. de tokens da resposta{' '}
-          <span className="text-faint">(vazio = {L.defaultMaxTokens})</span>
+          {!inherited && <span className="text-faint">(vazio = {L.defaultMaxTokens})</span>}
         </span>
         <NumberInput
-          value={c.maxTokens ?? undefined}
+          value={(inherited ? own?.maxTokens : c.maxTokens) ?? undefined}
           disabled={false}
           step={50}
           min={L.minMaxTokens}
-          max={L.maxMaxTokens}
           int
           label="Máximo de tokens do resumo"
-          onCommit={(v) =>
-            onChange({
-              ...c,
-              maxTokens:
-                Number.isFinite(v) && v >= L.minMaxTokens ? Math.min(v, L.maxMaxTokens) : null
-            })
+          placeholder={
+            inherited ? star(inherited.maxTokens ?? L.defaultMaxTokens) : String(L.defaultMaxTokens)
           }
+          onCommit={(v) => v >= L.minMaxTokens && set({ maxTokens: v })}
+          // vazio: no global = o padrão (400); no chat/persona = herda o global
+          onClear={() => set({ maxTokens: inherited ? undefined : null })}
         />
       </div>
       <SideThinkingField
         providerId={c.providerId}
         model={c.model}
         value={c.thinkingTokens}
-        onChange={(thinkingTokens) => onChange({ ...c, thinkingTokens })}
+        onChange={(thinkingTokens) =>
+          set({ thinkingTokens: inherited && thinkingTokens == null ? undefined : thinkingTokens })
+        }
         defaultTokens={SIDE_THINKING.capture}
         call="do resumo"
         testId={testId ? `${testId}-thinking` : 'capture-thinking'}
@@ -152,11 +208,7 @@ export function CaptureFields({
           providerId={c.providerId}
           model={c.model}
           checked={c.cache !== false}
-          onChange={(on) => {
-            const next: ContextCaptureConfig = { ...c, cache: false }
-            if (on) delete next.cache
-            onChange(next)
-          }}
+          onChange={(on) => set({ cache: on ? undefined : false })}
           what="capture"
         />
       </div>
@@ -326,7 +378,7 @@ export function SmartContextSection({
   cfg: ChatConfig
   set: (p: {
     environment?: string | null
-    capture?: ContextCaptureConfig | null
+    capture?: Partial<ContextCaptureConfig> | null
     capturePrompts?: CapturePrompts | null
   }) => void
   chatId?: string
@@ -336,7 +388,7 @@ export function SmartContextSection({
   const setSettingsOpen = useStore((s) => s.setSettingsOpen)
   const sa = cfg.smartApprove
   const ownEnv = typeof sa?.environment === 'string'
-  const ownCapture = !!sa?.capture
+  const ownCapture = !!sa?.capture && Object.keys(sa.capture).length > 0
   const ownPrompts = !!sa?.capturePrompts
   const capture = effectiveCapture(sa, defaults)
   const prompts = effectiveCapturePrompts(sa, defaults)
@@ -409,29 +461,24 @@ export function SmartContextSection({
           >
             {active ? 'ativa' : 'inativa'}
           </Chip>
-          <label className="ml-auto inline-flex cursor-pointer items-center gap-1.5 text-[11px] text-subtle">
-            <Switch
-              size="sm"
-              testId="capture-use-global"
-              label="Usar o padrão global da coleta de contexto"
-              checked={!ownCapture}
-              onChange={(v) => set({ capture: v ? null : { ...capture } })}
-            />
-            usar o padrão global
-          </label>
+          {ownCapture && (
+            <button
+              type="button"
+              data-testid="capture-use-global"
+              onClick={() => set({ capture: null })}
+              className="ml-auto inline-flex items-center gap-1 text-[11px] text-subtle hover:text-fg"
+            >
+              <RotateCcw className="size-3" /> tudo do global
+            </button>
+          )}
         </div>
-        {ownCapture ? (
-          <CaptureFields
-            value={capture}
-            onChange={(v) => set({ capture: v })}
-            testId="chat-capture-fields"
-          />
-        ) : (
-          <p className="text-[11.5px] text-muted">
-            Padrão global:{' '}
-            {capture.enabled && capture.model ? `ligada · ${capture.model}` : 'desligada'}
-          </p>
-        )}
+        {/* cada campo herda o global sozinho (★); mudar um só sobrescreve aquele */}
+        <CaptureFields
+          value={sa?.capture ?? null}
+          inherited={normalizeCapture(defaults?.capture)}
+          onChange={(v) => set({ capture: Object.keys(v).length ? v : null })}
+          testId="chat-capture-fields"
+        />
       </div>
 
       <CollapsibleSection

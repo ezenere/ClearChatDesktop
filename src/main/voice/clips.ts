@@ -153,6 +153,8 @@ export interface GenerateClipsOptions {
   toolPool?: readonly ToolPhrase[] | null
   /** Pool do "obrigado por aguardar" (`voiceCallDefaults.delayPhrases.thanksPool`); null = o padrão. */
   thanksPool?: readonly string[] | null
+  /** Quais pools são próprios da persona/chat (pasta própria — `ownPoolsKey`). */
+  own?: ClipOwnPools | null
   /** Progresso a cada clipe gerado. */
   onProgress?: (e: { done: number; total: number; id: string }) => void
   signal?: AbortSignal
@@ -210,7 +212,8 @@ export function clipsDir(baseDir: string, voiceId: string, variant?: string | nu
 // ---------------- configuração de voz (variante) ----------------
 
 /** Nome da pasta de uma variante: 16 hex (prefixo de `clipConfigKey`). */
-const VARIANT_RE = /^[0-9a-f]{16}$/
+/** Variante: 16 hex da configuração de voz; com pools próprios (persona/chat), `-` + 8 hex deles. */
+const VARIANT_RE = /^[0-9a-f]{16}(?:-[0-9a-f]{8})?$/
 
 /** Variante sem uso (e que nenhuma voz em uso referencia) há mais que isto sai na limpeza. */
 export const CLIP_UNUSED_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000
@@ -292,14 +295,46 @@ export interface ClipsLocation {
   dir: string
 }
 
-/** Pasta (voz + variante) da configuração de voz das settings. */
+/**
+ * Pools PRÓPRIOS de uma persona/chat (1.18.0 — `effectivePhrasePools`): quais classes vêm deles.
+ * Com algum, os clipes ficam numa pasta própria (a variante ganha o hash dos pools próprios) — a
+ * mesma voz com os pools deste dispositivo e com os de uma persona não se sobrescrevem.
+ */
+export interface ClipOwnPools {
+  filler: boolean
+  tool: boolean
+}
+
+/** Hash curto (8 hex) dos pools próprios; null = nenhum (a pasta de sempre da voz). */
+export async function ownPoolsKey(
+  own: ClipOwnPools | null | undefined,
+  fillerPool?: readonly FillerPhrase[] | null,
+  toolPool?: readonly ToolPhrase[] | null
+): Promise<string | null> {
+  if (!own || (!own.filler && !own.tool)) return null
+  const set = clipPhraseSet(fillerPool, toolPool, null)
+  const hasher = await createSHA256()
+  return hasher
+    .update(
+      stableJson({
+        v: 1,
+        ...(own.filler ? { FILLER: set.FILLER } : {}),
+        ...(own.tool ? { TOOL: set.TOOL } : {})
+      })
+    )
+    .digest('hex')
+    .slice(0, 8)
+}
+
+/** Pasta (voz + variante) da configuração de voz das settings (+ pools próprios, se houver). */
 export async function clipsLocation(
   baseDir: string,
-  settings: TtsSettings
+  settings: TtsSettings,
+  ownKey?: string | null
 ): Promise<ClipsLocation> {
   const voiceId = clipVoiceId(settings)
   const configKey = await clipConfigKey(settings)
-  const variant = configKey.slice(0, 16)
+  const variant = ownKey ? `${configKey.slice(0, 16)}-${ownKey}` : configKey.slice(0, 16)
   const dir = clipsDir(baseDir, voiceId, variant)
   if (!dir) throw new Error(`id de voz inseguro para clipes: ${voiceId}`)
   return { voiceId, variant, configKey, dir }
@@ -446,7 +481,8 @@ export async function loadClips(
   if (variant != null) {
     if (m.variant !== variant) return null
     if (typeof m.configKey !== 'string' || !/^[0-9a-f]{64}$/.test(m.configKey)) return null
-    if (!m.configKey.startsWith(variant)) return null
+    // pasta = os 16 primeiros hex da chave (+ `-<hash>` dos pools próprios da persona/chat)
+    if (!m.configKey.startsWith(variant.slice(0, 16))) return null
     configKey = m.configKey
   }
   if (m.backend !== 'api' && m.backend !== 'local' && m.backend !== 'gpu') return null
@@ -680,12 +716,16 @@ export async function loadVoiceClips(
   settings: TtsSettings,
   fillerPool?: readonly FillerPhrase[] | null,
   toolPool?: readonly ToolPhrase[] | null,
-  thanksPool?: readonly string[] | null
+  thanksPool?: readonly string[] | null,
+  own?: ClipOwnPools | null
 ): Promise<ClipsManifest | null> {
-  const loc = await clipsLocation(baseDir, settings)
+  const ownKey = await ownPoolsKey(own, fillerPool, toolPool)
+  const loc = await clipsLocation(baseDir, settings, ownKey)
   let m = await loadClips(baseDir, loc.voiceId, loc.variant)
   if (m && m.configKey !== loc.configKey) return null
-  if (!m) m = await adoptLegacyClips(baseDir, loc, settings, fillerPool, toolPool, thanksPool)
+  // o layout antigo é sempre dos pools do dispositivo (pools próprios nasceram depois dele)
+  if (!m && !ownKey)
+    m = await adoptLegacyClips(baseDir, loc, settings, fillerPool, toolPool, thanksPool)
   if (m) await markClipsUsed(loc.dir)
   return m
 }
@@ -717,9 +757,17 @@ async function dropBrokenLegacy(baseDir: string, voiceId: string): Promise<void>
  * pasta nova — as outras configurações da MESMA voz ficam intactas.
  */
 export async function generateClips(opts: GenerateClipsOptions): Promise<ClipsManifest> {
-  const loc = await clipsLocation(opts.baseDir, opts.settings)
+  const ownKey = await ownPoolsKey(opts.own, opts.fillerPool, opts.toolPool)
+  const loc = await clipsLocation(opts.baseDir, opts.settings, ownKey)
   // o layout antigo desta configuração é adotado antes (as classes em dia não são sintetizadas)
-  await loadVoiceClips(opts.baseDir, opts.settings, opts.fillerPool, opts.toolPool, opts.thanksPool)
+  await loadVoiceClips(
+    opts.baseDir,
+    opts.settings,
+    opts.fillerPool,
+    opts.toolPool,
+    opts.thanksPool,
+    opts.own
+  )
   return withClipLock(loc.dir, () => generateClipsLocked(opts, loc))
 }
 
@@ -859,10 +907,11 @@ export async function loadCurrentClipAudio(
   cls: string,
   n: number,
   toolPool?: readonly ToolPhrase[] | null,
-  thanksPool?: readonly string[] | null
+  thanksPool?: readonly string[] | null,
+  own?: ClipOwnPools | null
 ): Promise<{ audio: Uint8Array; mime: string } | null> {
   if (!(CLIP_CLASSES as readonly string[]).includes(cls)) return null
-  const m = await loadVoiceClips(baseDir, settings, fillerPool, toolPool, thanksPool)
+  const m = await loadVoiceClips(baseDir, settings, fillerPool, toolPool, thanksPool, own)
   if (!m || !m.clips.some((c) => c.class === cls && c.n === n)) return null
   const current = await clipClassHash(settings, cls as ClipClass, fillerPool, toolPool, thanksPool)
   if (m.classHashes[cls as ClipClass] !== current) return null
@@ -884,6 +933,13 @@ export interface PruneClipsOptions {
   fillerPool?: readonly FillerPhrase[] | null
   toolPool?: readonly ToolPhrase[] | null
   thanksPool?: readonly string[] | null
+  /** Vozes de persona/chat com pools PRÓPRIOS em uso (a pasta delas também fica). */
+  keepOwn?: readonly {
+    settings: TtsSettings
+    fillerPool: readonly FillerPhrase[] | null
+    toolPool: readonly ToolPhrase[] | null
+    own: ClipOwnPools
+  }[]
   /** Sem uso há mais que isto (e sem voz em uso) → sai. Padrão `CLIP_UNUSED_MAX_AGE_MS`. */
   maxAgeMs?: number
   now?: number
@@ -903,6 +959,16 @@ export async function pruneClips(opts: PruneClipsOptions): Promise<{ removed: st
   // pasta de cada voz em uso (falhar aqui = não limpar nada: nunca apagar de uma voz em uso)
   const keep = new Set<string>()
   for (const s of opts.keep) keep.add((await clipsLocation(opts.baseDir, s)).dir)
+  for (const k of opts.keepOwn ?? [])
+    keep.add(
+      (
+        await clipsLocation(
+          opts.baseDir,
+          k.settings,
+          await ownPoolsKey(k.own, k.fillerPool, k.toolPool)
+        )
+      ).dir
+    )
   for (const s of opts.keep) {
     try {
       await loadVoiceClips(opts.baseDir, s, ...pools)

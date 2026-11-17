@@ -2,64 +2,15 @@
 // toolPhrases`): liga/desliga e as frases por categoria de tool (recolhidas; uma por linha). A
 // frase sai na 1ª tool do turno — clipe pré-gerado (`TOOL_<n>`, "Gerar clipes") ou síntese ao vivo
 // sem ele. Ver SPEC.md → "Frases de ferramenta".
-import { useState } from 'react'
 import {
   DEFAULT_TOOL_PHRASE_POOL,
   DEFAULT_TOOL_PHRASES,
-  TOOL_PHRASE_CATEGORIES,
-  type ToolPhrase,
-  type ToolPhraseCategory,
   type VoiceToolPhrases
 } from '@shared/voice'
 import { ToggleRow } from '../panel/fields'
 import { Button } from '../ui/controls'
 import { SubHeading } from './audioUi'
-import { TOOL_PHRASE_CATEGORY_LABELS, replaceCategoryLines } from '../../lib/voice/toolPhrases'
-
-/** Frases de uma categoria (na ordem do pool). */
-const linesOf = (pool: readonly ToolPhrase[], cat: ToolPhraseCategory): string[] =>
-  pool.filter((p) => p.categories.includes(cat)).map((p) => p.text)
-
-/** Frases de UMA categoria (uma por linha; commit no blur). */
-function CategoryField({
-  cat,
-  pool,
-  onCommit
-}: {
-  cat: ToolPhraseCategory
-  pool: readonly ToolPhrase[]
-  onCommit: (pool: ToolPhrase[] | null) => void
-}): React.JSX.Element {
-  const lines = linesOf(pool, cat)
-  const [draft, setDraft] = useState<string | null>(null)
-  const text = draft ?? lines.join('\n')
-  const commit = (): void => {
-    if (draft == null) return
-    setDraft(null)
-    const next = draft
-      .split('\n')
-      .map((l) => l.trim())
-      .filter(Boolean)
-    if (next.join('\n') === lines.join('\n')) return
-    onCommit(replaceCategoryLines(pool, cat, next))
-  }
-  const label = TOOL_PHRASE_CATEGORY_LABELS[cat]
-  return (
-    <div className="space-y-1">
-      <div className="text-[12px] text-fg/85">{label}</div>
-      <textarea
-        value={text}
-        spellCheck={false}
-        aria-label={`Frases de ferramenta — ${label} (uma por linha)`}
-        data-testid={`voice-call-tool-phrases-${cat}`}
-        rows={Math.min(5, Math.max(2, lines.length))}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={commit}
-        className="field min-h-[48px] resize-y text-[12px] leading-relaxed"
-      />
-    </div>
-  )
-}
+import { ToolPhrasePoolFields } from './PhrasePoolFields'
 
 export function ToolPhrasesSettings({
   value,
@@ -104,14 +55,11 @@ export function ToolPhrasesSettings({
                 </Button>
               </div>
             )}
-            {TOOL_PHRASE_CATEGORIES.map((cat) => (
-              <CategoryField
-                key={`${cat}-${tp.pool ? 'custom' : 'default'}`}
-                cat={cat}
-                pool={pool}
-                onCommit={(next) => set({ pool: next })}
-              />
-            ))}
+            <ToolPhrasePoolFields
+              key={tp.pool ? 'custom' : 'default'}
+              pool={pool}
+              onCommit={(next) => set({ pool: next })}
+            />
           </div>
         </details>
       )}

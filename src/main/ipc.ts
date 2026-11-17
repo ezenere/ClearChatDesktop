@@ -164,7 +164,10 @@ import {
   normalizeVoiceTtsChoice,
   type VoiceLayers,
   type VoiceSttChoice,
-  type VoiceTtsChoice
+  type VoiceTtsChoice,
+  clipsPhrasePools,
+  effectivePhrasePools,
+  type VoiceCallConfig
 } from '@shared/voice'
 import { cachedVoiceUnitPrice, fetchVoicePreview, listVoiceCatalog } from './voice/voiceCatalog'
 import { onSttApiUsage } from './voice/stt'
@@ -304,6 +307,17 @@ function callSignature(): AppSignatureConfig | null {
   return callVoice ? (chatsRepo.get(callVoice.chatId)?.config ?? null) : null
 }
 
+/** Config de voz do chat da chamada em andamento e a da persona dele (pools de frases próprios). */
+function callVoiceConfigs(): {
+  voice: VoiceCallConfig | null
+  persona: VoiceCallConfig | null
+} | null {
+  if (!callVoice) return null
+  const cfg = chatsRepo.get(callVoice.chatId)?.config
+  const persona = cfg?.presetId ? (presetsRepo.get(cfg.presetId)?.config.voice ?? null) : null
+  return { voice: cfg?.voice ?? null, persona }
+}
+
 /** Settings de voz para os serviços da chamada: as efetivas do chat da chamada (ver `callVoice`). */
 function callVoiceSettings(chatId?: string | null): VoiceSettings {
   return callVoice && (!chatId || chatId === callVoice.chatId)
@@ -330,9 +344,30 @@ function pruneVoiceClipsSoon(): void {
       for (const p of presetsRepo.list()) add(p.config.voice?.tts)
       for (const c of chatsRepo.list()) add(c.config.voice?.tts)
       const device = getVoiceSettings().voiceCallDefaults
+      // vozes com frases PRÓPRIAS (persona/chat — 1.18.0): a pasta delas também fica
+      const keepOwn: NonNullable<Parameters<typeof pruneClips>[0]['keepOwn']>[number][] = []
+      const addOwn = (voice: VoiceCallConfig | null, persona: VoiceCallConfig | null): void => {
+        const pp = effectivePhrasePools(voice, device, persona)
+        if (!pp.ownFiller && !pp.ownTool) return
+        const tts = normalizeVoiceTtsChoice(voice?.tts) ?? normalizeVoiceTtsChoice(persona?.tts)
+        keepOwn.push({
+          settings: getVoiceSettingsWith({ tts }).tts,
+          fillerPool: pp.fillerPool,
+          toolPool: pp.toolPool,
+          own: { filler: pp.ownFiller, tool: pp.ownTool }
+        })
+      }
+      for (const p of presetsRepo.list()) addOwn(p.config.voice ?? null, null)
+      for (const c of chatsRepo.list()) {
+        const persona = c.config.presetId
+          ? (presetsRepo.get(c.config.presetId)?.config.voice ?? null)
+          : null
+        addOwn(c.config.voice ?? null, persona)
+      }
       const { removed } = await pruneClips({
         baseDir: app.getPath('userData'),
         keep: [...choices.values()].map((c) => getVoiceSettingsWith({ tts: c }).tts),
+        keepOwn,
         fillerPool: device.fillers.pool,
         toolPool: device.toolPhrases.pool,
         thanksPool: device.delayPhrases.thanksPool
@@ -704,17 +739,19 @@ export function registerIpc(): void {
     logEval: (event) => evalLogger.log(event),
     clip: (cls, n) => {
       // só o cache em dia com a definição atual (pool de preâmbulos/frases/voz) — clipe velho não
-      // toca; o cache é POR VOZ: a voz da persona/chat sem clipes gerados cai nas reservas de
-      // sempre (frase de ferramenta → síntese ao vivo; preâmbulo → não toca)
+      // toca; o cache é POR VOZ (e por pools próprios da persona/chat — 1.18.0): sem clipes
+      // gerados, as reservas de sempre (frase de ferramenta → síntese ao vivo; preâmbulo → não toca)
       const v = callVoiceSettings()
+      const pp = clipsPhrasePools({ call: true }, v.voiceCallDefaults, callVoiceConfigs())
       return loadCurrentClipAudio(
         app.getPath('userData'),
         v.tts,
-        v.voiceCallDefaults.fillers.pool,
+        pp.fillerPool,
         cls,
         n,
-        v.voiceCallDefaults.toolPhrases.pool,
-        v.voiceCallDefaults.delayPhrases.thanksPool
+        pp.toolPool,
+        v.voiceCallDefaults.delayPhrases.thanksPool,
+        { filler: pp.ownFiller, tool: pp.ownTool }
       )
     },
     // turno continuado/barge-in: para o turno e deixa no histórico só o que foi falado
@@ -1656,12 +1693,15 @@ export function registerIpc(): void {
           ? callSignature()
           : appSignatureConfigFrom(input?.signature)
       )
+      // pools: os da persona/chat do editor, os da chamada (dock) ou os deste dispositivo
+      const pp = clipsPhrasePools(input, v.voiceCallDefaults, callVoiceConfigs())
       const manifest = await generateClips({
         baseDir: app.getPath('userData'),
         settings: v.tts,
-        fillerPool: v.voiceCallDefaults.fillers.pool,
-        toolPool: v.voiceCallDefaults.toolPhrases.pool,
+        fillerPool: pp.fillerPool,
+        toolPool: pp.toolPool,
         thanksPool: v.voiceCallDefaults.delayPhrases.thanksPool,
+        own: { filler: pp.ownFiller, tool: pp.ownTool },
         local: ttsLocalEngine(),
         onProgress: (e) => sendToWindows(VOICE_TTS_CLIPS_PROGRESS_CHANNEL, e)
       })
@@ -1674,14 +1714,16 @@ export function registerIpc(): void {
       call?: boolean
     }): Promise<TtsClipsView | null> => {
       const v = getVoiceSettingsWith({ tts: clipsTtsChoice(input, callVoice?.tts) })
-      // a pasta da CONFIGURAÇÃO de voz (voz + modelo + parâmetros…) — a mesma que a geração e a
-      // chamada resolvem; o layout antigo que casa com ela é adotado aqui
+      const pp = clipsPhrasePools(input, v.voiceCallDefaults, callVoiceConfigs())
+      // a pasta da CONFIGURAÇÃO de voz (voz + modelo + parâmetros… + pools próprios) — a mesma que
+      // a geração e a chamada resolvem; o layout antigo que casa com ela é adotado aqui
       const m = await loadVoiceClips(
         app.getPath('userData'),
         v.tts,
-        v.voiceCallDefaults.fillers.pool,
-        v.voiceCallDefaults.toolPhrases.pool,
-        v.voiceCallDefaults.delayPhrases.thanksPool
+        pp.fillerPool,
+        pp.toolPool,
+        v.voiceCallDefaults.delayPhrases.thanksPool,
+        { filler: pp.ownFiller, tool: pp.ownTool }
       )
       if (!m) return null
       // cache de uma definição antiga (frases/pool mudaram): "stale" → a UI pede para regerar; as
@@ -1690,8 +1732,8 @@ export function registerIpc(): void {
       const staleClasses = await clipStaleClasses(
         m,
         v.tts,
-        v.voiceCallDefaults.fillers.pool,
-        v.voiceCallDefaults.toolPhrases.pool,
+        pp.fillerPool,
+        pp.toolPool,
         v.voiceCallDefaults.delayPhrases.thanksPool
       )
       return {

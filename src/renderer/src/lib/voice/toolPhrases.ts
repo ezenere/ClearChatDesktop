@@ -50,7 +50,9 @@ const poolKey = (pool: readonly ToolPhrase[]): string =>
 export function replaceCategoryLines(
   pool: readonly ToolPhrase[],
   cat: ToolPhraseCategory,
-  lines: readonly string[]
+  lines: readonly string[],
+  /** Igual ao padrão continua um pool (a persona/chat que copiou o global) — senão null = padrão. */
+  keepDefault = false
 ): ToolPhrase[] | null {
   const out: ToolPhrase[] = []
   const add = (text: string, cats: readonly ToolPhraseCategory[]): void => {
@@ -75,6 +77,7 @@ export function replaceCategoryLines(
   }
   insertNew()
   const next = normalizeToolPhrasePool(out)
-  if (!next || poolKey(next) === poolKey(DEFAULT_TOOL_PHRASE_POOL)) return null
+  if (!next) return null
+  if (!keepDefault && poolKey(next) === poolKey(DEFAULT_TOOL_PHRASE_POOL)) return null
   return next
 }

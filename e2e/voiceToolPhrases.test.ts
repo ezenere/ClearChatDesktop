@@ -26,6 +26,10 @@ import {
   normalizeToolPhrasePool,
   normalizeToolPhrases,
   normalizeVoiceCallConfig,
+  type VoiceCallConfig,
+  effectivePhrasePools,
+  clipsPhrasePools,
+  DEFAULT_FILLER_POOL,
   normalizeVoiceCallDefaults,
   resolveToolPhrasePool,
   resolveVoiceCallConfig,
@@ -48,6 +52,7 @@ import {
   type VoiceCallUtterance
 } from '../src/main/voice/call.ts'
 import { replaceCategoryLines } from '../src/renderer/src/lib/voice/toolPhrases.ts'
+import { replaceContextLines } from '../src/renderer/src/lib/voice/fillerPhrases.ts'
 
 // =====================================================================================
 // config + política pura
@@ -289,6 +294,9 @@ interface HarnessOpts {
   toolPhrases?: Partial<VoiceToolPhrases>
   /** Reprodução falsa: cada utterance toca pelo tempo dado e o `playback-idle` sai na fila vazia. */
   autoPlay?: boolean
+  /** Config de voz do chat (frases próprias — 1.18.0) e a da persona dele. */
+  chatVoice?: Record<string, unknown>
+  personaVoice?: Record<string, unknown>
 }
 
 interface Harness {
@@ -391,7 +399,10 @@ function harness(opts: HarnessOpts = {}): Harness {
         ? null
         : { audio: new TextEncoder().encode(`CLIP:${cls}_${n}`), mime: 'audio/wav' },
     sessionInfo: () => ({ chatId: 'c1', depth: 0, busy: false }),
-    chatConfig: () => ({}) as ChatConfig,
+    chatConfig: () => (opts.chatVoice ? { voice: opts.chatVoice } : {}) as ChatConfig,
+    ...(opts.personaVoice
+      ? { personaVoice: () => opts.personaVoice as unknown as VoiceCallConfig }
+      : {}),
     settings: () => ({
       defaults,
       audioInput: DEFAULT_AUDIO_INPUT,
@@ -562,6 +573,29 @@ test('nome parcial no stream (ainda sem frase) não decide; o nome completo deci
   await flush()
   assert.equal(h.tools().length, 1)
   h.m.stop()
+})
+
+test('frases PRÓPRIAS da persona (1.18.0): a chamada fala a frase do pool da persona; o chat sobrescreve a persona', async () => {
+  const personaPool = [{ text: 'Frase da persona sobre a web.', categories: ['web'] }]
+  const h = harness({ fillers: false, personaVoice: { toolPhrasePool: personaPool } })
+  userTurn(h)
+  callTools(h, ['web_search'])
+  await flush()
+  assert.equal(h.tools().length, 1)
+  // o texto decidido (o clipe falso do harness é por índice; a decisão traz o texto)
+  assert.equal(toolDecisions(h)[0].text, 'Frase da persona sobre a web.')
+  h.m.stop()
+  // o chat com pool próprio vence a persona
+  const h2 = harness({
+    fillers: false,
+    personaVoice: { toolPhrasePool: personaPool },
+    chatVoice: { toolPhrasePool: [{ text: 'Frase do chat.', categories: ['web'] }] }
+  })
+  userTurn(h2)
+  callTools(h2, ['web_search'])
+  await flush()
+  assert.equal(toolDecisions(h2)[0].text, 'Frase do chat.')
+  h2.m.stop()
 })
 
 test('end_call/ask_user não contam como "a 1ª tool": a próxima tool do turno ainda ganha a frase', async () => {
@@ -979,4 +1013,58 @@ test('o usuário fala por cima: a frase de ferramenta tocando é cancelada (fade
   assert.ok(h.cancelled.includes(id))
   assert.ok(h.timeline.some((e) => e.kind === 'clip-cancelled' && e.class === 'TOOL'))
   h.m.stop()
+})
+
+test('1.18.0: pools próprios na config de voz (normaliza, chat > persona > dispositivo) e os dos clipes pedidos', () => {
+  const toolPool = [{ text: 'Frase da persona.', categories: ['web'] }]
+  const fillerPool = [{ text: 'Um instante, por favor.', contexts: ['question', 'xx'] }]
+  const n = normalizeVoiceCallConfig({ toolPhrasePool: toolPool, fillerPool, lixo: 1 })
+  assert.deepEqual(n.toolPhrasePool, toolPool)
+  assert.deepEqual(n.fillerPool, [{ text: 'Um instante, por favor.', contexts: ['question'] }])
+  assert.equal('toolPhrasePool' in normalizeVoiceCallConfig({ toolPhrasePool: [] }), false)
+  const device = {
+    ...DEFAULT_VOICE_CALL_DEFAULTS,
+    toolPhrases: { enabled: true, pool: [{ text: 'Do aparelho.', categories: ['web' as const] }] }
+  }
+  // persona com pool → own; chat sem → herda a persona
+  const p = effectivePhrasePools(null, device, { toolPhrasePool: toolPool } as VoiceCallConfig)
+  assert.deepEqual(p.toolPool, toolPool)
+  assert.equal(p.ownTool, true)
+  assert.equal(p.ownFiller, false)
+  assert.equal(p.fillerPool, null, 'preâmbulos: os do dispositivo (null = os do app)')
+  // nada próprio → o do dispositivo
+  const d = effectivePhrasePools(null, device, null)
+  assert.equal(d.ownTool, false)
+  assert.equal(d.toolPool?.[0].text, 'Do aparelho.')
+  // clipes pedidos: pools do editor, da chamada, ou do dispositivo
+  assert.equal(
+    clipsPhrasePools({ pools: { toolPhrasePool: toolPool } }, device, null).ownTool,
+    true
+  )
+  assert.equal(
+    clipsPhrasePools({ call: true }, device, {
+      voice: null,
+      persona: { toolPhrasePool: toolPool } as VoiceCallConfig
+    }).ownTool,
+    true
+  )
+  assert.equal(clipsPhrasePools({}, device, null).ownTool, false)
+  assert.equal(clipsPhrasePools({ call: true }, device, null).ownTool, false, 'sem chamada')
+})
+
+test('preâmbulos por contexto: troca as linhas de um contexto; igual ao padrão → null (global) ou mantém (persona)', () => {
+  const pool = [...DEFAULT_FILLER_POOL]
+  const q = pool.filter((p) => p.contexts.includes('question')).map((p) => p.text)
+  const next = replaceContextLines(pool, 'question', ['Pergunta boa, já vejo.'])!
+  assert.ok(
+    next.some((p) => p.text === 'Pergunta boa, já vejo.' && p.contexts.includes('question'))
+  )
+  assert.ok(
+    !next.some(
+      (p) => p.contexts.includes('question') && q.includes(p.text) && p.contexts.length === 1
+    )
+  )
+  // de volta ao padrão: null no global; a persona mantém o pool (não volta a herdar sozinha)
+  assert.equal(replaceContextLines(pool, 'question', q), null)
+  assert.ok(replaceContextLines(pool, 'question', q, true))
 })

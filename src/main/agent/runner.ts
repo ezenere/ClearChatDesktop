@@ -26,7 +26,8 @@ import {
   argsSummary,
   normalizeSmartApprove,
   overrideMessageText,
-  smartRejectText
+  smartRejectText,
+  effectiveJudgeMaxTokens
 } from '@shared/smartApprove'
 import { buildJudgeExtras, type JudgeExtras } from '@shared/smartApproveContext'
 import {
@@ -2067,6 +2068,7 @@ async function executeTool(
           sa,
           provider: sa.providerId ? providersRepo.get(sa.providerId) : null,
           chatConfig: chat.config,
+          maxTokens: effectiveJudgeMaxTokens(sa, getApprovalSettings().smart),
           ctx: {
             tool: name,
             args,
@@ -4296,6 +4298,7 @@ export async function smartApproveTest(input: SmartApproveTestInput): Promise<Sm
     sa,
     provider,
     chatConfig: input.config,
+    maxTokens: effectiveJudgeMaxTokens(sa, getApprovalSettings().smart),
     ctx,
     signal: new AbortController().signal
   })

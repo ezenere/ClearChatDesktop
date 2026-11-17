@@ -11,6 +11,7 @@ import {
   buildJudgeMessages,
   normalizeSmartApprove,
   SMART_APPROVE_DEFAULTS,
+  effectiveJudgeMaxTokens,
   SMART_APPROVE_PLACEHOLDERS,
   SMART_APPROVE_SAMPLE,
   validateLabels
@@ -75,6 +76,8 @@ function SmartRequestInfo({
 }: CfgProps & { sa: SmartApproveConfig; tool: ToolName; args: unknown }): React.JSX.Element {
   const provider = useStore((s) => s.providers.find((p) => p.id === sa.providerId))
   const bwrap = useStore((s) => s.capabilities.bwrap)
+  const smartDefaults = useStore((s) => s.approvalSettings.smart)
+  const judgeMax = effectiveJudgeMaxTokens(sa, smartDefaults)
   const messages = buildJudgeMessages(sa, {
     tool,
     args,
@@ -89,7 +92,7 @@ function SmartRequestInfo({
     model: sa.model,
     messages,
     cache: sa.cache !== false,
-    maxTokens: SMART_APPROVE_DEFAULTS.maxTokens,
+    maxTokens: judgeMax,
     temperature: SMART_APPROVE_DEFAULTS.temperature,
     thinkingTokens: sa.thinkingTokens,
     defaultThinkingTokens: SIDE_THINKING.judge
@@ -111,8 +114,8 @@ function SmartRequestInfo({
         <strong className="text-fg">separada</strong> ao modelo escolhido (fora do histórico; o
         agente não a vê): <C>{'role: "system"'}</C> = o prompt, <C>{'role: "user"'}</C> = o template
         com os placeholders preenchidos, <C>temperature: 0</C> (omitido se o modelo não aceita),{' '}
-        <C>max_tokens: {SMART_APPROVE_DEFAULTS.maxTokens}</C>. Raciocínio desligado onde o modelo
-        permite; se for obrigatório, esforço mínimo e os “Tokens de pensamento” somados ao{' '}
+        <C>max_tokens: {judgeMax}</C> (“Máx. de tokens da resposta”). Raciocínio desligado onde o
+        modelo permite; se for obrigatório, esforço mínimo e os “Tokens de pensamento” somados ao{' '}
         <C>max_tokens</C>. Com “Cache do prompt”, <C>cache_control</C> no fim do system e no{' '}
         <C>{'{{cache_break}}'}</C> do template (Anthropic e Anthropic/Gemini no OpenRouter).
         Headers: os do provedor do juiz + a assinatura do app deste chat.
@@ -177,6 +180,7 @@ export function SmartApproveSection({
   }
 
   const global = useStore((s) => s.approvalSettings.modes)
+  const smartDefaults = useStore((s) => s.approvalSettings.smart)
   const smartItems = APPROVAL_ITEMS.filter((i) => effectiveMode(cfg, global, i) === 'smart')
 
   const runTest = async (): Promise<void> => {
@@ -432,6 +436,23 @@ export function SmartApproveSection({
                 }
               />
               <span className="text-[12px] text-subtle">s</span>
+            </div>
+            <div className="flex items-center gap-2.5">
+              <span className="min-w-0 flex-1 text-[12.5px] text-fg/90">
+                Máx. de tokens da resposta
+              </span>
+              <NumberInput
+                value={sa.maxTokens ?? undefined}
+                disabled={false}
+                step={50}
+                min={SMART_APPROVE_DEFAULTS.minMaxTokens}
+                int
+                label="Máximo de tokens do juiz"
+                // vazio = herda o global (Configurações → Aprovações; padrão 300)
+                placeholder={`★ ${effectiveJudgeMaxTokens(null, smartDefaults)}`}
+                onCommit={(v) => v >= SMART_APPROVE_DEFAULTS.minMaxTokens && set({ maxTokens: v })}
+                onClear={() => set({ maxTokens: null })}
+              />
             </div>
 
             <CollapsibleSection

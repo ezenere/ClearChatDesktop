@@ -52,7 +52,8 @@ import {
   type VoiceCallConfig,
   type VoiceCallDefaults,
   type VoiceCallState,
-  type VoiceDelayPhrases
+  type VoiceDelayPhrases,
+  effectivePhrasePools
 } from '@shared/voice'
 import {
   DELAY_RECENT_WINDOW,
@@ -983,6 +984,14 @@ export class VoiceCallManager {
     return resolveVoiceCallConfig(cfg?.voice ?? null, this.#deps.settings(chatId).defaults, persona)
   }
 
+  /** Pools de frases da chamada: os da persona/chat (1.18.0) ou os deste dispositivo. */
+  #pools(): ReturnType<typeof effectivePhrasePools> {
+    const chatId = this.#chatId
+    const cfg = chatId ? this.#deps.chatConfig(chatId) : null
+    const persona = chatId ? (this.#deps.personaVoice?.(chatId) ?? null) : null
+    return effectivePhrasePools(cfg?.voice ?? null, this.#deps.settings(chatId).defaults, persona)
+  }
+
   // ---------------- turno continuado / barge-in (histórico só com o ouvido) ----------------
 
   /** Retém a resposta: frases emitidas-e-descartadas + fila + em voo voltam à memória (texto). */
@@ -1721,7 +1730,7 @@ export class VoiceCallManager {
     const ctx = this.#fillerContext
     const base = this.#filler.toolsRunning ? 'tools' : 'delay'
     const gen = this.#fillerGen
-    const pool = resolveFillerPool(this.#deps.settings().defaults.fillers?.pool ?? null)
+    const pool = resolveFillerPool(this.#pools().fillerPool)
     // a frase do contexto fora das recentes; clipe ausente tenta outras (até 3)
     let clip: { audio: Uint8Array; mime: string } | null = null
     let idx: number | null = null
@@ -1839,7 +1848,7 @@ export class VoiceCallManager {
     decidedAt: number
   ): Promise<void> {
     const gen = this.#toolGen
-    const pool = resolveToolPhrasePool(this.#deps.settings().defaults.toolPhrases?.pool ?? null)
+    const pool = resolveToolPhrasePool(this.#pools().toolPool)
     const idx = pickToolPhrase(pool, category, this.#toolRecent, () => this.#rng())
     if (idx == null) return this.#toolSkip(category, 'no-phrase')
     const text = pool[idx].text

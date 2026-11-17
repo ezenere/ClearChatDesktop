@@ -13,7 +13,10 @@ import {
   captureActive,
   capturePromptsSummary,
   capturePromptsWarning,
+  effectiveCapture,
   effectiveCapturePrompts,
+  normalizeCapture,
+  normalizeCaptureOverrides,
   resolveCapturePrompts,
   validateCapturePrompts,
   CONTEXT_CAPTURE_LIMITS,
@@ -615,4 +618,38 @@ test('serviço: usa os prompts do chat/global; template quebrado → padrão; a 
     'a linha copiada do agente foi descartada mesmo com o prompt personalizado'
   )
   assert.equal(e.lastRun?.dropped, 1)
+})
+
+test('1.18.0: coleta do chat/persona sobrescreve campo a campo (o resto herda o global); max_tokens sem teto', () => {
+  const defaults = normalizeSmartDefaults({
+    capture: { enabled: true, providerId: 'pg', model: 'global-sum', maxTokens: 600, lookback: 3 }
+  })
+  // só o max_tokens na persona: modelo, ligada e falas do agente vêm do global
+  const onlyMax = effectiveCapture({ capture: { maxTokens: 20_000 } }, defaults)
+  assert.equal(onlyMax.maxTokens, 20_000, 'sem o antigo teto de 4000')
+  assert.equal(onlyMax.model, 'global-sum')
+  assert.equal(onlyMax.enabled, true)
+  assert.equal(onlyMax.lookback, 3)
+  // só as falas do agente
+  const onlyLookback = effectiveCapture({ capture: { lookback: 7 } }, defaults)
+  assert.equal(onlyLookback.lookback, 7)
+  assert.equal(onlyLookback.maxTokens, 600)
+  // bloco antigo (completo): continua sobrescrevendo o que traz; maxTokens null = herda
+  const old = effectiveCapture(
+    { capture: { enabled: false, providerId: 'pc', model: 'sum', maxTokens: null, lookback: 2 } },
+    defaults
+  )
+  assert.equal(old.enabled, false)
+  assert.equal(old.model, 'sum')
+  assert.equal(old.lookback, 2)
+  assert.equal(old.maxTokens, 600, 'null no chat herda o global')
+  // sem coleta própria: tudo do global
+  assert.deepEqual(effectiveCapture({}, defaults), defaults.capture)
+  // sobrescritas: só os campos válidos; par de modelo junto; mínimo de max_tokens
+  assert.deepEqual(normalizeCaptureOverrides({ maxTokens: 10, providerId: 'x' }), { maxTokens: 64 })
+  assert.deepEqual(normalizeCaptureOverrides({ providerId: null, model: null }), {
+    providerId: null,
+    model: null
+  })
+  assert.equal(normalizeCapture({ maxTokens: 50_000 }).maxTokens, 50_000)
 })

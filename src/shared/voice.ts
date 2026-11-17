@@ -663,6 +663,17 @@ export interface VoiceCallConfig {
    * (persona → global `voiceCallDefaults.toolPhrases.enabled`, ligado). Aditivo.
    */
   toolPhrases?: boolean | null
+  /**
+   * Frases de ferramenta PRÓPRIAS da persona/chat (texto + categorias); null/ausente = herda (chat →
+   * persona → `voiceCallDefaults.toolPhrases.pool` deste dispositivo → as do app). Protocolo 1.18.0;
+   * aditivo. Clipes próprios (pasta da voz com o hash do pool — `clips.ts`).
+   */
+  toolPhrasePool?: ToolPhrase[] | null
+  /**
+   * Preâmbulos PRÓPRIOS da persona/chat (texto + contextos); null/ausente = herda (chat → persona →
+   * `voiceCallDefaults.fillers.pool` deste dispositivo → os do app). Protocolo 1.18.0; aditivo.
+   */
+  fillerPool?: FillerPhrase[] | null
   /** Texto da instrução das tags; null/ausente = herda (persona → global → `DEFAULT_AUDIO_TAGS_PROMPT`). */
   audioTagsPrompt?: string | null
   /**
@@ -1253,6 +1264,15 @@ export function normalizeVoiceCallConfig(v: unknown): VoiceCallConfig {
     // tags de voz (aditivo; opt-in): só gravados quando escolhidos — lixo some
     ...(typeof src.audioTags === 'boolean' ? { audioTags: src.audioTags } : {}),
     ...(typeof src.toolPhrases === 'boolean' ? { toolPhrases: src.toolPhrases } : {}),
+    // frases próprias da persona/chat (1.18.0; aditivo): só gravadas quando escolhidas
+    ...(() => {
+      const pool = normalizeToolPhrasePool(src.toolPhrasePool)
+      return pool ? { toolPhrasePool: pool } : {}
+    })(),
+    ...(() => {
+      const pool = normalizeFillerPool(src.fillerPool)
+      return pool ? { fillerPool: pool } : {}
+    })(),
     ...(() => {
       const p = normalizeAudioTagsPrompt(src.audioTagsPrompt)
       return p ? { audioTagsPrompt: p } : {}
@@ -1551,6 +1571,8 @@ export function layerVoiceCallConfig(
   const endCall = c.endCall ?? p.endCall ?? null
   const audioTags = c.audioTags ?? p.audioTags ?? null
   const toolPhrases = c.toolPhrases ?? p.toolPhrases ?? null
+  const toolPhrasePool = c.toolPhrasePool ?? p.toolPhrasePool ?? null
+  const fillerPool = c.fillerPool ?? p.fillerPool ?? null
   const audioTagsPrompt = c.audioTagsPrompt ?? p.audioTagsPrompt ?? null
   const tts = c.tts ?? p.tts ?? null
   const stt = c.stt ?? p.stt ?? null
@@ -1564,9 +1586,36 @@ export function layerVoiceCallConfig(
     ...(endCall !== null ? { endCall } : {}),
     ...(audioTags !== null ? { audioTags } : {}),
     ...(toolPhrases !== null ? { toolPhrases } : {}),
+    ...(toolPhrasePool ? { toolPhrasePool } : {}),
+    ...(fillerPool ? { fillerPool } : {}),
     ...(audioTagsPrompt !== null ? { audioTagsPrompt } : {}),
     ...(tts ? { tts } : {}),
     ...(stt ? { stt } : {})
+  }
+}
+
+/**
+ * Pools de frases que valem na chamada do chat: os próprios (chat → persona) ou os deste dispositivo
+ * (`voiceCallDefaults` — null = os do app). `own` = vêm da persona/chat: os clipes ficam numa pasta
+ * própria (o hash do pool na variante — `clips.ts`), sem misturar com os do dispositivo.
+ */
+export function effectivePhrasePools(
+  config: VoiceCallConfig | null | undefined,
+  defaults: VoiceCallDefaults | null | undefined,
+  persona?: VoiceCallConfig | null
+): {
+  fillerPool: FillerPhrase[] | null
+  toolPool: ToolPhrase[] | null
+  ownFiller: boolean
+  ownTool: boolean
+} {
+  const c = layerVoiceCallConfig(config ?? null, persona ?? null)
+  const d = normalizeVoiceCallDefaults(defaults ?? null)
+  return {
+    fillerPool: c.fillerPool ?? d.fillers.pool,
+    toolPool: c.toolPhrasePool ?? d.toolPhrases.pool,
+    ownFiller: !!c.fillerPool,
+    ownTool: !!c.toolPhrasePool
   }
 }
 
@@ -1841,6 +1890,24 @@ export function clipsTtsChoice(
   const explicit = normalizeVoiceTtsChoice(o?.tts)
   if (explicit) return explicit
   return o?.call === true ? (callTts ?? null) : null
+}
+
+/**
+ * Pools de frases dos clipes pedidos pelo renderer (`voice:tts:clips:list|generate`, 1.18.0):
+ * `input.pools` = os da persona/chat do editor (`{ toolPhrasePool, fillerPool }` — ausentes herdam
+ * os deste dispositivo); `input.call: true` = os da chamada em andamento (`call` — config de voz do
+ * chat e da persona dele); nada = os deste dispositivo. Puro.
+ */
+export function clipsPhrasePools(
+  input: unknown,
+  device: VoiceCallDefaults | null | undefined,
+  call: { voice: VoiceCallConfig | null; persona: VoiceCallConfig | null } | null
+): ReturnType<typeof effectivePhrasePools> {
+  const o = asObject(input)
+  const own = asObject(o?.pools)
+  if (own) return effectivePhrasePools(own as unknown as VoiceCallConfig, device, null)
+  if (o?.call === true && call) return effectivePhrasePools(call.voice, device, call.persona)
+  return effectivePhrasePools(null, device, null)
 }
 
 /**

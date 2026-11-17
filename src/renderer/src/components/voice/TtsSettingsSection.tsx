@@ -90,6 +90,8 @@ export function TtsSettingsSection({
     where: string
     /** Assinatura de app dessa persona/chat (headers de atribuição do teste/prévia/clipes). */
     signature?: unknown
+    /** Frases próprias da persona/chat (1.18.0): os clipes são gerados/conferidos com elas. */
+    pools?: unknown
   }
 }): React.JSX.Element | null {
   const voiceApi = api.voice
@@ -97,10 +99,17 @@ export function TtsSettingsSection({
   // estável por CONTEÚDO (o pai recalcula `tts` a cada render): a contagem de clipes só relê
   // quando a voz muda de verdade
   const choiceKey = choice
-    ? JSON.stringify({ tts: ttsChoiceFromSettings(tts), signature: choice.signature ?? null })
+    ? JSON.stringify({
+        tts: ttsChoiceFromSettings(tts),
+        signature: choice.signature ?? null,
+        ...(choice.pools ? { pools: choice.pools } : {})
+      })
     : null
   const choiceArg = useMemo(
-    () => (choiceKey ? (JSON.parse(choiceKey) as { tts: unknown; signature: unknown }) : undefined),
+    () =>
+      choiceKey
+        ? (JSON.parse(choiceKey) as { tts: unknown; signature: unknown; pools?: unknown })
+        : undefined,
     [choiceKey]
   )
   const setSettingsOpen = useStore((s) => s.setSettingsOpen)
