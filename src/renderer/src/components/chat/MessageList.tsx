@@ -1643,7 +1643,14 @@ const DraftView = memo(function DraftView({
         ) : tc.name === 'present_file' && presentedFilesOf(tc.arguments) ? (
           <PresentFileCards key={tc.id || i} chatId={ctx.chatId} args={tc.arguments} pending />
         ) : (
-          <ToolCard key={tc.id || i} call={tc} streaming sessionBusy chatId={ctx.chatId} />
+          <ToolCard
+            key={tc.id || i}
+            call={tc}
+            streaming
+            run={tc.id ? ctx.runs[tc.id] : undefined}
+            sessionBusy
+            chatId={ctx.chatId}
+          />
         )
       )}
     </div>

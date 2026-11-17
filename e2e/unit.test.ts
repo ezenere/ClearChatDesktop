@@ -313,7 +313,8 @@ test('stream: acumula content/reasoning/tool_calls por index e usage', () => {
   assert.equal(acc.content, 'Oi')
   const calls = finalizeToolCalls(acc)
   assert.deepEqual(calls, [
-    { id: 'c1', name: 'read_file', arguments: '{"path":"a"}' },
+    // a c2 começou: a c1 fechou (a execução antecipada pode começar); a c2 fecha no fim do stream
+    { id: 'c1', name: 'read_file', arguments: '{"path":"a"}', complete: true },
     { id: 'c2', name: 'bash', arguments: '{}' }
   ])
   assert.deepEqual(acc.usage, {

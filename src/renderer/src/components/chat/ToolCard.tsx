@@ -278,6 +278,8 @@ type Status =
   | 'streaming'
   | 'judging'
   | 'running'
+  /** Rodou durante o stream; o resultado aparece quando o modelo terminar a resposta. */
+  | 'ready'
   | 'approval'
   | 'input'
   | 'ok'
@@ -307,6 +309,11 @@ function StatusChip({
       label: 'executando',
       cls: 'text-accent-strong',
       icon: <Spinner className="size-3 text-accent-strong" />
+    },
+    ready: {
+      label: 'pronta',
+      cls: 'text-subtle',
+      icon: <Check className="size-3" />
     },
     approval: {
       label: 'aguardando aprovação',
@@ -435,8 +442,13 @@ export function ToolCard({
       : undefined
 
   // Tools rodam em sequência: sem `tool-running` ainda, a chamada está só na fila ('pendente').
+  // durante o stream: a tool só de leitura que já fechou roda antes do fim (@shared/earlyTools)
   const status: Status = streaming
-    ? 'streaming'
+    ? run?.running
+      ? 'running'
+      : run?.early
+        ? 'ready'
+        : 'streaming'
     : approval || hosted.length
       ? 'approval'
       : (question || elicitPending) && !result

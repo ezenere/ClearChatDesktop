@@ -1101,6 +1101,12 @@ export type AgentEvent =
       output?: string
       /** Smart-Approve avaliando a chamada (antes de executar ou pedir aprovação). */
       judging?: boolean
+      /**
+       * Com `running: false`: a tool rodou ANTES do fim da resposta (@shared/earlyTools) e o
+       * resultado entra no histórico quando o modelo terminar — o card mostra "pronta". Só local
+       * (o stream ao vivo não leva).
+       */
+      early?: boolean
     }
   | { type: 'queue-updated'; sessionId: string; queue: QueuedMessage[] }
   | { type: 'approval-requested'; request: ApprovalRequest }

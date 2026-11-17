@@ -1079,7 +1079,7 @@ test('SSE: server_tool_use / tool_search_tool_result / tool_use → blocos compl
   for (const e of searchStream()) applyAnthropicEvent(acc, e)
   assert.equal(acc.content, 'Vou ver.')
   assert.deepEqual(acc.toolCalls, [
-    { id: 'toolu_1', name: 'datetime', arguments: '{"format":"%H"}' }
+    { id: 'toolu_1', name: 'datetime', arguments: '{"format":"%H"}', complete: true }
   ])
   assert.deepEqual(
     acc.blocks!.map((b) => b.type),
@@ -1316,6 +1316,43 @@ before(async () => {
           ])
         )
       }
+      // execução antecipada (@shared/earlyTools): uma chamada completa, uma PAUSA no stream (o
+      // modelo "gerando" a próxima) e o resto — a 1ª deve rodar durante a pausa
+      if (lastText === 'antecipa' || lastText === 'antecipa-recusa') {
+        const tool = (id: string, idx: number, args: string): unknown[] => [
+          {
+            type: 'content_block_start',
+            index: idx,
+            content_block: { type: 'tool_use', id, name: 'datetime', input: {} }
+          },
+          {
+            type: 'content_block_delta',
+            index: idx,
+            delta: { type: 'input_json_delta', partial_json: args }
+          },
+          { type: 'content_block_stop', index: idx }
+        ]
+        res.write(
+          sseOf([
+            { type: 'message_start', message: { model: body.model, usage: {} } },
+            ...tool('toolu_e1', 0, '{"format":"%Y"}')
+          ])
+        )
+        setTimeout(() => {
+          res.end(
+            sseOf([
+              ...(lastText === 'antecipa' ? tool('toolu_e2', 1, '{"format":"%m"}') : []),
+              {
+                type: 'message_delta',
+                delta: { stop_reason: lastText === 'antecipa' ? 'tool_use' : 'refusal' },
+                usage: { output_tokens: 9 }
+              },
+              { type: 'message_stop' }
+            ])
+          )
+        }, 600)
+        return
+      }
       // resposta cortada (max_tokens) ou recusada no meio de um tool_use: com eager_input_streaming
       // o servidor não confere o JSON — o app não pode rodar a tool
       if (
@@ -1342,7 +1379,8 @@ before(async () => {
               index: 0,
               delta: {
                 type: 'input_json_delta',
-                partial_json: lastText === 'cortada' ? '{"format":"%Y-%' : '{"format":"%Y"}'
+                partial_json:
+                  lastText === 'cortada' || afterTool ? '{"format":"%Y-%' : '{"format":"%Y"}'
               }
             },
             { type: 'content_block_stop', index: 0 },
@@ -1647,24 +1685,88 @@ test('runner: resposta recusada com tool_use → a tool NÃO roda (erro no resul
 
 test('runner: resposta cortada por max_tokens com tool_use → a tool NÃO roda, o erro volta ao modelo e o turno SEGUE', async () => {
   behavior = {}
-  for (const text of ['cortada', 'cortada-ok']) {
-    // um chat por caso (o falso responde "FIM" a qualquer request com tool_result no fim)
+  // um chat (o falso responde "FIM" a qualquer request com tool_result no fim)
+  const sid = await newChat('anthropic', 'claude-opus-5-5', { toolsFull: ['datetime'] })
+  const n0 = hits.length
+  const msgs = await turn(sid, 'cortada')
+  const reqs = hits.slice(n0)
+  assert.equal(reqs.length, 2, 'o erro foi devolvido ao modelo numa 2ª request')
+  const sent = reqs[1].body.messages.at(-1).content.find((c: any) => c.type === 'tool_result')
+  assert.equal(sent.tool_use_id, 'toolu_cut')
+  assert.match(textOfContent(sent.content), /não executada: .*max_tokens.*Refaça em partes menores/)
+  const tool = msgs.find((m: any) => m.message.role === 'tool')
+  assert.equal(tool.meta.toolStatus, 'error', 'a tool não rodou')
+  assert.equal(msgs.at(-1).message.content, 'FIM', 'o modelo respondeu depois do erro')
+  assert.equal((await load()).repo.sessionsRepo.get(sid)!.status, 'idle')
+})
+
+test('runner: corte DEPOIS de uma chamada que fechou (content_block_stop) → ela já rodou antes do fim (só leitura) e fica com o resultado', async () => {
+  behavior = {}
+  const sid = await newChat('anthropic', 'claude-opus-5-5', { toolsFull: ['datetime'] })
+  const n0 = hits.length
+  const msgs = await turn(sid, 'cortada-ok')
+  const reqs = hits.slice(n0)
+  assert.equal(reqs.length, 2, 'o turno segue')
+  const tool = msgs.find((m: any) => m.message.role === 'tool')
+  assert.equal(tool.message.tool_call_id, 'toolu_cut')
+  assert.equal(tool.meta.toolStatus, 'ok', 'a chamada completa rodou')
+  assert.doesNotMatch(textOfContent(tool.message.content), /não executada/)
+  assert.equal(msgs.at(-1).message.content, 'FIM')
+})
+
+test('runner: execução antecipada — a tool só de leitura que fechou roda DURANTE o stream; resultados na ordem, sem rodar de novo', async () => {
+  behavior = {}
+  const { onAgentEvent } = await import('../src/main/events.ts')
+  const evs: { t: number; type: string; id?: string; running?: boolean; early?: boolean }[] = []
+  const off = onAgentEvent((e: any) => {
+    if (e.type === 'tool-running')
+      evs.push({
+        t: Date.now(),
+        type: e.type,
+        id: e.toolCallId,
+        running: e.running,
+        early: e.early
+      })
+    if (e.type === 'message-added' && e.message?.message?.role === 'assistant')
+      evs.push({ t: Date.now(), type: 'assistant-saved' })
+  })
+  try {
     const sid = await newChat('anthropic', 'claude-opus-5-5', { toolsFull: ['datetime'] })
-    const n0 = hits.length
-    const msgs = await turn(sid, text)
-    const reqs = hits.slice(n0)
-    assert.equal(reqs.length, 2, `${text}: o erro foi devolvido ao modelo numa 2ª request`)
-    const sent = reqs[1].body.messages.at(-1).content.find((c: any) => c.type === 'tool_result')
-    assert.equal(sent.tool_use_id, 'toolu_cut')
-    assert.match(
-      textOfContent(sent.content),
-      /não executada: .*max_tokens.*Refaça em partes menores/
+    const msgs = await turn(sid, 'antecipa')
+    const startE1 = evs.find((e) => e.id === 'toolu_e1' && e.running)
+    const saved = evs.find((e) => e.type === 'assistant-saved')
+    assert.ok(startE1 && saved, JSON.stringify(evs))
+    assert.ok(startE1.t < saved.t, 'a 1ª rodou antes de a resposta terminar')
+    assert.ok(
+      evs.some((e) => e.id === 'toolu_e1' && e.running === false && e.early === true),
+      'o card mostrou "pronta"'
     )
-    const tool = msgs.find((m: any) => m.message.role === 'tool')
-    assert.equal(tool.meta.toolStatus, 'error', `${text}: a tool não rodou`)
-    assert.equal(msgs.at(-1).message.content, 'FIM', `${text}: o modelo respondeu depois do erro`)
-    assert.equal((await load()).repo.sessionsRepo.get(sid)!.status, 'idle')
+    assert.equal(evs.filter((e) => e.id === 'toolu_e1' && e.running).length, 1, 'rodou uma vez só')
+    const roles = msgs.map((m: any) => m.message.role)
+    const a = roles.lastIndexOf('assistant')
+    const tools = msgs.filter((m: any) => m.message.role === 'tool')
+    assert.deepEqual(
+      tools.map((m: any) => m.message.tool_call_id),
+      ['toolu_e1', 'toolu_e2'],
+      'na ordem das chamadas'
+    )
+    assert.ok(tools.every((m: any) => m.meta.toolStatus === 'ok'))
+    assert.equal(msgs[a].message.content, 'FIM')
+  } finally {
+    off()
   }
+})
+
+test('runner: recusa depois de uma chamada antecipada → o resultado dela é descartado (erro "recusa"), o turno termina', async () => {
+  behavior = {}
+  const sid = await newChat('anthropic', 'claude-opus-5-5', { toolsFull: ['datetime'] })
+  const n0 = hits.length
+  const msgs = await turn(sid, 'antecipa-recusa')
+  assert.equal(hits.length - n0, 1, 'nenhuma request depois')
+  const tool = msgs.at(-1)
+  assert.equal(tool.message.tool_call_id, 'toolu_e1')
+  assert.equal(tool.meta.toolStatus, 'error')
+  assert.match(textOfContent(tool.message.content), /não executada: .*recusa/)
 })
 
 test('runner: 3 cortes por max_tokens seguidos → depois do 3º o turno termina (aumente max_tokens)', async () => {

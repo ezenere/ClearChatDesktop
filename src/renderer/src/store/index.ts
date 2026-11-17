@@ -73,6 +73,8 @@ export interface ToolRun {
   output?: string
   /** Smart-Approve avaliando a chamada. */
   judging?: boolean
+  /** Rodou antes do fim da resposta (@shared/earlyTools): o resultado entra quando o modelo terminar. */
+  early?: boolean
 }
 
 export interface ModelsEntry {
@@ -1784,6 +1786,7 @@ function applyEvent(e: AgentEvent): void {
         if (e.running && e.judging) runs[e.toolCallId] = { running: false, judging: true }
         else if (e.running)
           runs[e.toolCallId] = { running: true, output: e.output ?? runs[e.toolCallId]?.output }
+        else if (e.early) runs[e.toolCallId] = { running: false, early: true }
         else delete runs[e.toolCallId]
         return { toolRuns: { ...s.toolRuns, [e.sessionId]: runs } }
       })

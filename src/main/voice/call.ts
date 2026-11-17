@@ -1262,6 +1262,19 @@ export class VoiceCallManager {
         if (e.draft.content.trim() || e.draft.toolCalls?.length) this.#stepOutput = true
         this.#feedContent(e.draft.content)
         this.#ttsFeedPartial() // [tts-feed] a sentença incompleta segue para o TTS
+        // a frase de ferramenta assim que o NOME da 1ª tool aparece no stream — antes ela esperava a
+        // tool começar a rodar, ou seja, a resposta inteira (os argumentos de um `write_file` grande
+        // levavam minutos)
+        if (!this.#toolDecided)
+          for (const tc of e.draft.toolCalls ?? []) {
+            if (!tc?.id || !tc.name) continue
+            // nome ainda chegando (a Chat Completions o manda em pedaços): decide quando os
+            // argumentos começaram ou o nome já tem categoria própria (nome parcial = genérica)
+            if (!tc.arguments && toolPhraseCategory(tc.name) === 'generic') continue
+            this.#toolNames.set(tc.id, tc.name)
+            this.#onFirstTool(tc.id)
+            if (this.#toolDecided) break
+          }
       }
       return
     }

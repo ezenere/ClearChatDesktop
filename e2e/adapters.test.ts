@@ -292,7 +292,9 @@ test('anthropic: SSE nativo → texto, tool_use, usage e finishReason', () => {
   assert.equal(acc.model, 'claude-haiku-4-5')
   assert.equal(acc.content, 'Vou ler.')
   assert.equal(acc.reasoning, 'hmm')
-  assert.deepEqual(acc.toolCalls, [{ id: 'toolu_1', name: 'read_file', arguments: '{"path":"x"}' }])
+  assert.deepEqual(acc.toolCalls, [
+    { id: 'toolu_1', name: 'read_file', arguments: '{"path":"x"}', complete: true }
+  ])
   assert.equal(acc.finishReason, 'tool_calls')
   assert.deepEqual(acc.usage, {
     promptTokens: 115,
@@ -356,7 +358,9 @@ test('anthropic: input_json_delta de um bloco que não é tool_use (server_tool_
     { type: 'message_delta', delta: { stop_reason: 'tool_use' }, usage: { output_tokens: 3 } }
   ]
   for (const e of evs) applyAnthropicEvent(acc, e)
-  assert.deepEqual(acc.toolCalls, [{ id: 'toolu_1', name: 'read_file', arguments: '{"path":"a"}' }])
+  assert.deepEqual(acc.toolCalls, [
+    { id: 'toolu_1', name: 'read_file', arguments: '{"path":"a"}', complete: true }
+  ])
   // índice sem content_block_start (provedor fora do padrão): continua indo para a última tool call
   const a2 = newAccumulator()
   applyAnthropicEvent(a2, {

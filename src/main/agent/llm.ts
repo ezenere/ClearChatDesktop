@@ -9,6 +9,11 @@ export interface AccToolCall {
   id: string
   name: string
   arguments: string
+  /**
+   * Os argumentos FECHARAM no stream (Messages API: `content_block_stop` do bloco; Chat Completions:
+   * a chamada seguinte começou) — a execução antecipada (@shared/earlyTools) pode começar.
+   */
+  complete?: boolean
 }
 
 /** Acumulador do stream (mantido pelo chamador para recuperar o parcial em caso de abort). */
@@ -174,8 +179,14 @@ export function applyChunk(acc: StreamAccumulator, chunk: Record<string, unknown
     for (const tc of delta.tool_calls) {
       const idx = typeof tc.index === 'number' ? tc.index : acc.toolCalls.length
       let slot = acc.toolCalls[idx]
+      // uma chamada começou: as anteriores fecharam (os provedores mandam uma de cada vez)
+      for (let i = 0; i < Math.min(idx, acc.toolCalls.length); i++) {
+        const prev = acc.toolCalls[i]
+        if (prev && prev.name) prev.complete = true
+      }
       // Alguns providers repetem index 0 para chamadas distintas (cada uma completa): id novo → nova entrada.
       if (slot && tc.id && slot.id && tc.id !== slot.id && slot.name) {
+        for (const prev of acc.toolCalls) if (prev && prev.name) prev.complete = true
         acc.toolCalls.push({ id: tc.id, name: '', arguments: '' })
         const s = acc.toolCalls[acc.toolCalls.length - 1]
         if (tc.function?.name) s.name += tc.function.name

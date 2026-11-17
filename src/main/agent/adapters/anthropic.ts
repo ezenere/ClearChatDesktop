@@ -501,6 +501,8 @@ export function applyAnthropicEvent(acc: StreamAccumulator, ev: Record<string, u
           blk.input = { raw }
         }
       }
+      // os argumentos da tool call fecharam (a execução antecipada pode começar)
+      if (st?.tool !== undefined && acc.toolCalls[st.tool]) acc.toolCalls[st.tool].complete = true
       return
     }
     case 'message_delta': {

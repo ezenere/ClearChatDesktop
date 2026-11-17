@@ -45,6 +45,7 @@ import {
 } from '@shared/approvalPolicy'
 import type { ApprovalListItem, ApprovalMode, CapturedContextState } from '@shared/types'
 import { addListEntries, getApprovalSettings, onApprovalListsChanged } from '../approvalSettings'
+import { EARLY_TOOLS, EarlyToolQueue } from '@shared/earlyTools'
 import type {
   ApprovalDecision,
   CompactOptions,
@@ -1149,6 +1150,45 @@ function withReasoningMs(acc: StreamAccumulator): Pick<MessageMeta, 'reasoningMs
   return ms != null ? { reasoningMs: ms } : {}
 }
 
+/** O resultado de uma tool no histórico (logo depois da mensagem do assistente, na ordem). */
+function appendToolOutcome(session: Session, call: ToolCall, r: ToolOutcome): void {
+  const tmeta: MessageMeta = { toolStatus: r.status, durationMs: r.durationMs }
+  if (r.subSessionId) tmeta.subSessionId = r.subSessionId
+  if (r.shellCwd) tmeta.shellCwd = r.shellCwd
+  if (r.targetChatId) tmeta.targetChatId = r.targetChatId
+  if (r.background) tmeta.background = true
+  if (r.smartApprove) tmeta.smartApprove = r.smartApprove
+  if (r.smartOverride) tmeta.smartOverride = true
+  if (r.approval) tmeta.approval = r.approval
+  if (r.askUser) tmeta.askUser = r.askUser
+  if (r.memoryChanges?.length) tmeta.memoryChanges = r.memoryChanges
+  if (r.presentFiles) tmeta.presentFiles = r.presentFiles
+  if (r.status === 'cancelled') {
+    tmeta.synthetic = true
+    tmeta.kind = 'tool-cancelled'
+  }
+  append(
+    session.id,
+    { role: 'tool', tool_call_id: call.id, content: r.parts?.length ? r.parts : r.content },
+    tmeta
+  )
+}
+
+/**
+ * A chamada pode rodar antes do fim da resposta (@shared/earlyTools): tool só de leitura, disponível
+ * na sessão, que roda SEM perguntar (a mesma rota de aprovação da execução — nem juiz nem card);
+ * conector (MCP) nunca.
+ */
+function earlyEligible(chat: Chat, session: Session, rawName: string): boolean {
+  const name = (TOOL_ALIASES[rawName] ?? rawName) as ToolName
+  if (!EARLY_TOOLS.has(name)) return false
+  const call = voiceCallContextFor(chat, session)
+  const gateChat = call ? applyVoiceCallChat(chat, call) : chat
+  if (mcpEntryFor(gateChat, session, name)) return false
+  if (!availableTools(gateChat, session).includes(name)) return false
+  return approvalRoute(chat.config, getApprovalSettings().modes, name).kind === 'run'
+}
+
 async function step(st: RunState, signal: AbortSignal): Promise<StepResult> {
   const session = sessionsRepo.get(st.sessionId)
   if (!session) return { kind: 'error', error: 'Sessão não encontrada (chat apagado?).' }
@@ -1207,6 +1247,37 @@ async function step(st: RunState, signal: AbortSignal): Promise<StepResult> {
 
   dbg('step', session.id.slice(0, 8), 'model', reqSession.model, 'msgs', history.length)
   let acc = newAccumulator()
+  // execução antecipada (@shared/earlyTools): tool só de leitura que roda sem perguntar começa
+  // assim que a chamada fecha no stream, enquanto o modelo continua; o resultado entra no histórico
+  // no fim, na ordem (e o card mostra "pronta" até lá)
+  const newEarly = (): EarlyToolQueue<ToolOutcome> =>
+    new EarlyToolQueue<ToolOutcome>({
+      eligible: (c) => earlyEligible(chat, session, c.name),
+      run: async (c) => {
+        const r = await executeTool(st, session, c.id, c.name, c.arguments, signal)
+        if (!signal.aborted)
+          emit({
+            type: 'tool-running',
+            sessionId: session.id,
+            toolCallId: c.id,
+            running: false,
+            early: true
+          })
+        return r
+      }
+    })
+  let early = newEarly()
+  /** Resposta descartada/recusada/cancelada: os resultados antecipados não valem (só leitura). */
+  const dropEarly = (): void => {
+    const old = early
+    if (!old.startedIds.length) return
+    old.discard()
+    early = newEarly()
+    void old.settle().then(() => {
+      for (const id of old.startedIds)
+        emit({ type: 'tool-running', sessionId: session.id, toolCallId: id, running: false })
+    })
+  }
   const draft = throttle(
     () => emit({ type: 'draft', sessionId: session.id, draft: accToDraft(acc) }),
     40
@@ -1220,6 +1291,7 @@ async function step(st: RunState, signal: AbortSignal): Promise<StepResult> {
     await streamChat(req, signal, acc, () => {
       markReasoning(acc, Date.now())
       draft.call()
+      early.offer(acc.toolCalls)
     })
   }
   /** Refaz a chamada com outra request (o parcial é descartado — nada foi persistido). */
@@ -1227,6 +1299,7 @@ async function step(st: RunState, signal: AbortSignal): Promise<StepResult> {
     draft.cancel()
     emit({ type: 'draft', sessionId: session.id, draft: null })
     req = next
+    dropEarly()
     acc = newAccumulator()
     t0 = Date.now()
     await stream()
@@ -1236,6 +1309,7 @@ async function step(st: RunState, signal: AbortSignal): Promise<StepResult> {
     attempt: async () => {
       if (!first) {
         req = build(fallback ? { modeOverride: 'local' } : {})
+        dropEarly()
         acc = newAccumulator()
         t0 = Date.now()
       }
@@ -1291,6 +1365,7 @@ async function step(st: RunState, signal: AbortSignal): Promise<StepResult> {
     onDiscard: () => {
       draft.cancel()
       emit({ type: 'draft', sessionId: session.id, draft: null })
+      dropEarly()
       acc = newAccumulator()
     },
     ask: (e) => awaitRetryDecision(st, session, chat, provider, e, signal)
@@ -1298,6 +1373,7 @@ async function step(st: RunState, signal: AbortSignal): Promise<StepResult> {
   if (r.kind !== 'ok') {
     draft.cancel()
     emit({ type: 'draft', sessionId: session.id, draft: null })
+    dropEarly()
     dbg('stream fail', session.id.slice(0, 8), r.kind === 'error' ? errMsg(r.error) : 'aborted')
     // card de falha de conexão cancelado (botão, Parar ou ⚡): nada parcial a salvar (já descartado)
     if (r.kind === 'error' && r.network)
@@ -1395,12 +1471,22 @@ async function step(st: RunState, signal: AbortSignal): Promise<StepResult> {
       : retry
         ? 'a resposta do modelo foi cortada pelo limite de tokens de saída (max_tokens) no meio dos argumentos — nada rodou. Refaça em partes menores (ex.: um arquivo grande em pedaços: crie com o começo e acrescente o resto em chamadas seguintes)'
         : `a resposta do modelo foi cortada pelo limite de tokens de saída (max_tokens) ${cuts} vezes seguidas — os argumentos podem estar incompletos; aumente max_tokens ou peça de novo`
-    for (const c of calls)
+    // recusa: nada da resposta vale (as antecipadas, só de leitura, são descartadas); corte: as
+    // chamadas que fecharam e já rodaram antes do corte ficam com o resultado delas
+    if (!cut) dropEarly()
+    for (const c of calls) {
+      const pre = cut ? early.take(c.id) : null
+      if (pre) {
+        appendToolOutcome(session, c, await pre)
+        emit({ type: 'tool-running', sessionId: session.id, toolCallId: c.id, running: false })
+        continue
+      }
       append(
         session.id,
         { role: 'tool', tool_call_id: c.id, content: `Erro: não executada: ${why}.` },
         { toolStatus: 'error', durationMs: 0 }
       )
+    }
     st.pauseTurns = 0
     st.lengthCuts = retry ? cuts : 0
     if (retry) return { kind: 'continue' }
@@ -1422,38 +1508,29 @@ async function step(st: RunState, signal: AbortSignal): Promise<StepResult> {
     let hungUp = false
     for (const call of calls) {
       if (signal.aborted) break
-      const r = await executeTool(
-        st,
-        session,
-        call.id,
-        call.function.name,
-        call.function.arguments,
-        signal
-      )
-      const tmeta: MessageMeta = { toolStatus: r.status, durationMs: r.durationMs }
-      if (r.subSessionId) tmeta.subSessionId = r.subSessionId
-      if (r.shellCwd) tmeta.shellCwd = r.shellCwd
-      if (r.targetChatId) tmeta.targetChatId = r.targetChatId
-      if (r.background) tmeta.background = true
-      if (r.smartApprove) tmeta.smartApprove = r.smartApprove
-      if (r.smartOverride) tmeta.smartOverride = true
-      if (r.approval) tmeta.approval = r.approval
-      if (r.askUser) tmeta.askUser = r.askUser
-      if (r.memoryChanges?.length) tmeta.memoryChanges = r.memoryChanges
-      if (r.presentFiles) tmeta.presentFiles = r.presentFiles
-      if (r.status === 'cancelled') {
-        tmeta.synthetic = true
-        tmeta.kind = 'tool-cancelled'
-      }
-      append(
-        session.id,
-        { role: 'tool', tool_call_id: call.id, content: r.parts?.length ? r.parts : r.content },
-        tmeta
-      )
+      // começou durante o stream (só leitura, sem perguntar): o resultado dela, sem rodar de novo
+      const pre = early.take(call.id)
+      const r = pre
+        ? await pre
+        : await executeTool(
+            st,
+            session,
+            call.id,
+            call.function.name,
+            call.function.arguments,
+            signal
+          )
+      appendToolOutcome(session, call, r)
+      // o card sai do "pronta" (o resultado está no histórico)
+      if (pre)
+        emit({ type: 'tool-running', sessionId: session.id, toolCallId: call.id, running: false })
       if (call.function.name === 'end_call' && r.status === 'ok') hungUp = true
       if (r.status === 'cancelled' && signal.aborted) break
     }
-    if (signal.aborted) return { kind: 'aborted', partial: '' }
+    if (signal.aborted) {
+      dropEarly()
+      return { kind: 'aborted', partial: '' }
+    }
     if (hungUp) return { kind: 'final', text: acc.content }
     return { kind: 'continue' }
   }

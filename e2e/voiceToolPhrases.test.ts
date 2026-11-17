@@ -518,6 +518,52 @@ test('1ª tool do turno ganha a frase da categoria (clipe TOOL_<n>); a 2ª tool 
   h.m.stop()
 })
 
+test('a frase sai quando o NOME da 1ª tool aparece no stream (draft) — sem esperar a resposta inteira nem a tool rodar', async () => {
+  const h = harness({ fillers: false })
+  userTurn(h)
+  // o modelo ainda está gerando os argumentos (um write_file grande): só o nome chegou
+  h.emit({
+    type: 'draft',
+    sessionId: 's1',
+    draft: {
+      content: '',
+      reasoning: '',
+      toolCalls: [{ id: 'tcDraft', name: 'write_file', arguments: '{"path":"rel' }]
+    }
+  } as unknown as AgentEvent)
+  await flush()
+  assert.equal(h.tools().length, 1, 'a frase de ferramenta já tocou')
+  assert.ok(POOL.find((p) => p.text === clipText(h.tools()[0]))!.categories.includes('files'))
+  // nome parcial sem frase (ou end_call) não decide; a execução depois não repete
+  h.emit({
+    type: 'tool-running',
+    sessionId: 's1',
+    toolCallId: 'tcDraft',
+    running: true
+  } as AgentEvent)
+  await flush()
+  assert.equal(toolDecisions(h).length, 1)
+  h.m.stop()
+})
+
+test('nome parcial no stream (ainda sem frase) não decide; o nome completo decide', async () => {
+  const h = harness({ fillers: false })
+  userTurn(h)
+  const draft = (name: string): void =>
+    h.emit({
+      type: 'draft',
+      sessionId: 's1',
+      draft: { content: '', reasoning: '', toolCalls: [{ id: 'tcP', name, arguments: '' }] }
+    } as unknown as AgentEvent)
+  draft('web_')
+  await flush()
+  assert.equal(toolDecisions(h).length, 0)
+  draft('web_search')
+  await flush()
+  assert.equal(h.tools().length, 1)
+  h.m.stop()
+})
+
 test('end_call/ask_user não contam como "a 1ª tool": a próxima tool do turno ainda ganha a frase', async () => {
   const h = harness({ fillers: false })
   userTurn(h)
