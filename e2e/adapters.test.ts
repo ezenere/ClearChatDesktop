@@ -11,10 +11,13 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { buildUserContent, saveAttachment, setAttachmentsDir } from '../src/main/attachments.ts'
-import { buildRequest, maskRequest } from '../src/main/agent/request.ts'
+import { buildRequest, maskRequest, setModelInfoSource } from '../src/main/agent/request.ts'
+import { cachedModelInfo } from '../src/main/providers.ts'
 import { newAccumulator, streamChat, readableError } from '../src/main/agent/llm.ts'
 import {
+  anthropicDefaultMaxTokens,
   applyAnthropicEvent,
+  buildAnthropicBody,
   mapAnthropicModel,
   toAnthropicMessages
 } from '../src/main/agent/adapters/anthropic.ts'
@@ -106,7 +109,7 @@ test('anthropic: body — system top-level, tools input_schema, params e max_tok
   ).body as any
   assert.deepEqual(b.system, [{ type: 'text', text: 'SYS' }])
   assert.deepEqual(b.messages, [{ role: 'user', content: [{ type: 'text', text: 'oi' }] }])
-  assert.equal(b.max_tokens, 32000)
+  assert.equal(b.max_tokens, 128000, 'sem max_tokens no chat: o máximo do modelo (sem teto do app)')
   assert.equal(b.temperature, 0.3)
   assert.equal(b.top_k, 5)
   assert.equal(b.stream, true)
@@ -444,6 +447,7 @@ test('anthropic: /models nativo → ModelInfo (capabilities)', () => {
     supportsTools: true,
     name: 'Claude Haiku 4.5',
     contextLength: 200000,
+    maxOutputTokens: 64000,
     inputModalities: ['text', 'image', 'file']
   })
   const t = mapAnthropicModel({
@@ -452,6 +456,75 @@ test('anthropic: /models nativo → ModelInfo (capabilities)', () => {
   })!
   assert.deepEqual(t.inputModalities, ['text'])
   assert.equal(mapAnthropicModel({}), null)
+})
+
+test('anthropic: max_tokens padrão = o máximo de saída do modelo (do /models; senão a família), nunca um teto do app', () => {
+  // o valor do GET /models vence a tabela
+  assert.equal(anthropicDefaultMaxTokens('claude-haiku-5-5', 96000), 96000)
+  assert.equal(anthropicDefaultMaxTokens('claude-haiku-5-5', 0), 128000, 'valor inválido → tabela')
+  for (const [id, max] of [
+    ['claude-haiku-5-5', 128000],
+    ['claude-opus-5-5', 128000],
+    ['claude-sonnet-4-6', 128000],
+    ['claude-fable-5-2', 128000],
+    ['claude-modelo-futuro', 128000],
+    ['claude-haiku-4-5', 64000],
+    ['claude-haiku-4-5-20251001', 64000],
+    ['claude-sonnet-4-5', 64000],
+    ['claude-opus-4-5-20251101', 64000],
+    ['claude-sonnet-4-20250514', 64000],
+    ['claude-opus-4-1-20250805', 32000],
+    ['claude-opus-4-20250514', 32000],
+    ['claude-3-7-sonnet-20250219', 64000],
+    ['claude-3-5-haiku-20241022', 8192],
+    ['claude-3-haiku-20240307', 4096]
+  ] as const)
+    assert.equal(anthropicDefaultMaxTokens(id), max, id)
+  const body = (o: Partial<Parameters<typeof buildAnthropicBody>[0]>): any =>
+    buildAnthropicBody({
+      model: 'claude-haiku-5-5',
+      messages: [{ role: 'user', content: 'oi' }],
+      ...o
+    })
+  assert.equal(body({}).max_tokens, 128000)
+  assert.equal(body({ maxOutputTokens: 64000 }).max_tokens, 64000, 'o do /models')
+  assert.equal(
+    body({ params: { max_tokens: 500 }, maxOutputTokens: 64000 }).max_tokens,
+    500,
+    'o do chat vence'
+  )
+  assert.equal(
+    body({ flavor: 'openrouter', maxOutputTokens: 64000 }).max_tokens,
+    undefined,
+    'OpenRouter: omitido'
+  )
+})
+
+test('anthropic: buildRequest usa o máximo de saída do /models em cache para o modelo da sessão', () => {
+  setModelInfoSource((pid, model) =>
+    pid === anth.id && model === 'claude-y' ? { id: 'claude-y', maxOutputTokens: 77000 } : undefined
+  )
+  try {
+    const c = chat({ providerId: anth.id, systemPrompt: '' })
+    const b = buildRequest(
+      c,
+      { depth: 0, model: 'claude-y' },
+      [sm({ role: 'user', content: 'oi' })],
+      anth,
+      env
+    ).body as any
+    assert.equal(b.max_tokens, 77000)
+    const z = buildRequest(
+      c,
+      { depth: 1, model: 'claude-z' },
+      [sm({ role: 'user', content: 'oi' })],
+      anth,
+      env
+    ).body as any
+    assert.equal(z.max_tokens, 128000, 'fora da lista: a tabela (subagente igual ao principal)')
+  } finally {
+    setModelInfoSource(cachedModelInfo)
+  }
 })
 
 test('openai/openrouter: tipo pelo campo kind (não só pela URL) e juiz pelo adaptador', () => {

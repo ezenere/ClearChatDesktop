@@ -145,7 +145,10 @@ export function ParamInfo({
         </p>
       )}
       <p className="text-subtle">
-        Só vai na request com o toggle ligado; desligado, o campo é omitido.
+        Só vai na request com o toggle ligado; desligado, o campo é omitido
+        {name === 'max_tokens'
+          ? ' — menos na API nativa da Anthropic, que exige o campo: lá vai o máximo de saída do próprio modelo (sem teto do app).'
+          : '.'}
       </p>
     </ApiInfo>
   )

@@ -45,14 +45,23 @@ export interface AnthropicMessage {
   content: AnthropicBlock[]
 }
 
-/** max_tokens padrão (obrigatório na API) quando o chat não define um. */
-export const ANTHROPIC_DEFAULT_MAX_TOKENS = 32000
+/** Máximo de saída dos Claude atuais (4.6+ e 5.x) — o padrão de modelos que a tabela não conhece. */
+export const ANTHROPIC_DEFAULT_MAX_TOKENS = 128_000
 
-/** Teto de saída conhecido por família (modelos antigos têm limite menor que o padrão). */
-export function anthropicDefaultMaxTokens(model: string): number {
+/**
+ * `max_tokens` quando o chat não define um. A API nativa exige o campo, então "sem limite" = o
+ * máximo de saída do PRÓPRIO modelo (o app não impõe teto): o `max_tokens` do GET /models da
+ * Anthropic (`known`, quando a lista está em cache) ou, sem ele, o teto conhecido da família.
+ */
+export function anthropicDefaultMaxTokens(model: string, known?: number): number {
+  if (typeof known === 'number' && Number.isFinite(known) && known >= 1) return Math.floor(known)
   const m = model.toLowerCase()
   if (/claude-3-(haiku|opus|sonnet)/.test(m)) return 4096
   if (/claude-3-5/.test(m)) return 8192
+  if (/claude-3-7/.test(m)) return 64_000
+  if (/claude-opus-4(-[01])?(-\d{8})?$/.test(m)) return 32_000
+  if (/claude-sonnet-4(-0)?(-\d{8})?$/.test(m)) return 64_000
+  if (/claude-(haiku|sonnet|opus)-4-5/.test(m)) return 64_000
   return ANTHROPIC_DEFAULT_MAX_TOKENS
 }
 
@@ -302,8 +311,8 @@ export function anthropicEffort(e: NonNullable<ChatParams['reasoning_effort']>):
 
 /**
  * Body de /messages. `flavor: 'openrouter'` (Messages API do OpenRouter — busca nativa de tools,
- * 1.12.0): `max_tokens` só se o chat definir (o padrão de 32000 é dos Claude; no OpenRouter é
- * opcional); effort "none" → `thinking: {type: "disabled"}` (o OpenRouter normaliza `thinking` e
+ * 1.12.0): `max_tokens` só se o chat definir (no OpenRouter é opcional; na Anthropic, obrigatório,
+ * o padrão é o máximo de saída do modelo — `maxOutputTokens`, do /models, ou a tabela); effort "none" → `thinking: {type: "disabled"}` (o OpenRouter normaliza `thinking` e
  * `output_config.effort` para qualquer modelo). `toolsArray` (modos nativos): o array `tools` já
  * montado (definições com `defer_loading` + a entrada de busca do servidor — `nativeToolsArray`).
  */
@@ -319,6 +328,8 @@ export function buildAnthropicBody(input: {
   extra?: Record<string, unknown> | null
   flavor?: 'anthropic' | 'openrouter'
   replayNative?: boolean
+  /** Máximo de saída do modelo (`max_tokens` do /models da Anthropic), se conhecido. */
+  maxOutputTokens?: number
 }): Record<string, unknown> {
   const conv = toAnthropicMessages(input.messages, { replayNative: input.replayNative })
   const { system, messages } = input.cacheEnabled
@@ -329,7 +340,8 @@ export function buildAnthropicBody(input: {
   const openRouter = input.flavor === 'openrouter'
   const body: Record<string, unknown> = { model: input.model }
   if (ok(params.max_tokens)) body.max_tokens = params.max_tokens
-  else if (!openRouter) body.max_tokens = anthropicDefaultMaxTokens(input.model)
+  else if (!openRouter)
+    body.max_tokens = anthropicDefaultMaxTokens(input.model, input.maxOutputTokens)
   if (system.length) body.system = system
   body.messages = messages
   if (input.toolsArray?.length) body.tools = input.toolsArray
@@ -543,6 +555,8 @@ export function mapAnthropicModel(m: Record<string, unknown>): ModelInfo | null 
   if (typeof m.display_name === 'string' && m.display_name) info.name = m.display_name
   const ctx = n(m.max_input_tokens)
   if (ctx !== undefined) info.contextLength = ctx
+  const out = n(m.max_tokens)
+  if (out !== undefined && out >= 1) info.maxOutputTokens = out
   const caps = m.capabilities
   if (caps && typeof caps === 'object') {
     const mods = ['text']

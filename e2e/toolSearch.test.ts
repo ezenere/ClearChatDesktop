@@ -730,7 +730,7 @@ test('native-anthropic: /messages, defer_loading, cache numa não adiada, busca 
   )
   assert.ok(!JSON.stringify(b).includes(COMPACT_TOOLS_PROMPT))
   assert.ok(!b.tools.some((t: any) => t.name === 'tool_search'))
-  assert.equal(b.max_tokens, 32000)
+  assert.equal(b.max_tokens, 128000)
   assert.match(req.notes![0], /Busca nativa da Anthropic — 1 carregada, 2 adiadas/)
   // breakpoints: system + tool + última mensagem = no máx. 4
   const n = JSON.stringify(b).split('"cache_control"').length - 1
@@ -1199,6 +1199,8 @@ let behavior: {
   rejectAll?: boolean
   rejectReplay?: boolean
   noCost?: boolean
+  /** Corta por max_tokens toda resposta (também depois de um tool_result). */
+  cutAlways?: boolean
 } = {}
 
 async function readBody(req: IncomingMessage): Promise<string> {
@@ -1278,7 +1280,9 @@ before(async () => {
       if (last?.role === 'assistant')
         return void res.end(sseOf(finalText(body.model, 'RETOMADO', cost)))
       const lastText = textOfContent(last?.content)
-      if (last?.role === 'user' && last.content.some((c: any) => c.type === 'tool_result'))
+      const afterTool =
+        last?.role === 'user' && last.content.some((c: any) => c.type === 'tool_result')
+      if (afterTool && !behavior.cutAlways)
         return void res.end(sseOf(finalText(body.model, 'FIM', cost)))
       if (lastText === 'pausa') {
         return void res.end(
@@ -1314,14 +1318,24 @@ before(async () => {
       }
       // resposta cortada (max_tokens) ou recusada no meio de um tool_use: com eager_input_streaming
       // o servidor não confere o JSON — o app não pode rodar a tool
-      if (lastText === 'cortada' || lastText === 'cortada-ok' || lastText === 'recusa')
+      if (
+        lastText === 'cortada' ||
+        lastText === 'cortada-ok' ||
+        lastText === 'recusa' ||
+        (afterTool && behavior.cutAlways)
+      )
         return void res.end(
           sseOf([
             { type: 'message_start', message: { model: body.model, usage: {} } },
             {
               type: 'content_block_start',
               index: 0,
-              content_block: { type: 'tool_use', id: 'toolu_cut', name: 'datetime', input: {} }
+              content_block: {
+                type: 'tool_use',
+                id: afterTool ? `toolu_cut${hits.length}` : 'toolu_cut',
+                name: 'datetime',
+                input: {}
+              }
             },
             {
               type: 'content_block_delta',
@@ -1617,25 +1631,61 @@ test('runner: reenvio recusado → repete sem reenviar (mesmo modo nativo, nada 
   )
 })
 
-test('runner: resposta cortada por max_tokens ou recusada com tool_use → a tool NÃO roda (erro no resultado) e o turno termina', async () => {
+test('runner: resposta recusada com tool_use → a tool NÃO roda (erro no resultado) e o turno termina', async () => {
   behavior = {}
-  for (const [text, why] of [
-    ['cortada', /max_tokens/],
-    ['cortada-ok', /max_tokens/],
-    ['recusa', /recusa/]
-  ] as const) {
+  const sid = await newChat('anthropic', 'claude-opus-5-5', { toolsFull: ['datetime'] })
+  const n0 = hits.length
+  const msgs = await turn(sid, 'recusa')
+  assert.equal(hits.length - n0, 1, 'nenhuma request depois (o turno termina)')
+  const tool = msgs.at(-1)
+  assert.equal(tool.message.role, 'tool', 'o tool_use ganhou resultado')
+  assert.equal(tool.message.tool_call_id, 'toolu_cut')
+  assert.equal(tool.meta.toolStatus, 'error')
+  assert.match(textOfContent(tool.message.content), /não executada: .*recusa/)
+  assert.equal((await load()).repo.sessionsRepo.get(sid)!.status, 'idle')
+})
+
+test('runner: resposta cortada por max_tokens com tool_use → a tool NÃO roda, o erro volta ao modelo e o turno SEGUE', async () => {
+  behavior = {}
+  for (const text of ['cortada', 'cortada-ok']) {
     // um chat por caso (o falso responde "FIM" a qualquer request com tool_result no fim)
     const sid = await newChat('anthropic', 'claude-opus-5-5', { toolsFull: ['datetime'] })
     const n0 = hits.length
     const msgs = await turn(sid, text)
-    assert.equal(hits.length - n0, 1, `${text}: nenhuma request depois (o turno termina)`)
-    const tool = msgs.at(-1)
-    assert.equal(tool.message.role, 'tool', `${text}: o tool_use ganhou resultado`)
-    assert.equal(tool.message.tool_call_id, 'toolu_cut')
-    assert.equal(tool.meta.toolStatus, 'error')
-    assert.match(textOfContent(tool.message.content), /não executada/)
-    assert.match(textOfContent(tool.message.content), why)
+    const reqs = hits.slice(n0)
+    assert.equal(reqs.length, 2, `${text}: o erro foi devolvido ao modelo numa 2ª request`)
+    const sent = reqs[1].body.messages.at(-1).content.find((c: any) => c.type === 'tool_result')
+    assert.equal(sent.tool_use_id, 'toolu_cut')
+    assert.match(
+      textOfContent(sent.content),
+      /não executada: .*max_tokens.*Refaça em partes menores/
+    )
+    const tool = msgs.find((m: any) => m.message.role === 'tool')
+    assert.equal(tool.meta.toolStatus, 'error', `${text}: a tool não rodou`)
+    assert.equal(msgs.at(-1).message.content, 'FIM', `${text}: o modelo respondeu depois do erro`)
     assert.equal((await load()).repo.sessionsRepo.get(sid)!.status, 'idle')
+  }
+})
+
+test('runner: 3 cortes por max_tokens seguidos → depois do 3º o turno termina (aumente max_tokens)', async () => {
+  behavior = { cutAlways: true }
+  try {
+    const sid = await newChat('anthropic', 'claude-opus-5-5', { toolsFull: ['datetime'] })
+    const n0 = hits.length
+    const msgs = await turn(sid, 'cortada')
+    assert.equal(hits.length - n0, 3, '1ª + 2 repetições')
+    const tools = msgs.filter((m: any) => m.message.role === 'tool')
+    assert.equal(tools.length, 3)
+    assert.match(textOfContent(tools[0].message.content), /Refaça em partes menores/)
+    assert.match(textOfContent(tools[1].message.content), /Refaça em partes menores/)
+    assert.match(
+      textOfContent(tools[2].message.content),
+      /cortada pelo limite de tokens de saída \(max_tokens\) 3 vezes seguidas.*aumente max_tokens/
+    )
+    assert.equal(msgs.at(-1).message.role, 'tool', 'termina no erro, sem 4ª request')
+    assert.equal((await load()).repo.sessionsRepo.get(sid)!.status, 'idle')
+  } finally {
+    behavior = {}
   }
 })
 

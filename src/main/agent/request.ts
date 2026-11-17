@@ -850,7 +850,8 @@ export function buildRequest(
         cacheEnabled: cfg.cacheEnabled,
         extra,
         flavor: openRouter ? 'openrouter' : 'anthropic',
-        replayNative: true
+        replayNative: true,
+        maxOutputTokens: modelInfoFor(provider.id, session.model)?.maxOutputTokens
       }),
       kind,
       api: 'messages',
@@ -871,7 +872,8 @@ export function buildRequest(
         eagerTools: true,
         params: support.send,
         cacheEnabled: cfg.cacheEnabled,
-        extra
+        extra,
+        maxOutputTokens: modelInfoFor(provider.id, session.model)?.maxOutputTokens
       }),
       kind,
       api: 'messages',

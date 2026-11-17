@@ -20,6 +20,8 @@ export interface ModelInfo {
   id: string
   name?: string
   contextLength?: number
+  /** Máximo de tokens de saída (Anthropic: `max_tokens` do /models). Ausente = desconhecido. */
+  maxOutputTokens?: number
   promptPrice?: number
   completionPrice?: number
   supportsTools?: boolean
