@@ -54,8 +54,21 @@ export function formatChatInfo(i: ChatInfoData): string {
     lines.push(`sessão-pai: ${i.parentSessionId ?? '?'}`)
     lines.push(`sessão principal do chat: ${i.mainSessionId}`)
   }
+  const r = i.reasoning
+  const effort = !r
+    ? null
+    : !r.requested
+      ? 'esforço de raciocínio: não definido (o padrão do modelo)'
+      : `esforço de raciocínio: ${r.requested} (${r.source === 'subagent' ? 'deste subagente — delegate_task' : 'do chat'})${
+          r.sent === r.requested
+            ? ''
+            : r.sent
+              ? ` — vai como ${r.sent} (o mais próximo que este modelo aceita)`
+              : ' — este modelo não aceita: não vai na request'
+        }`
   lines.push(
     `modelo: ${i.model || '(nenhum)'}`,
+    ...(effort ? [effort] : []),
     `provedor: ${i.providerName || '(nenhum)'}`,
     `diretório raiz: ${i.root}`,
     `criado em: ${fmtDateTime(i.createdAt)}`

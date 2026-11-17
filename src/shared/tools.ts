@@ -569,13 +569,19 @@ export const TOOL_DEFINITIONS: Record<ToolName, ToolDefinition> = {
       background: {
         type: 'boolean',
         description: 'Rodar em segundo plano e receber o resultado depois (padrão false).'
+      },
+      reasoning_effort: {
+        type: 'string',
+        enum: ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'],
+        description:
+          'Esforço de raciocínio só deste subagente (padrão: o desta conversa). Tarefas simples/mecânicas: low; difíceis: high. Ajustado ao que o modelo aceita.'
       }
     },
     ['task']
   ),
   get_chat_info: def(
     'get_chat_info',
-    'Retorna informações deste chat: id, título, sessão atual (e sessão-pai, se for subagente), modelo, provedor, diretório raiz e data de criação.',
+    'Retorna informações deste chat: id, título, sessão atual (e sessão-pai, se for subagente), modelo, esforço de raciocínio desta sessão (o do chat ou o próprio do subagente, e se o modelo o ajusta), provedor, diretório raiz e data de criação.',
     {}
   ),
   list_chats: def(

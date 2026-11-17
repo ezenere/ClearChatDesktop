@@ -54,6 +54,7 @@ import type {
   ToolName,
   ToolSearchMode
 } from '@shared/types'
+import { subagentParams } from '@shared/delegate'
 
 export interface BuiltRequest {
   url: string
@@ -818,7 +819,8 @@ export function buildRequest(
   )
   const adapter = adapterFor(kind)
   const tools = plan.definitions
-  const params = cfg.params ?? {}
+  // subagente: o esforço de raciocínio próprio dele (delegate_task — @shared/delegate) por cima
+  const params = subagentParams(cfg.params, session.depth, history)
   const extra = parseExtraBody(params.extraBody)
   // Só o que o modelo aceita (o resto fica salvo no chat, mas não vai) — ver @shared/modelParams.
   const support = filterParams(params, kind, provider.id, session.model, extra)

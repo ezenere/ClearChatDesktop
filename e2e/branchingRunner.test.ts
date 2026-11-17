@@ -129,6 +129,33 @@ before(async () => {
           return
         case 'subtarefa':
           return hold(30_000, 'SUB OK')
+        // delegate_task com esforço próprio do subagente (1.18.0): válido e inválido
+        case 'delegue-leve':
+        case 'delegue-ruim':
+          res.writeHead(200, { 'Content-Type': 'text/event-stream' })
+          res.write(
+            chunk(body.model, {
+              role: 'assistant',
+              tool_calls: [
+                {
+                  index: 0,
+                  id: `call_${hits.length}`,
+                  type: 'function',
+                  function: {
+                    name: 'delegate_task',
+                    arguments: JSON.stringify({
+                      task: 'tarefa-leve rápida',
+                      reasoning_effort: key === 'delegue-leve' ? 'low' : 'turbo'
+                    })
+                  }
+                }
+              ]
+            })
+          )
+          res.end(chunk(body.model, {}, 'tool_calls') + 'data: [DONE]\n\n')
+          return
+        case 'tarefa-leve':
+          return full('LEVE OK')
         default:
           return full(`R${hits.length}`)
       }
@@ -461,6 +488,37 @@ test('subagente em segundo plano: troca bloqueada enquanto roda; nova versão o 
   // parado: trocar para a versão dele agora é permitido
   await runner.selectBranch(u1b.id)
   assert.equal(path(sid)[0].id, u1b.id)
+})
+
+test('delegate_task com reasoning_effort: só a request do subagente leva o esforço; gravado na tarefa; inválido = erro legível', async () => {
+  const { repo } = await load()
+  const { sid, chatId } = await newChat(['delegate_task'])
+  const n0 = hits.length
+  await turn(sid, 'delegue-leve agora')
+  const reqs = hits.slice(n0)
+  const sub = reqs.find((b) => textOf(b.messages?.at(-1)?.content).startsWith('tarefa-leve'))
+  assert.ok(sub, 'request do subagente')
+  assert.equal(sub.reasoning_effort, 'low', 'o esforço próprio do subagente')
+  const mains = reqs.filter((b) => b !== sub)
+  assert.ok(mains.length >= 1)
+  assert.ok(
+    mains.every((b) => b.reasoning_effort === undefined),
+    'a sessão principal não muda'
+  )
+  const child = repo.sessionsRepo.list(chatId).find((s) => s.parentSessionId === sid)!
+  const task = repo.messagesRepo.path(child.id)[0]
+  assert.deepEqual(task.meta.delegate, { reasoningEffort: 'low' })
+  // valor inválido: a tool volta com o erro (nenhum subagente novo)
+  const before = repo.sessionsRepo.list(chatId).length
+  await turn(sid, 'delegue-ruim agora')
+  const tool = all(sid)
+    .filter((m) => m.message.role === 'tool')
+    .at(-1)!
+  assert.match(
+    textOf(tool.message.content),
+    /reasoning_effort inválido — use um destes: none, minimal, low/
+  )
+  assert.equal(repo.sessionsRepo.list(chatId).length, before)
 })
 
 // ---------------- compactação e ramos ----------------

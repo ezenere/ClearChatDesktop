@@ -704,6 +704,12 @@ export interface Usage {
 export interface MessageMeta {
   /** Criado pelo app (não pelo usuário nem pelo modelo) — UI mostra (i) com o texto exato. */
   synthetic?: boolean
+  /**
+   * Na mensagem de TAREFA de um subagente (a 1ª da subsessão — protocolo 1.18.0): como o
+   * `delegate_task` o criou. `reasoningEffort` = o esforço de raciocínio SÓ desse subagente (no
+   * lugar do `params.reasoning_effort` do chat; ajustado ao modelo como qualquer parâmetro).
+   */
+  delegate?: { reasoningEffort?: ReasoningEffort | null }
   /** 'error' = erro HTTP/modelo persistido só para exibição (synthetic; NUNCA enviado à API). */
   /** 'compaction' = fronteira de compactação (role user com o resumo; buildRequest envia daqui em diante). */
   /** 'inter-chat' = mensagem entregue por outro chat (send_to_chat), role user com cabeçalho. */

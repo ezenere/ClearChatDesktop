@@ -172,8 +172,11 @@ function summary(name: string, args: Record<string, unknown> | null): string {
       ]
         .filter(Boolean)
         .join(' · ')
-    case 'delegate_task':
-      return pick('title') || pick('task')
+    case 'delegate_task': {
+      // esforço próprio do subagente (protocolo 1.18.0) junto do título
+      const what = pick('title') || pick('task')
+      return pick('reasoning_effort') ? `${what} · esforço ${pick('reasoning_effort')}` : what
+    }
     case 'datetime':
       return pick('format')
     case 'weather':

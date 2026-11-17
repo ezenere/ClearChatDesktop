@@ -102,6 +102,8 @@ export interface ChatInfoData {
   providerName: string
   root: string
   createdAt: number
+  /** Esforço de raciocínio desta sessão (pedido, origem, o que vai depois do ajuste ao modelo). */
+  reasoning?: { requested: string | null; source: 'subagent' | 'chat' | null; sent: string | null }
 }
 
 /** list_chats: uma linha por chat. */

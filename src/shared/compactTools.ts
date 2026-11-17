@@ -58,9 +58,9 @@ export const TOOL_SHORT_DESCRIPTIONS: Record<string, string> = {
   list_models:
     'Lista os modelos disponíveis nos provedores configurados (para escolher o de um subagente).',
   delegate_task:
-    'Delega uma tarefa a um subagente, em primeiro ou segundo plano, com modelo opcional.',
+    'Delega uma tarefa a um subagente, em primeiro ou segundo plano, com modelo e esforço opcionais.',
   get_chat_info:
-    'Informações deste chat: título, modelo, provedor, diretório raiz e ids da sessão.',
+    'Informações deste chat: título, modelo, esforço de raciocínio, provedor, diretório raiz e ids da sessão.',
   list_chats: 'Lista os outros chats do app, com id, título, modelo e status.',
   send_to_chat: 'Envia uma mensagem a outro chat como se fosse o usuário.',
   read_history:

@@ -12,6 +12,14 @@ import {
   earlyArgsOk,
   type EarlyCall
 } from '../src/shared/earlyTools.ts'
+import {
+  delegateTaskMeta,
+  effortReport,
+  parseDelegateEffort,
+  subagentEffort,
+  subagentParams
+} from '../src/shared/delegate.ts'
+import { formatChatInfo } from '../src/main/tools/chats.ts'
 
 const call = (id: string, name: string, complete = true, args = '{}'): EarlyCall => ({
   id,
@@ -112,4 +120,93 @@ test('fila: descartar (stream refeito/recusado) — nada novo começa e take dev
   assert.deepEqual(ran, ['a'])
   assert.equal(q.take('a'), null)
   assert.equal(q.discarded, true)
+})
+
+test('delegate (1.18.0): esforço do subagente — argumento, meta da tarefa e params da subsessão', () => {
+  assert.equal(parseDelegateEffort('LOW'), 'low')
+  assert.equal(parseDelegateEffort(''), null)
+  assert.equal(parseDelegateEffort(undefined), null)
+  assert.equal(parseDelegateEffort('turbo'), undefined)
+  assert.equal(parseDelegateEffort(3), undefined)
+  assert.deepEqual(delegateTaskMeta('high'), { delegate: { reasoningEffort: 'high' } })
+  assert.deepEqual(delegateTaskMeta(null), {})
+  const task = {
+    id: 't',
+    sessionId: 's',
+    seq: 1,
+    message: { role: 'user' as const, content: 'tarefa' },
+    meta: { synthetic: true, delegate: { reasoningEffort: 'low' as const } },
+    createdAt: 0
+  }
+  assert.deepEqual(subagentParams({ reasoning_effort: 'xhigh', temperature: 1 }, 1, [task]), {
+    reasoning_effort: 'low',
+    temperature: 1
+  })
+  assert.deepEqual(subagentParams({ reasoning_effort: 'xhigh' }, 0, [task]), {
+    reasoning_effort: 'xhigh'
+  })
+  assert.deepEqual(
+    subagentParams({ reasoning_effort: 'xhigh' }, 1, [{ ...task, meta: {} }]),
+    { reasoning_effort: 'xhigh' },
+    'sem esforço próprio: o do chat'
+  )
+  assert.equal(subagentEffort([]), null)
+})
+
+test('get_chat_info: esforço de raciocínio da sessão — pedido, origem e o que vai depois do ajuste ao modelo', () => {
+  const task = {
+    id: 't',
+    sessionId: 's',
+    seq: 1,
+    message: { role: 'user' as const, content: 'tarefa' },
+    meta: { delegate: { reasoningEffort: 'low' as const } },
+    createdAt: 0
+  }
+  assert.deepEqual(effortReport({ reasoning_effort: 'xhigh' }, 0, []), {
+    requested: 'xhigh',
+    source: 'chat',
+    sent: 'xhigh'
+  })
+  assert.deepEqual(effortReport({ reasoning_effort: 'xhigh' }, 1, [task]), {
+    requested: 'low',
+    source: 'subagent',
+    sent: 'low'
+  })
+  // o modelo só aceita até high: vai como high
+  assert.deepEqual(
+    effortReport({ reasoning_effort: 'xhigh' }, 0, [], (p) => ({ ...p, reasoning_effort: 'high' })),
+    { requested: 'xhigh', source: 'chat', sent: 'high' }
+  )
+  assert.deepEqual(effortReport({}, 0, []), { requested: null, source: null, sent: null })
+  const base = {
+    chatId: 'c',
+    title: 'T',
+    sessionId: 's',
+    mainSessionId: 's',
+    depth: 0,
+    parentSessionId: null,
+    sessionTitle: '',
+    model: 'm',
+    providerName: 'P',
+    root: '/r',
+    createdAt: 0
+  }
+  const line = (reasoning: Parameters<typeof formatChatInfo>[0]['reasoning']): string =>
+    formatChatInfo({ ...base, reasoning })
+      .split('\n')
+      .find((l) => l.startsWith('esforço'))!
+  assert.equal(
+    line({ requested: 'xhigh', source: 'chat', sent: 'xhigh' }),
+    'esforço de raciocínio: xhigh (do chat)'
+  )
+  assert.equal(
+    line({ requested: 'low', source: 'subagent', sent: 'low' }),
+    'esforço de raciocínio: low (deste subagente — delegate_task)'
+  )
+  assert.match(line({ requested: 'xhigh', source: 'chat', sent: 'high' }), /vai como high/)
+  assert.match(line({ requested: 'xhigh', source: 'chat', sent: null }), /não vai na request/)
+  assert.equal(
+    line({ requested: null, source: null, sent: null }),
+    'esforço de raciocínio: não definido (o padrão do modelo)'
+  )
 })

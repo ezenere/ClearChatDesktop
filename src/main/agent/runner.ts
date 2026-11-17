@@ -174,7 +174,9 @@ import {
   voiceCallContextFor,
   mcpActive,
   mcpEntryFor,
-  mcpSourceFor
+  mcpSourceFor,
+  filterParams,
+  parseExtraBody
 } from './request'
 import type { BuildOptions, BuiltRequest } from './request'
 import {
@@ -256,6 +258,12 @@ import {
   turnResponse,
   type BranchSel
 } from '@shared/branches'
+import {
+  delegateTaskMeta,
+  effortReport,
+  parseDelegateEffort,
+  REASONING_EFFORTS
+} from '@shared/delegate'
 
 export const CANCELLED_TEXT = '[Interrompido pelo usuário antes de concluir]'
 export const DENIED_TEXT = 'O usuário negou a execução desta ferramenta.'
@@ -2419,6 +2427,13 @@ async function runDelegate(
   const task = typeof args.task === 'string' ? args.task.trim() : ''
   if (!task) return { content: 'Erro: argumento obrigatório "task" ausente.', status: 'error' }
   const background = args.background === true || args.background === 'true'
+  // esforço de raciocínio só deste subagente (protocolo 1.18.0); inválido → erro legível
+  const effort = parseDelegateEffort(args.reasoning_effort)
+  if (effort === undefined)
+    return {
+      content: `Erro: reasoning_effort inválido — use um destes: ${REASONING_EFFORTS.join(', ')}.`,
+      status: 'error'
+    }
   const target = await resolveSubagent(chat, session, args)
   if ('error' in target) return { content: target.error, status: 'error' }
   const { model, providerId } = target
@@ -2442,7 +2457,14 @@ async function runDelegate(
     status: 'running'
   })
   emit({ type: 'session-created', session: child })
-  const taskMsg = append(child.id, { role: 'user', content: task }, { synthetic: true })
+  const taskMsg = append(
+    child.id,
+    { role: 'user', content: task },
+    {
+      synthetic: true,
+      ...delegateTaskMeta(effort)
+    }
+  )
   // coleta de contexto: a descrição do subagente = a do pai + a tarefa (o juiz dele usa esta)
   capture.deriveForSubagent(session, child, task, taskMsg)
 
@@ -2451,7 +2473,7 @@ async function runDelegate(
     const bst = startLoop(child)
     attachReport(bst, child, false)
     return {
-      content: `${note}Subagente iniciado em segundo plano (id ${child.id}, ${providerName} · ${model}). Você receberá o resultado automaticamente quando ele terminar.`,
+      content: `${note}Subagente iniciado em segundo plano (id ${child.id}, ${providerName} · ${model}${effort ? ` · esforço ${effort}` : ''}). Você receberá o resultado automaticamente quando ele terminar.`,
       status: 'ok',
       subSessionId: child.id,
       background: true
@@ -2850,7 +2872,27 @@ function chatToolsCtx(chat: Chat, session: Session): ToolContext['chats'] {
       model: session.model,
       providerName: providerFor(chat, session)?.name ?? '',
       root: chat.config.cwd,
-      createdAt: chat.createdAt
+      createdAt: chat.createdAt,
+      reasoning: (() => {
+        // o esforço que vale nesta sessão (o do subagente — delegate_task — ou o do chat) e o que
+        // vai de fato depois do ajuste ao modelo
+        const provider = providerFor(chat, session)
+        return effortReport(
+          chat.config.params,
+          session.depth,
+          messagesRepo.path(session.id),
+          provider
+            ? (p) =>
+                filterParams(
+                  p,
+                  providerKind(provider),
+                  provider.id,
+                  session.model,
+                  parseExtraBody(p.extraBody)
+                ).send
+            : undefined
+        )
+      })()
     }),
     list: () =>
       chatsRepo.list().map((c) => ({
