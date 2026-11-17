@@ -7,9 +7,13 @@ import {
   Bot,
   Clock,
   CloudSun,
+  Brain,
   Check,
   ChevronRight,
   CircleX,
+  Cog,
+  ShieldCheck,
+  X,
   Cpu,
   FilePen,
   FilePlus,
@@ -298,22 +302,47 @@ function StatusChip({
   outcome?: ApprovalOutcome | null
   meta?: MessageMeta
 }): React.JSX.Element | null {
-  const map: Record<Status, { label: string; cls: string; icon: ReactNode }> = {
-    streaming: { label: 'gerando', cls: 'text-subtle', icon: <Spinner className="size-3" /> },
+  // `iconOnly`: só o ícone (o texto vai no tooltip) — os estados de rotina (gerando, Smart-Approve,
+  // executando, pronta, ok, erro); os que pedem algo do usuário seguem com o texto
+  const map: Record<Status, { label: string; cls: string; icon: ReactNode; iconOnly?: boolean }> = {
+    streaming: {
+      label: 'gerando',
+      cls: 'text-subtle',
+      icon: (
+        <>
+          <Brain className="size-3.5" />
+          <Spinner className="size-3" />
+        </>
+      ),
+      iconOnly: true
+    },
     judging: {
       label: 'Smart-Approve avaliando',
       cls: 'text-accent-strong',
-      icon: <Spinner className="size-3 text-accent-strong" />
+      icon: (
+        <>
+          <ShieldCheck className="size-3.5" />
+          <Spinner className="size-3 text-accent-strong" />
+        </>
+      ),
+      iconOnly: true
     },
     running: {
       label: 'executando',
-      cls: 'text-accent-strong',
-      icon: <Spinner className="size-3 text-accent-strong" />
+      cls: 'text-subtle',
+      icon: (
+        <>
+          <Cog className="size-3.5" />
+          <Spinner className="size-3" />
+        </>
+      ),
+      iconOnly: true
     },
     ready: {
-      label: 'pronta',
+      label: 'pronta — o resultado entra quando a resposta terminar',
       cls: 'text-subtle',
-      icon: <Check className="size-3" />
+      icon: <Check className="size-3.5" />,
+      iconOnly: true
     },
     approval: {
       label: 'aguardando aprovação',
@@ -325,15 +354,29 @@ function StatusChip({
       cls: 'text-warning',
       icon: <MessageCircleQuestion className="size-3" />
     },
-    ok: { label: 'ok', cls: 'text-success/90', icon: <Check className="size-3" /> },
-    error: { label: 'erro', cls: 'text-danger', icon: <CircleX className="size-3" /> },
+    ok: { label: 'ok', cls: 'text-success', icon: <Check className="size-3.5" />, iconOnly: true },
+    error: { label: 'erro', cls: 'text-danger', icon: <X className="size-3.5" />, iconOnly: true },
     denied: { label: 'negada', cls: 'text-danger/90', icon: <Ban className="size-3" /> },
     cancelled: { label: 'interrompida', cls: 'text-subtle', icon: <Ban className="size-3" /> },
     pending: { label: 'pendente', cls: 'text-faint', icon: null }
   }
   const s = map[status]
-  const chip = (
-    <span className={cn('inline-flex shrink-0 items-center gap-1 text-[11px]', s.cls)}>
+  const chip = s.iconOnly ? (
+    <Tip label={s.label}>
+      <span
+        role="img"
+        aria-label={s.label}
+        data-status={status}
+        className={cn('inline-flex shrink-0 items-center gap-1', s.cls)}
+      >
+        {s.icon}
+      </span>
+    </Tip>
+  ) : (
+    <span
+      data-status={status}
+      className={cn('inline-flex shrink-0 items-center gap-1 text-[11px]', s.cls)}
+    >
       {s.icon}
       {s.label}
     </span>

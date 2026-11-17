@@ -609,7 +609,7 @@ async function main(): Promise<void> {
     await sendMessage('rode: expr SA-APPROVED')
     await waitIdle()
     const card = bashCards().last()
-    await card.getByText('ok', { exact: true }).waitFor()
+    await card.locator('[data-status="ok"]').waitFor()
     // aprovada: nada abaixo do card; os detalhes ficam no selo "ok" (hover/foco; clique fixa)
     assert((await card.getByTestId('smart-approve-line').count()) === 0, 'sem linha no card')
     assert((await card.getByTestId('approval-denied-strip').count()) === 0, 'sem faixa')
@@ -727,7 +727,7 @@ async function main(): Promise<void> {
       await waitIdle()
       await card.getByTestId('smart-overridden').waitFor()
       const runCard = bashCards().last()
-      await runCard.getByText('ok', { exact: true }).waitFor()
+      await runCard.locator('[data-status="ok"]').waitFor()
       const badge = runCard.getByTestId('approval-badge')
       assert((await badge.getAttribute('data-approved-by')) === 'user', 'liberado por você')
       await badge.focus() // teclado: o foco abre o tooltip
@@ -795,7 +795,7 @@ async function main(): Promise<void> {
     const t0 = Date.now()
     await sendMessage('rode: expr SA-TIMEOUT')
     const card = bashCards().last()
-    await card.getByText('Smart-Approve avaliando').waitFor({ timeout: 5000 })
+    await card.locator('[data-status="judging"]').waitFor({ timeout: 5000 })
     await card.getByRole('button', { name: 'Sim', exact: true }).waitFor({ timeout: 10_000 })
     const waited = Date.now() - t0
     await card.getByText('Smart-Approve não decidiu (tempo esgotado)').waitFor()

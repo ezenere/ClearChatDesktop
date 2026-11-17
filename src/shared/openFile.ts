@@ -103,6 +103,54 @@ export function joinPath(dir: string, name: string): string {
   return `${dir}${win ? '\\' : '/'}${name}`
 }
 
+/**
+ * Link de um markdown aberto no visualizador (`from` = caminho absoluto do arquivo): relativo (ou
+ * absoluto) → `file` com o caminho resolvido contra a pasta do arquivo (POSIX ou Windows, `.`/`..`
+ * resolvidos, `%20` decodificado) e a âncora, se houver; só `#âncora` → `anchor`; com esquema
+ * (`https:`, `mailto:`…) → `external` (segue o padrão — navegador); vazio → null.
+ */
+export function resolveMarkdownLink(
+  from: string,
+  href: string
+):
+  | { kind: 'file'; path: string; anchor: string | null }
+  | { kind: 'anchor'; anchor: string }
+  | { kind: 'external' }
+  | null {
+  const h = String(href ?? '').trim()
+  if (!h) return null
+  if (h.startsWith('#')) return h.length > 1 ? { kind: 'anchor', anchor: h.slice(1) } : null
+  if (!isAbsolutePath(h) && /^[a-z][a-z0-9+.-]*:/i.test(h)) return { kind: 'external' }
+  const hash = h.indexOf('#')
+  const anchor = hash >= 0 && hash < h.length - 1 ? h.slice(hash + 1) : null
+  let rel = (hash >= 0 ? h.slice(0, hash) : h).replace(/\?.*$/, '')
+  try {
+    rel = decodeURIComponent(rel)
+  } catch {
+    /* como veio */
+  }
+  if (!rel) return anchor ? { kind: 'anchor', anchor } : null
+  const win = isWindowsPath(from)
+  let joined: string
+  if (isAbsolutePath(rel)) joined = rel
+  else {
+    const base = pathSegments(from)
+    base.segs.pop() // a pasta do arquivo
+    joined = joinPath(base.head + base.segs.join(win ? '\\' : '/'), rel)
+  }
+  const out = pathSegments(joined)
+  return { kind: 'file', path: out.head + out.segs.join(win ? '\\' : '/'), anchor }
+}
+
+/** Slug de título no estilo do GitHub (minúsculas, sem pontuação, espaços → `-`). */
+export function headingSlug(text: string): string {
+  return String(text ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s_-]/gu, '')
+    .replace(/\s/g, '-')
+}
+
 /** Caminho com caracteres de controle (NUL, quebra de linha…): nunca vai ao modelo. */
 // eslint-disable-next-line no-control-regex
 const CONTROL = /[\u0000-\u001f\u007f]/

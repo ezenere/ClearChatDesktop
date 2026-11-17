@@ -606,7 +606,7 @@ app.on('window-all-closed', () => app.quit())
       .getByTestId('chat-scroller')
       .getByTestId('mcp-tool-card')
       .nth(2)
-      .getByText('ok', { exact: true })
+      .locator('[data-status="ok"]')
       .waitFor()
     // o campo de mensagem voltou
     await page.getByTestId('composer-card').locator('textarea').first().waitFor()

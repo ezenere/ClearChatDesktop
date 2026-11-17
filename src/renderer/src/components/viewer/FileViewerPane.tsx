@@ -33,6 +33,7 @@ import {
 import type { Chat } from '@shared/types'
 import type { ViewerText } from '@shared/ipc'
 import { VIEWER_LIMITS } from '@shared/fileViewer'
+import { headingSlug, pathBaseName, resolveMarkdownLink } from '@shared/openFile'
 import { cn, formatBytes } from '../../lib/format'
 import {
   resourceActions,
@@ -118,18 +119,55 @@ function CodeView({ text, language }: { text: string; language?: string }): Reac
   )
 }
 
+/** Rola até o título cujo slug (estilo GitHub) é a âncora, dentro do markdown do link. */
+function scrollToAnchor(el: HTMLElement, anchor: string): boolean {
+  let want = anchor
+  try {
+    want = decodeURIComponent(anchor)
+  } catch {
+    /* como veio */
+  }
+  want = headingSlug(want)
+  const root = el.closest('.md') ?? document
+  for (const h of root.querySelectorAll<HTMLElement>('h1, h2, h3, h4, h5, h6'))
+    if (headingSlug(h.textContent ?? '') === want) {
+      h.scrollIntoView({ block: 'start', behavior: 'smooth' })
+      return true
+    }
+  return false
+}
+
 function TextKinds({
   resource,
   zoom,
-  onOpenExternal
+  onOpenExternal,
+  onOpenLinked
 }: {
   resource: ViewerResource
   zoom: number
   onOpenExternal?: () => void
+  /** Link relativo do markdown → abre o arquivo no visualizador. */
+  onOpenLinked?: (path: string) => void
 }): React.JSX.Element {
   const { text, error } = useText(resource)
   const { kind, language } = resource.info
   const resolveImage = useCallback((src: string) => resource.assetUrl(src), [resource])
+  // links do markdown: outro arquivo (relativo à pasta deste) abre aqui; `#âncora` rola até o título;
+  // com esquema (https:, mailto:) segue o padrão
+  const onLink = useCallback(
+    (href: string, el: HTMLAnchorElement): boolean => {
+      const r = resolveMarkdownLink(resource.info.path, href)
+      if (!r || r.kind === 'external') return false
+      if (r.kind === 'anchor') {
+        scrollToAnchor(el, r.anchor)
+        return true
+      }
+      if (!onOpenLinked) return false
+      onOpenLinked(r.path)
+      return true
+    },
+    [resource, onOpenLinked]
+  )
   if (error)
     return <Problem icon={CircleAlert} title="Não foi possível ler o arquivo" text={error} />
   if (!text) return <Loading />
@@ -140,7 +178,7 @@ function TextKinds({
       <div style={{ zoom }} data-testid="viewer-zoomable">
         {asMarkdown ? (
           <div className="mx-auto max-w-[820px] px-6 py-5">
-            <Markdown text={text.content} resolveImage={resolveImage} />
+            <Markdown text={text.content} resolveImage={resolveImage} onLink={onLink} />
           </div>
         ) : kind === 'code' ? (
           <CodeView text={text.content} language={language} />
@@ -507,6 +545,7 @@ export function FileViewerPane({
   const closeFile = useStore((s) => s.closeFile)
   const reloadFile = useStore((s) => s.reloadFile)
   const mentionFile = useStore((s) => s.mentionFile)
+  const openFile = useStore((s) => s.openFile)
   const run = useStore((s) => s.run)
   const host = useHostInfo(chat.id)
   const source = sourcesFor(chat.id, host?.mode).file
@@ -567,6 +606,9 @@ export function FileViewerPane({
   const showInFolder = acts.showInFolder
     ? () => void run(() => acts.showInFolder!(), 'Não foi possível mostrar a pasta')
     : undefined
+  // link de um markdown para outro arquivo: abre no visualizador (como pela aba Arquivos)
+  const openLinked = (path: string): void =>
+    openFile(chat.id, { chatId: chat.id, source: 'browse', path }, path, pathBaseName(path))
   const saveAs = acts.saveAs
     ? () => void run(() => acts.saveAs!(), 'Não foi possível salvar o arquivo')
     : undefined
@@ -697,7 +739,12 @@ export function FileViewerPane({
       ) : kind === 'binary' ? (
         unsupported()
       ) : (
-        <TextKinds resource={resource} zoom={effZoom} onOpenExternal={openExternal} />
+        <TextKinds
+          resource={resource}
+          zoom={effZoom}
+          onOpenExternal={openExternal}
+          onOpenLinked={openLinked}
+        />
       )
   }
 

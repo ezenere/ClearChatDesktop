@@ -257,7 +257,7 @@ async function askLongBash(cmd: string): Promise<void> {
       const n = await toolCards('Terminal (shell)').count()
       if (
         n > before &&
-        (await toolCards('Terminal (shell)').last().getByText('executando').count())
+        (await toolCards('Terminal (shell)').last().locator('[data-status="running"]').count())
       )
         return
       if (!(await stopBtn().count()) && Date.now() - t0 > 1500) break
@@ -668,7 +668,7 @@ async function main(): Promise<void> {
     await page.getByRole('button', { name: /^(Permitir|Sim)$/ }).click()
     await waitIdle()
     const card = toolCards('Terminal (shell)').last()
-    await card.getByText('ok', { exact: true }).waitFor({ timeout: 5000 })
+    await card.locator('[data-status="ok"]').waitFor({ timeout: 5000 })
     await card.locator('div[role="button"]').click()
     await card
       .getByText(/hello-ui-allow/)
@@ -709,7 +709,10 @@ async function main(): Promise<void> {
 
   await step('fila: mensagem durante execução vira chip e é injetada depois', async () => {
     await sendMessage('Run this exact shell command with the shell tool: sleep 6 && echo slept-ok')
-    await toolCards('Terminal (shell)').last().getByText('executando').waitFor({ timeout: 60_000 })
+    await toolCards('Terminal (shell)')
+      .last()
+      .locator('[data-status="running"]')
+      .waitFor({ timeout: 60_000 })
     await sendMessage('Depois disso, responda apenas: FILA-OK')
     const chip = page.locator('p.line-clamp-2', { hasText: 'FILA-OK' })
     await chip.waitFor({ timeout: 5000 })

@@ -106,6 +106,7 @@ export const Markdown = memo(function Markdown({
   text,
   streaming,
   resolveImage,
+  onLink,
   voice
 }: {
   text: string
@@ -120,6 +121,11 @@ export const Markdown = memo(function Markdown({
    * (protocolo clearchat-file://); null = não mostra. Sem a prop, imagens seguem o padrão.
    */
   resolveImage?: (src: string) => string | null
+  /**
+   * Clique num link (visualizador de arquivos: link relativo abre o arquivo no painel, `#âncora`
+   * rola até o título). true = tratado (o padrão — abrir no navegador — não acontece).
+   */
+  onLink?: (href: string, el: HTMLAnchorElement) => boolean
 }): React.JSX.Element {
   // Cercas aninhadas → uma cerca externa mais longa; \[ \] e \( \) → $$ e $; preços escapados.
   const source = useMemo(() => normalizeMath(normalizeFences(text), streaming), [text, streaming])
@@ -139,24 +145,33 @@ export const Markdown = memo(function Markdown({
         : remarkPlugins,
     [voiceTags, dimFrom]
   )
-  const comps = useMemo<Components>(
-    () =>
-      resolveImage
-        ? {
-            ...components,
-            img: ({ src, alt, title }) => {
-              const raw = typeof src === 'string' ? src : ''
-              const url = /^(https?:|data:)/i.test(raw) ? raw : resolveImage(raw)
-              return url ? (
-                <img src={url} alt={alt ?? ''} title={title} loading="lazy" />
-              ) : (
-                <span className="text-subtle">[imagem: {alt || raw}]</span>
-              )
-            }
-          }
-        : components,
-    [resolveImage]
-  )
+  const comps = useMemo<Components>(() => {
+    const out: Components = { ...components }
+    if (resolveImage)
+      out.img = ({ src, alt, title }) => {
+        const raw = typeof src === 'string' ? src : ''
+        const url = /^(https?:|data:)/i.test(raw) ? raw : resolveImage(raw)
+        return url ? (
+          <img src={url} alt={alt ?? ''} title={title} loading="lazy" />
+        ) : (
+          <span className="text-subtle">[imagem: {alt || raw}]</span>
+        )
+      }
+    if (onLink)
+      out.a = ({ href, children }) => (
+        <a
+          href={href}
+          target="_blank"
+          rel="noreferrer"
+          onClick={(e) => {
+            if (href && onLink(href, e.currentTarget)) e.preventDefault()
+          }}
+        >
+          {children}
+        </a>
+      )
+    return out
+  }, [resolveImage, onLink])
   return (
     <div className={cn('md', streaming && 'stream-caret')}>
       <ReactMarkdown remarkPlugins={plugins} rehypePlugins={rehypePlugins} components={comps}>

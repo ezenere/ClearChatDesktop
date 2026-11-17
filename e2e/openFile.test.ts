@@ -26,7 +26,9 @@ import {
   sendMetaOpenFile,
   storedOpenFile,
   withOpenFile,
-  withOpenFiles
+  withOpenFiles,
+  headingSlug,
+  resolveMarkdownLink
 } from '../src/shared/openFile.ts'
 import type { ApiMessage, Chat, MessageMeta, Provider, StoredMessage } from '../src/shared/types.ts'
 
@@ -325,4 +327,43 @@ test('joinPath / pathSegments: separador do sistema da pasta', () => {
   assert.deepEqual(pathSegments('/home/u/p/'), { head: '/', segs: ['home', 'u', 'p'] })
   assert.deepEqual(pathSegments('C:/Users\\dev'), { head: 'C:\\', segs: ['Users', 'dev'] })
   assert.deepEqual(pathSegments('\\\\srv\\share'), { head: '\\\\', segs: ['srv', 'share'] })
+})
+
+test('links do markdown no visualizador: relativo à pasta do arquivo (POSIX/Windows), âncora, externo', () => {
+  const md = '/home/u/proj/IDEIA/README.md'
+  assert.deepEqual(resolveMarkdownLink(md, '02-diagnostico-dos-dados.md'), {
+    kind: 'file',
+    path: '/home/u/proj/IDEIA/02-diagnostico-dos-dados.md',
+    anchor: null
+  })
+  assert.deepEqual(resolveMarkdownLink(md, './anexos/a%20b.md#Se%C3%A7%C3%A3o'), {
+    kind: 'file',
+    path: '/home/u/proj/IDEIA/anexos/a b.md',
+    anchor: 'Se%C3%A7%C3%A3o'
+  })
+  assert.deepEqual(resolveMarkdownLink(md, '../outro.md?x=1'), {
+    kind: 'file',
+    path: '/home/u/proj/outro.md',
+    anchor: null
+  })
+  assert.deepEqual(resolveMarkdownLink(md, '/etc/hosts'), {
+    kind: 'file',
+    path: '/etc/hosts',
+    anchor: null
+  })
+  assert.deepEqual(resolveMarkdownLink('C:\\Users\\u\\docs\\README.md', '../b/c.md'), {
+    kind: 'file',
+    path: 'C:\\Users\\u\\b\\c.md',
+    anchor: null
+  })
+  assert.deepEqual(resolveMarkdownLink(md, '#o-que-eu-recomendo'), {
+    kind: 'anchor',
+    anchor: 'o-que-eu-recomendo'
+  })
+  assert.deepEqual(resolveMarkdownLink(md, 'https://maplibre.org'), { kind: 'external' })
+  assert.deepEqual(resolveMarkdownLink(md, 'mailto:a@b.c'), { kind: 'external' })
+  assert.equal(resolveMarkdownLink(md, '  '), null)
+  assert.equal(resolveMarkdownLink(md, '#'), null)
+  assert.equal(headingSlug('O que eu recomendo'), 'o-que-eu-recomendo')
+  assert.equal(headingSlug('2.1 Modelo de dados — aviário!'), '21-modelo-de-dados--aviário')
 })
